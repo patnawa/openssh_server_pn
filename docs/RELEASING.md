@@ -38,7 +38,9 @@ the top of [`.github/scripts/Test-Installer.ps1`](../.github/scripts/Test-Instal
 
 The Pester job has `continue-on-error: true`: the maintainers' end-to-end suite was written for their test
 machines (fixed test accounts, WinRM, port forwarding, AppVerifier) and had never run for this project.
-Make it gating once its results on the runners have been triaged.
+It runs in PowerShell 7 with Pester 3.4.6, as upstream does. Since pull request #5 (2026-09-26) it passes
+completely: 159 passed, 1 skipped, in about 12 minutes. Make it gating once it has stayed green over a few
+more runs.
 
 On a pull request GitHub evaluates the `paths` filter against every file the pull request
 changes, not against the last push, so once a pull request touches `src/` every push to it runs

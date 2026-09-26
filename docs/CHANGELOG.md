@@ -159,10 +159,16 @@ CI and releases:
   waited there for a key passphrase until the job timeout, in all three runs. The tests set
   `SSH_ASKPASS` only when `$IsWindows` is true, and Windows PowerShell does not define it. The
   workflow now sets it (pull request #3, after the release). In that pull request's CI the suite
-  ran to the end for the first time, in 12 minutes: 143 passed, 16 failed, 1 skipped. The failures
-  still have to be triaged: the SFTP connection tests (2), `scp` of directories with symbolic
-  links (3), command lines with double quotes or piped input through `ssh` and the default shells
-  (8), and `Include` with absolute paths in `sshd_config` (3).
+  ran to the end for the first time, in 12 minutes: 143 passed, 16 failed, 1 skipped. 13 of the 16
+  failures came from Windows PowerShell 5.1: upstream runs the suite in PowerShell 7
+  (`src/.azdo/ci.yml`). The affected features were `Join-Path` with several child paths, empty and
+  quoted native arguments, and pipes to native commands with a byte order mark. The job runs in
+  `pwsh` now, which no longer needs the `$IsWindows` workaround (pull request #5). The other 3, the
+  `Include` tests of `SSHDConfig.tests.ps1`, looked for `loglevel DEBUG3` case-sensitively. Since
+  upstream commit f2b815e4 (2026-05-31), `sshd -T` prints `LogLevel DEBUG3`; `Include` itself
+  worked. The tests compare with `-contains` now, as upstream made its own tests case-insensitive.
+  Result: 159 passed, 0 failed, 1 skipped (run 36247314582). The step also exits 0 explicitly;
+  before, it ended with the exit code of the last native command a test ran.
 
 ## OpenSSH Server Manager 1.6.0 (2026-09-26)
 
