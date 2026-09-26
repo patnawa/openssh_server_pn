@@ -387,6 +387,8 @@ Match User matchuser
             $relativeFilePath = "includeFile"
             $progDataPath = Join-Path $env:ProgramData $relativeFilePath
             # adding a line that would not be in a default sshd_config file
+            # sshd -T prints the keywords capitalised since OpenSSH upstream commit f2b815e4 (2026-05-31, "LogLevel
+            # DEBUG3"), so the tests below compare with -contains, which ignores case, as upstream's own tests now do.
             $content = "loglevel DEBUG3"
             $content | Set-Content $absoluteFilePath
             $content | Set-Content $progDataPath
@@ -410,19 +412,19 @@ Match User matchuser
         It "$tC.$tI - Include Directive with absolute path starting with forward slash" {
             Set-SSHDConfigLine -line "Include /$absoluteFilePath" -file $sshdconfig_custom
             $result = Invoke-Expression "$binPath -T -f '$sshdconfig_custom'"          
-            $result.Contains($content) | Should Be $true
+            ($result -contains $content) | Should Be $true
         }
 
         It "$tC.$tI - Include Directive with absolute path starting with drive" {
             Set-SSHDConfigLine -line "Include $absoluteFilePath" -file $sshdconfig_custom
             $result = Invoke-Expression "$binPath -T -f '$sshdconfig_custom'"            
-            $result.Contains($content) | Should Be $true
+            ($result -contains $content) | Should Be $true
         }
 
         It "$tC.$tI - Include Directive with filename, relative to ProgramData" {
             Set-SSHDConfigLine -line "Include $relativeFilePath" -file $sshdconfig_custom
             $result = Invoke-Expression "$binPath -T -f '$sshdconfig_custom'"            
-            $result.Contains($content) | Should Be $true
+            ($result -contains $content) | Should Be $true
         }
     }
 }
