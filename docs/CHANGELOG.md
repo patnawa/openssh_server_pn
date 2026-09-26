@@ -21,9 +21,10 @@ The size grew with the icon, which the executable carries twice: as its Windows 
 resource the window loads with all ten sizes.
 
 Published in the releases [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0) and
-[v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0), each with `SHA256SUMS.txt`. After publishing, the `.exe.config` in v10.5.1.0 was replaced by the one in manager-v1.5.0:
-they differed only in line endings (SHA-256 `38607418...98451` in both now, and in `bin`), and
-both `SHA256SUMS.txt` files got LF line endings, so that `sha256sum -c` reads them.
+[v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0), each with `SHA256SUMS.txt`. The first publication, earlier the same day, had an
+`.exe.config` that differed between the two releases in its line endings and `SHA256SUMS.txt`
+files with CRLF line endings; both releases were published again with one `.exe.config`
+(SHA-256 `38607418...98451`, as in `bin`) and LF sums, which `sha256sum -c` reads.
 
 Fixed:
 
