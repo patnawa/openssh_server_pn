@@ -686,6 +686,8 @@ jobs:
             Write-Host "::warning title=E2E failed::$($t.Describe) / $($t.Name): $(($t.FailureMessage -replace "`r?`n", ' '))"
           }
           if ($result.FailedCount -gt 0) { exit 1 }
+          # Otherwise the step would end with $LASTEXITCODE of the last native command a test ran.
+          exit 0
 
       - name: Upload the test results
         if: ${{ !cancelled() }}
