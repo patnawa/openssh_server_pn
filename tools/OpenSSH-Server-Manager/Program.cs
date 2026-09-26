@@ -5,9 +5,9 @@
 // shell, Windows Firewall rule, event log viewer and a hardening check.
 //
 // Source: one file per area in this folder (Program, SelfTest, Platform, Ssh, SshdConfig, Keys,
-// KeyGen, Auth, AuthTest, WindowsSettings, Hardening, Sessions, MainForm, Dialogs), compiled into
-// one executable by build.ps1 (the Roslyn C# compiler from Visual Studio Build Tools, or the inbox
-// .NET Framework compiler). Runs elevated (see app.manifest).
+// KeyGen, Auth, AuthTest, WindowsSettings, Hardening, Sessions, Client, MainForm, Dialogs, Wizard,
+// Theme, Widgets, Prefs), compiled into one executable by build.ps1 (the Roslyn C# compiler from
+// Visual Studio Build Tools). Runs elevated (see app.manifest).
 //
 // Command line (an optional file name receives the report):
 //   --unittest   tests of the program logic alone: no sshd, no service, no administrator rights
@@ -16,6 +16,7 @@
 //   --keytest    every key type: generate, authorize, log in, remove (authorized_keys restored)
 //   --authtest   every login-method setting with real logins against a temporary sshd on 127.0.0.1
 //                and a temporary local account; both are removed at the end
+//   --screenshot <folder> [--ui-scale 1.5] [--theme dark|light]   every tab rendered off-screen to PNG files
 
 using System;
 using System.Collections.Generic;
@@ -41,9 +42,9 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyTitle("OpenSSH Server Manager")]
 [assembly: System.Reflection.AssemblyProduct("OpenSSH Server Manager")]
 [assembly: System.Reflection.AssemblyDescription("Management console for the OpenSSH for Windows server")]
-[assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.5.0")]
+[assembly: System.Reflection.AssemblyVersion("1.6.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.6.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.6.0")]
 
 namespace OpenSSHServerManager
 {
@@ -53,7 +54,7 @@ namespace OpenSSHServerManager
     internal static class Program
     {
         public const string AppName = "OpenSSH Server Manager";
-        public const string AppVersion = "1.5.0";
+        public const string AppVersion = "1.6.0";
         /// <summary>True in --check, --selftest and --screenshot: no modal dialogs may block the process.</summary>
         public static bool Unattended;
 
@@ -98,6 +99,12 @@ namespace OpenSSHServerManager
                 // --ui-scale 1.5: lay the window out as on a 150% display (with --screenshot, to check layouts).
                 int us = Array.FindIndex(args, a => a.Equals("--ui-scale", StringComparison.OrdinalIgnoreCase)); float scale;
                 if (us >= 0 && us + 1 < args.Length && float.TryParse(args[us + 1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out scale) && scale >= 0.5f && scale <= 4f) Ui.Scale = scale;
+                // --theme dark|light: the colours for --screenshot (and the unattended modes), without touching the saved preference.
+                int th = Array.FindIndex(args, a => a.Equals("--theme", StringComparison.OrdinalIgnoreCase));
+                bool unattended = args.Any(a => a.Equals("--screenshot", StringComparison.OrdinalIgnoreCase) || a.Equals("--selftest", StringComparison.OrdinalIgnoreCase) || a.Equals("--unittest", StringComparison.OrdinalIgnoreCase));
+                if (unattended) Unattended = true; // Prefs then stay in memory
+                if (th >= 0 && th + 1 < args.Length && unattended) Prefs.Theme = args[th + 1].ToLowerInvariant();
+                Theme.Current = Theme.For(unattended && th < 0 ? "light" : Prefs.Theme);
                 // Automated UI test: render every tab off-screen to PNG files without touching the desktop.
                 int si = Array.FindIndex(args, a => a.Equals("--screenshot", StringComparison.OrdinalIgnoreCase));
                 if (si >= 0) { Unattended = true; return RunScreenshots(si + 1 < args.Length ? args[si + 1] : Path.GetTempPath()); }
@@ -161,6 +168,31 @@ namespace OpenSSHServerManager
                             bmp.Save(Path.Combine(dir, "rule-dialog.png"), System.Drawing.Imaging.ImageFormat.Png);
                         }
                         d.Close();
+                    }
+                    // The dialogs around saving, the failed-login list and the setup wizard, with example content.
+                    Action<Form, string> shot = (dlg, name) =>
+                    {
+                        dlg.StartPosition = FormStartPosition.Manual; dlg.Location = new Point(-20000, -20000); dlg.ShowInTaskbar = false;
+                        dlg.Show(); Application.DoEvents();
+                        using (var bmp = new Bitmap(dlg.Width, dlg.Height)) { dlg.DrawToBitmap(bmp, new Rectangle(0, 0, dlg.Width, dlg.Height)); bmp.Save(Path.Combine(dir, name + ".png"), System.Drawing.Imaging.ImageFormat.Png); }
+                        dlg.Close();
+                    };
+                    var before = "Port 22\n#MaxAuthTries 6\nPasswordAuthentication yes\nSubsystem sftp sftp-server.exe\n";
+                    var after = "Port 2222\nMaxAuthTries 4\nPasswordAuthentication yes\nSubsystem sftp sftp-server.exe\nClientAliveInterval 300\n";
+                    using (var d = new ChangesDialog("Changes to sshd_config", "Save Port, Max auth tries. This is what changes in C:\\ProgramData\\ssh\\sshd_config.", before, after, "Save")) shot(d, "dialog-changes");
+                    using (var d = new KeepSettingsDialog("Listening on 0.0.0.0:2222, [::]:2222; answers SSH-2.0-OpenSSH_for_Windows_10.5 OpenSSH-Server-PN\nThe firewall rule allows port 22 but not 2222: other computers cannot connect there.\nIt offers alice (you): public key, password (Windows authentication).", true, 60, () => new KeyValuePair<string, bool>("", false))) shot(d, "dialog-keep-settings");
+                    var t0 = new DateTime(2026, 9, 26, 9, 0, 0);
+                    var sources = EventLogs.FailedByAddress(new[] { "sshd: Failed password for root from 203.0.113.50 port 1 ssh2", "sshd: Invalid user oracle from 203.0.113.50 port 2", "sshd: Failed password for admin from 198.51.100.23 port 3 ssh2" }.Select((m, i) => new LogEvent { Time = t0.AddMinutes(i), Message = m }));
+                    using (var d = new FailedLoginsDialog(sources, "last 24 hours", "22", new List<string>())) shot(d, "dialog-failed-logins");
+                    using (var w = new SetupWizard(22, null, null, () => 1, () => { }))
+                    {
+                        w.StartPosition = FormStartPosition.Manual; w.Location = new Point(-20000, -20000); w.ShowInTaskbar = false; w.Show(); Application.DoEvents();
+                        for (int p = 0; p < 5; p++)
+                        {
+                            w.ShowPageForTest(p); Application.DoEvents();
+                            using (var bmp = new Bitmap(w.Width, w.Height)) { w.DrawToBitmap(bmp, new Rectangle(0, 0, w.Width, w.Height)); bmp.Save(Path.Combine(dir, "wizard-" + (p + 1) + ".png"), System.Drawing.Imaging.ImageFormat.Png); }
+                        }
+                        w.Close();
                     }
                     f.Close();
                 }

@@ -158,6 +158,67 @@ namespace OpenSSHServerManager
             dynamic policy = Policy();
             foreach (var name in new[] { RuleName, ManagedRuleName }) { try { policy.Rules.Remove(name); } catch { } }
         }
+
+        /// <summary>The inbound block rule this program keeps for addresses blocked from SSH (block rules win over allow rules).</summary>
+        public const string BlockRuleName = "OpenSSH Server Manager: blocked addresses";
+
+        /// <summary>The addresses in the block rule (empty when there is none).</summary>
+        public static List<string> BlockedAddresses()
+        {
+            try
+            {
+                dynamic policy = Policy();
+                dynamic r = policy.Rules.Item(BlockRuleName);
+                var v = (string)r.RemoteAddresses;
+                if (string.IsNullOrEmpty(v) || v == "*") return new List<string>();
+                return v.Split(',').Select(a => NormaliseAddress(a.Trim())).Where(a => a.Length > 0).Distinct().ToList();
+            }
+            catch (COMException) { return new List<string>(); } // no such rule
+        }
+
+        /// <summary>"1.2.3.4/255.255.255.255" (how Windows stores a single address) as "1.2.3.4"; ranges and subnets stay as they are.</summary>
+        public static string NormaliseAddress(string a)
+        {
+            if (a.EndsWith("/255.255.255.255")) return a.Substring(0, a.Length - 16);
+            if (a.EndsWith("/128") && a.Contains(":")) return a.Substring(0, a.Length - 4);
+            return a;
+        }
+
+        /// <summary>
+        /// Writes the block rule: TCP to the given local ports from these addresses is blocked on every profile. An empty
+        /// list removes the rule.
+        /// </summary>
+        public static void SetBlockedAddresses(IList<string> addresses, string ports)
+        {
+            dynamic policy = Policy();
+            try { policy.Rules.Remove(BlockRuleName); } catch { }
+            if (addresses == null || addresses.Count == 0) return;
+            dynamic rule = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule"));
+            rule.Name = BlockRuleName;
+            rule.Description = "Addresses blocked from SSH by OpenSSH Server Manager (Logs tab, Failed logins by address).";
+            rule.Protocol = 6; rule.Direction = 1; rule.Action = 0; // TCP, inbound, block
+            rule.LocalPorts = ports;
+            rule.RemoteAddresses = string.Join(",", addresses);
+            rule.Profiles = 0x7fffffff;
+            rule.Enabled = true;
+            policy.Rules.Add(rule);
+        }
+
+        /// <summary>Why an address should not be blocked (this computer, loopback, an address it cannot parse), or null.</summary>
+        public static string NotBlockable(string address)
+        {
+            IPAddress ip;
+            if (!IPAddress.TryParse(address, out ip)) return address + " is not an IP address";
+            if (IPAddress.IsLoopback(ip)) return address + " is this computer (loopback)";
+            try
+            {
+                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+                    foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                        if (ua.Address.Equals(ip)) return address + " is an address of this computer";
+            }
+            catch { }
+            return null;
+        }
     }
 
     // ------------------------------------------------------------------------------------------
@@ -169,16 +230,20 @@ namespace OpenSSHServerManager
     {
         public const string LogName = "OpenSSH/Operational";
 
-        public static List<LogEvent> Read(int max, string filter)
+        public static List<LogEvent> Read(int max, string filter) { return Read(max, filter, null, CancellationToken.None); }
+
+        /// <summary>The newest events first, at most max, whose message contains filter; only those of the last period when given.</summary>
+        public static List<LogEvent> Read(int max, string filter, TimeSpan? period, CancellationToken cancel)
         {
             var l = new List<LogEvent>();
             try
             {
-                var q = new EventLogQuery(LogName, PathType.LogName) { ReverseDirection = true };
+                var xpath = period.HasValue ? "*[System[TimeCreated[timediff(@SystemTime) <= " + (long)period.Value.TotalMilliseconds + "]]]" : "*";
+                var q = new EventLogQuery(LogName, PathType.LogName, xpath) { ReverseDirection = true };
                 using (var reader = new EventLogReader(q))
                 {
                     EventRecord rec;
-                    while (l.Count < max && (rec = reader.ReadEvent()) != null)
+                    while (l.Count < max && !cancel.IsCancellationRequested && (rec = reader.ReadEvent()) != null)
                     {
                         using (rec)
                         {
@@ -196,6 +261,45 @@ namespace OpenSSHServerManager
             catch (EventLogNotFoundException) { l.Add(new LogEvent { Time = DateTime.Now, Id = 0, Level = "Info", Message = "The " + LogName + " event log does not exist on this system. Install the server feature or enable file logging (SyslogFacility LOCAL0)." }); }
             catch (Exception ex) { l.Add(new LogEvent { Time = DateTime.Now, Id = 0, Level = "Error", Message = "Cannot read event log: " + ex.Message }); }
             return l;
+        }
+
+        private static readonly Regex FailurePattern = new Regex(
+            @"(?:^|: )(?:Failed \S+ for (?:invalid user )?(?<user>.*?)|Invalid user (?<user>.*?)|(?:Connection closed by|Disconnected from) (?:authenticating|invalid) user (?<user>.*?)|Timeout before authentication for|maximum authentication attempts exceeded for (?:invalid user )?(?<user>.*?)) (?:from )?(?<addr>[0-9A-Fa-f.:]+) port \d+",
+            RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// The client address (and the account name tried, if any) of an sshd message about a failed or abandoned login
+        /// ("Failed password for x from 10.0.0.5 port 50123 ssh2", "Invalid user x from ..."), or null for other messages.
+        /// </summary>
+        public static string FailedLoginAddress(string message, out string user)
+        {
+            user = null;
+            var m = FailurePattern.Match((message ?? "").Replace("sshd: ", "").Trim());
+            if (!m.Success) return null;
+            IPAddress ip;
+            if (!IPAddress.TryParse(m.Groups["addr"].Value, out ip)) return null;
+            user = m.Groups["user"].Success ? m.Groups["user"].Value : null;
+            return (ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip).ToString();
+        }
+
+        /// <summary>Failed logins grouped by client address, the most first.</summary>
+        public sealed class FailedSource { public string Address; public int Count; public DateTime First, Last; public SortedSet<string> Users = new SortedSet<string>(StringComparer.OrdinalIgnoreCase); }
+
+        public static List<FailedSource> FailedByAddress(IEnumerable<LogEvent> events)
+        {
+            var d = new Dictionary<string, FailedSource>();
+            foreach (var e in events)
+            {
+                string user; var a = FailedLoginAddress(e.Message, out user);
+                if (a == null) continue;
+                FailedSource s;
+                if (!d.TryGetValue(a, out s)) d[a] = s = new FailedSource { Address = a, First = e.Time, Last = e.Time };
+                s.Count++;
+                if (e.Time < s.First) s.First = e.Time;
+                if (e.Time > s.Last) s.Last = e.Time;
+                if (!string.IsNullOrEmpty(user)) s.Users.Add(user);
+            }
+            return d.Values.OrderByDescending(x => x.Count).ThenByDescending(x => x.Last).ToList();
         }
 
         public static string FileLogPath()
