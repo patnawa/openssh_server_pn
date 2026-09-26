@@ -800,7 +800,8 @@ jobs:
             "(Get-FileHash .\OpenSSH-Win64-v$env:VERSION.msi -Algorithm SHA256).Hash   # compare with SHA256SUMS.txt",
             "gh attestation verify .\OpenSSH-Win64-v$env:VERSION.msi --repo $repo   # built by this repository's workflow",
             '```', '',
-            '`OpenSSH-Server-PN-v' + $env:VERSION + '.cdx.json` is the CycloneDX SBOM (OpenSSH, LibreSSL, libfido2, libcbor, zlib and these files).',
+            # In parentheses: the comma binds more tightly than +, and without them the three parts became three lines.
+            ('`OpenSSH-Server-PN-v' + $env:VERSION + '.cdx.json` is the CycloneDX SBOM (OpenSSH, LibreSSL, libfido2, libcbor, zlib and these files).'),
             '', '_Draft created by the OpenSSH workflow. Review the notes and the files, then publish._'
           )
           $notesFile = Join-Path $env:RUNNER_TEMP 'notes.md'
