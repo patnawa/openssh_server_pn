@@ -40,6 +40,12 @@ The Pester job has `continue-on-error: true`: the maintainers' end-to-end suite 
 machines (fixed test accounts, WinRM, port forwarding, AppVerifier) and had never run for this project.
 Make it gating once its results on the runners have been triaged.
 
+On a pull request GitHub evaluates the `paths` filter against every file the pull request
+changes, not against the last push, so once a pull request touches `src/` every push to it runs
+`openssh.yml` again, and `cancel-in-progress` stops the run still going, whatever the push
+contains (a documentation change included). Bundle small follow-ups, or wait for a run to finish
+before pushing. On `main` the filter applies to the push itself.
+
 ## 2. Making a release
 
 1. **Merge the changes** to `main` through pull requests; `openssh.yml` must be green on the last one.
