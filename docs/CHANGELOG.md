@@ -42,8 +42,12 @@ Installer:
   checks per package passed (sequence, action types, ErrorControl 32769, launch conditions
   evaluated by Windows Installer: 22, 65535 and 0022 accepted; 0, 65536, `+22`, ` 22` and
   `22' ; calc ; '` refused); the session check started as the package starts it: exit 0 with no
-  session, exit 1 with a connection open. **Not run**: an actual install, upgrade, repair,
-  rollback or `SSHD_PORT` change; the CI workflow runs these on its first run.
+  session, exit 1 with a connection open. Then on GitHub's runners (2026-09-26, Windows Server
+  2022 and 2025): install, upgrade with the rule at 2222/Private kept, repair, a forced failure
+  after `StartServices` rolled back with the rule and the previous package restored, downgrade
+  refused (1603) and allowed with `SSHD_PORT=2200` (`sshd` on 2200, rule and `sshd_config`
+  updated), `ACTIVE_SESSIONS=abort` refused with the session alive and `close` ending it,
+  uninstall: 182 checks per machine, all passed.
 
 Libraries:
 
@@ -85,7 +89,12 @@ CI and releases:
 - Verified here: `actionlint` 0 errors in the three workflows; the scripts parse; the unit-test
   runner on the local binaries (7 of 8 binaries pass without administrator rights, 686 tests;
   `unittest-win32compat` needs them); the SBOM of 10.5.1.0 against the CycloneDX 1.5 schema;
-  `winget validate`. **None of the workflows has run on GitHub yet.**
+  `winget validate`. First runs on GitHub, 2026-09-26 (pull request #1): the manager workflow
+  and, in `openssh.yml`, the x64, x86 and ARM64 builds, the x64 and x86 unit tests (767), the
+  x64 install tests on Windows Server 2022 and 2025 and the release files all passed; the two
+  ARM64 jobs found the LibreSSL defect above. The Pester job first ran with Pester 4.9.0: 113 of
+  160 tests passed, and the 46 failures were its file assertions, which Pester 4 reads as
+  collection checks; it installs 3.4.6 now.
 
 ## OpenSSH Server Manager 1.6.0 (not released yet)
 
@@ -219,9 +228,11 @@ session):
   added and removed lines, and the dark and light palettes; text still fits at 100% and 150%,
   and every new input has a name for screen readers.
 - `--screenshot` in light and dark: every tab, the dialogs and the wizard pages were looked at.
-- Not run in this session (they need administrator rights): `--selftest` elevated, `--keytest`,
-  `--authtest`, and the manual paths that restart the live service (keep or restore, the failed
-  start). Run them elevated before a release.
+- On GitHub's runners (2026-09-26, Windows Server 2022 and 2025, elevated): `--selftest` all 86
+  tests, `--keytest` every key type with and without a passphrase (ML-DSA skipped: not enabled
+  on the server), `--authtest` all nine login-method settings with real logins. Still manual:
+  the paths that restart the live service through the window (keep or restore after a restart,
+  the failed start).
 
 ## OpenSSH Server Manager 1.5.0 (2026-09-26)
 
