@@ -6,6 +6,8 @@ returns NULL, key generation never terminates). The same workaround as LibreSSL 
 pull/1355 (patches/win32_arm64_bn_arch.h.patch), applied unconditionally: pull/1359 detects the
 bug at configure time, which a cross-compiled build cannot do and then keeps the workaround too.
 LibreSSL issue: libressl/portable#1403. Drop this patch with a LibreSSL release that carries it.
+No line of the hunk is empty: git apply rejects an empty context line once a checkout with CRLF
+line endings turns it into a bare carriage return.
 
 diff --git a/crypto/bn/arch/aarch64/bn_arch.h b/crypto/bn/arch/aarch64/bn_arch.h
 --- a/crypto/bn/arch/aarch64/bn_arch.h
@@ -13,7 +15,8 @@ diff --git a/crypto/bn/arch/aarch64/bn_arch.h b/crypto/bn/arch/aarch64/bn_arch.h
 @@ -20,4 +20,19 @@
  #ifndef HEADER_BN_ARCH_H
  #define HEADER_BN_ARCH_H
-
+-
++
 +/* See libressl/portable pull/1355: the MSVC ARM64 optimizer miscompiles the generic helper. */
 +#if defined(_MSC_VER) && defined(_M_ARM64)
 +
