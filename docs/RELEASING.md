@@ -25,11 +25,12 @@ The install test on each of the three machines, in this order:
 | OpenSSH Server Manager | built from source with `build.ps1`; `--check`, `--selftest`, `--keytest`, `--authtest` must return 0 |
 | Upgrade | the rule is set to port 2222 and Private only, then a package of the same build with the third version field raised by one (`10.5.2.0` for `10.5.1.0`) is installed; the rule must keep both |
 | Repair | `msiexec /fa`; the rule still has port 2222 and Private |
+| Rollback | a copy of the release MSI with a custom action that fails after `StartServices` (`New-FailingMsi` in `OpenSSHCI.psm1`), installed with `ALLOWDOWNGRADE=1`: `msiexec` returns 1603, the previous package is registered again with its services and files, the rule has port 2222 and Private again (the rollback action of the saved firewall record), the record is gone |
 | Downgrade | the older package without `ALLOWDOWNGRADE` must fail with 1603 and change nothing; with `ALLOWDOWNGRADE=1 SSHD_PORT=2200`, `sshd` must answer on 2200, `sshd_config` must say `Port 2200` and the rule must have port 2200 and still Private |
 | Sessions | a key login stays open; `ACTIVE_SESSIONS=abort` must refuse the upgrade (1603) and keep the session; `ACTIVE_SESSIONS=close` must install it and end the session |
 | Uninstall | services, rule and program files removed, `%ProgramData%\ssh` kept |
 
-The upgrade, repair, downgrade and session checks test installer features that were written at the same
+The upgrade, repair, rollback, downgrade and session checks test installer features that were written at the same
 time as the workflow (firewall settings kept across upgrades, `SSHD_PORT`, `ACTIVE_SESSIONS`). The
 variables `FIREWALL_PRESERVATION_CHECK`, `SSHD_PORT_CHECK` and `ACTIVE_SESSIONS_CHECK` in the `install-test`
 job switch each group between `enforce`, `report` (warning only) and `skip`; the expected values are at

@@ -88,6 +88,84 @@ function Get-MsiInfo {
     [pscustomobject]$info
 }
 
+function New-FailingMsi {
+    <#
+      A copy of an MSI that fails late on purpose, to test the rollback: one deferred custom action
+      ("CITestFailAfterStart", cmd.exe /c exit 1) sequenced at 5950, after StartServices (5900) and
+      before InstallFinalize (6600), with a new package code. Files, services and the firewall rule are
+      installed and the old product is removed before it runs; Windows Installer then rolls everything
+      back. A broken sshd_config cannot be used instead: sshd reports SERVICE_RUNNING before it reads
+      its configuration (wmain_sshd.c), so StartServices succeeds and the process exits afterwards.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    $full = (Resolve-Path -LiteralPath $Destination).Path
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($full, 1))   # 1 = transact
+    try {
+        # Type 1058 = 1024 (deferred) + 34 (an executable named in Target, working directory from the Directory table).
+        $statements = @(
+            "INSERT INTO ``CustomAction`` (``Action``, ``Type``, ``Source``, ``Target``) VALUES ('CITestFailAfterStart', 1058, 'TARGETDIR', '""[SystemFolder]cmd.exe"" /c exit 1')",
+            "INSERT INTO ``InstallExecuteSequence`` (``Action``, ``Condition``, ``Sequence``) VALUES ('CITestFailAfterStart', 'NOT Installed', 5950)"
+        )
+        foreach ($sql in $statements) {
+            $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($sql))
+            $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+            $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($view)
+        }
+        # A package code of its own (summary property 9): the copy is another package, not the release package.
+        $summary = $db.GetType().InvokeMember('SummaryInformation', 'GetProperty', $null, $db, @(1))
+        [void]$summary.GetType().InvokeMember('Property', 'SetProperty', $null, $summary, @(9, ('{' + [guid]::NewGuid().ToString().ToUpperInvariant() + '}')))
+        [void]$summary.GetType().InvokeMember('Persist', 'InvokeMethod', $null, $summary, $null)
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($summary)
+        $db.GetType().InvokeMember('Commit', 'InvokeMethod', $null, $db, $null) | Out-Null
+    } finally {
+        # A database opened for writing stays open, and the file locked, until every handle is gone: views, summary
+        # information and the database itself. msiexec could not open the file otherwise (1619).
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($db)
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($installer)
+        [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+    }
+    $full
+}
+
+function Get-MsiTableRows {
+    <# The rows of one MSI table (read-only), as objects with the given columns. #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Table,
+        [Parameter(Mandatory = $true)][string[]]$Columns
+    )
+    $full = (Resolve-Path -LiteralPath $Path).Path
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($full, 0))
+    $rows = @()
+    $columnList = ($Columns | ForEach-Object { '`' + $_ + '`' }) -join ', '
+    try {
+        $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @("SELECT $columnList FROM ``$Table``"))
+        $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+        while ($true) {
+            $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+            if (-not $record) { break }
+            $row = [ordered]@{}
+            for ($i = 0; $i -lt $Columns.Count; $i++) { $row[$Columns[$i]] = $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, ($i + 1)) }
+            $rows += [pscustomobject]$row
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($record)
+        }
+        $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($view)
+    } finally {
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($db)
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($installer)
+        [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+    }
+    $rows
+}
+
 function Invoke-Msiexec {
     <#
       Runs msiexec silently with a verbose log and returns its exit code. -Arguments are the action and
@@ -383,7 +461,7 @@ function Start-TestSshSession {
     throw "The test SSH session did not start (exited: $($p.HasExited)). $detail"
 }
 
-Export-ModuleMember -Function Write-Annotation, Invoke-Native, Get-MsiInfo, Invoke-Msiexec, Get-InstalledOpenSSHProduct,
+Export-ModuleMember -Function Write-Annotation, Invoke-Native, Get-MsiInfo, New-FailingMsi, Get-MsiTableRows, Invoke-Msiexec, Get-InstalledOpenSSHProduct,
     Get-SshBanner, Get-SshdListenPort, Get-SshdFirewallRule, Get-DefaultFirewallProfileMask, Reset-Checks, Test-Check,
     Complete-Checks, Get-CheckMode, Test-OpenSSHInstallation, Test-MsiLog, Invoke-ManagerTest, New-AdminTestKey,
     Start-TestSshSession, Get-OpenSSHInstallDir

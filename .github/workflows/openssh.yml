@@ -522,6 +522,12 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: ./.github/scripts/Test-Installer.ps1 -Scenario Repair
 
+      # A copy of the release MSI with a custom action that fails after StartServices: the previous package must
+      # come back with its services, files and firewall settings (the rollback action of the firewall record).
+      - name: Failed installation rolls back, firewall settings included (ADJUST)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: ./.github/scripts/Test-Installer.ps1 -Scenario Rollback
+
       - name: Downgrade, ALLOWDOWNGRADE and SSHD_PORT (ADJUST)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: ./.github/scripts/Test-Installer.ps1 -Scenario Downgrade
@@ -583,17 +589,27 @@ jobs:
           New-Item -ItemType Directory -Force -Path 'C:\OpenSSHTests' | Out-Null
           Invoke-Msiexec -Arguments '/i', ('"' + (Join-Path $env:RUNNER_TEMP "msi/$env:MSI") + '"') -LogPath 'C:\OpenSSHTests\ci-msi-install.log' -AllowedExitCodes 0, 3010 | Out-Null
 
-      # The tests need Pester 3 or 4 (the helper imports Pester -MaximumVersion 4.9.9).
-      - name: Install Pester 4.9.0
+      # The tests were written for Pester 3 (the helper installs 3.4.6; 67 legacy "Should Contain" assertions test
+      # the content of a file). Pester 4 reads the same words as a collection check and fails every one of them, and
+      # the helper imports the highest version below 5, so no 4.x may be present. Windows PowerShell 5.1, as upstream.
+      - name: Install Pester 3.4.6
+        shell: powershell
         run: |
-          Install-PSResource -Name Pester -Version 4.9.0 -Scope AllUsers -TrustRepository -Reinstall
+          $ErrorActionPreference = 'Stop'
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          Install-Module -Name Pester -RequiredVersion 3.4.6 -Force -SkipPublisherCheck -AllowClobber -Scope AllUsers
+          Get-Module Pester -ListAvailable | Where-Object { $_.Version -ge '4.0' -and $_.Version -lt '5.0' } | ForEach-Object {
+            Write-Host "Removing Pester $($_.Version) from $($_.ModuleBase): the tests need 3.x"
+            Remove-Item -LiteralPath $_.ModuleBase -Recurse -Force
+          }
           Get-Module Pester -ListAvailable | Format-Table Name, Version, ModuleBase
 
       - name: Run the Pester E2E tests
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Continue'
           Import-Module ./src/contrib/win32/openssh/OpenSSHTestHelper.psm1 -Force
-          Set-OpenSSHTestEnvironment -OpenSSHBinPath (Resolve-Path 'src/bin/x64/Release').Path -Confirm:$false
+          Set-OpenSSHTestEnvironment -OpenSSHBinPath (Resolve-Path 'src/bin/x64/Release').Path -NoAppVerifier -Confirm:$false
           $result = Invoke-OpenSSHE2ETest | Where-Object { $_ -and $_.PSObject.Properties['FailedCount'] } | Select-Object -Last 1
           if (-not $result) { Write-Host '::error::Pester returned no result'; exit 1 }
           $line = "Pester E2E: $($result.PassedCount) passed, $($result.FailedCount) failed, $($result.SkippedCount) skipped, $($result.PendingCount) pending"
