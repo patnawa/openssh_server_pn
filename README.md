@@ -2,8 +2,10 @@
 
 **OpenSSH Server PN** is an OpenSSH server and client for Windows with its own installer and a
 management console. It builds on OpenSSH 10.5p1 and the Windows port of OpenSSH, and adds an
-installer that cleans up whatever was installed before, a GUI with a key-pair generator and
-security checks, and hardened defaults.
+installer that cleans up whatever was installed before, a GUI with a setup wizard, a key-pair
+generator and security checks, and a firewall rule that stays off public networks on Windows 10
+and 11. Windows password logins stay on after installation, as in the official package, until
+you have set up keys; the manager's setup wizard switches them off for administrators.
 
 | Folder | Contents |
 |---|---|
@@ -77,11 +79,16 @@ Test-NetConnection localhost -Port 22   # TcpTestSucceeded : True
 OpenSSH has no control panel; this project adds one. **OpenSSH Server Manager** is a single
 executable (`OpenSSHServerManager.exe`, .NET Framework 4.x, no installation):
 
+- **Setup wizard**: port and networks, your key, key-only login for administrators or everyone,
+  the recommended settings and who may log in, in five steps.
 - **Dashboard**: service state, version, listeners, sessions, firewall, host key fingerprints;
   start, stop, restart, test the configuration, add your public key, generate host keys.
 - **Sessions**: live connections with user, start time, duration and peer address; disconnect.
-- **Settings** and **sshd_config (text)**: form and full-text editing, each save checked with
-  `sshd -t`, backed up, and rolled back if the restart fails.
+- **Settings** and **sshd_config (text)**: form and full-text editing. Every save shows the
+  changes first, warns when your own account would be refused, is checked with `sshd -t`, never
+  writes over a file changed meanwhile, and keeps a backup (with a browser to compare and restore
+  them). After a restart the server is checked and you confirm the new settings; without an
+  answer within 60 seconds the previous ones come back.
 - **Authentication**: tick how accounts log in: Windows authentication (the Windows password),
   public key, Kerberos on domain members, or key and password together. Add rules for single
   users or groups, for example public key only for administrators. See which methods any account
@@ -92,11 +99,17 @@ executable (`OpenSSHServerManager.exe`, .NET Framework 4.x, no installation):
 - **Key generator**: creates Ed25519, ECDSA, RSA and post-quantum ML-DSA key pairs, verifies
   every key, authorizes it for your account on this server if you ask, and tests a login with it.
   The passphrase never appears on a command line.
+- **Client**: your `known_hosts` (add a server's keys after comparing fingerprints),
+  the hosts of `.ssh\config`, and the keys in `ssh-agent`.
 - **Firewall**: rule state, profiles and ports.
-- **Logs**: the OpenSSH event log with filters, and the file log.
+- **Logs**: the OpenSSH event log by period, with filters and export; failed logins by client
+  address, with a firewall block list; the file log.
 - **Hardening**: 27 checks, including a security audit of the permissions on the program folder,
   the configuration and host keys, the registry and the services, and whether SSH is reachable
-  on a public network. One click applies the recommended settings.
+  on a public network. Fix the selected warnings, or apply all recommended settings; export the
+  report.
+- Dark mode and high contrast, keyboard shortcuts, and an icon in the notification area that
+  reports when `sshd` stops or failed logins pile up.
 
 `--check`, `--unittest`, `--selftest`, `--keytest`, `--authtest` and `--screenshot` run the same code
 unattended. See [tools/OpenSSH-Server-Manager/README.md](tools/OpenSSH-Server-Manager/README.md).

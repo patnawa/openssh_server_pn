@@ -50,10 +50,13 @@ msiexec /i .\OpenSSH-Win64-v10.5.1.0.msi /qn /norestart /l*v "$env:TEMP\openssh-
 | `ALLOWDOWNGRADE=1` | unset | Replace an installed newer package with this one (section 3) |
 | `KEEP_INBOX_OPENSSH=1` | unset | Leave the in-box Windows *OpenSSH Server* capability installed; its `sshd` registration is still taken over (section 6) |
 | `FIREWALL_PROFILES=` | by edition | Networks the firewall rule applies to: `all`, `domain,private`, `domain` or `private`. Unset: all networks on Windows Server, Domain and Private on Windows 10 and 11 |
+| `SSHD_PORT=<n>` | unset | TCP port for `sshd`, 1 to 65535, digits only (builds after 10.5.1.0). The firewall rule gets this port, and `%ProgramData%\ssh\sshd_config` gets `Port <n>` after the services have started (the previous file is kept as `sshd_config.bak.<date>-<time>`); `sshd` is restarted. If `sshd` does not listen on the new port, the previous file is put back and the log has a `preinstall: warning:` line; the install still succeeds |
+| `ACTIVE_SESSIONS=abort` | `close` | What happens to open SSH sessions (builds after 10.5.1.0). `close` ends them, as before. `abort` stops the install before anything changes, with exit code 1603 and a `preinstall: error:` line that names the sessions, so a deployment tool can try again later |
 
-The installer accepts only these values for `FIREWALL_PROFILES` and `KEEP_INBOX_OPENSSH`, and no
-apostrophe in `INSTALLFOLDER`. Any other value stops the install with a message before anything
-changes, because these values reach a step that runs as LocalSystem.
+The installer accepts only these values for `FIREWALL_PROFILES`, `KEEP_INBOX_OPENSSH`, `SSHD_PORT`
+and `ACTIVE_SESSIONS`, and no apostrophe in `INSTALLFOLDER`. Any other value stops the install
+with a message before anything changes, because these values reach a step that runs as
+LocalSystem.
 
 Examples:
 
@@ -70,14 +73,20 @@ What the installer configures:
   `FixHostFilePermissions.ps1`, `FixUserFilePermissions.ps1`, `OpenSSHUtils.psm1`.
 - Services `sshd` ("OpenSSH SSH Server") and `ssh-agent` ("OpenSSH Authentication Agent"),
   start type **Automatic**, recovery policy: restart on first, second and subsequent failures,
-  counter reset after one day. Both services are started at the end of the install.
+  counter reset after one day. Both services are started at the end of the install. Error
+  control is Normal in builds after 10.5.1.0 (it was Critical, with which a failing `sshd` at
+  boot made Windows try the last known good configuration).
 - Inbound firewall rule **OpenSSH SSH Server Preview (sshd)**, TCP 22, program-scoped to
   `sshd.exe`. On Windows Server it applies to all networks, so domain-joined and workgroup
   servers are reachable. On Windows 10 and 11 it applies to Domain and Private networks only, so
   a laptop on public Wi-Fi does not expose SSH. `FIREWALL_PROFILES` overrides both, and the
-  Firewall tab of OpenSSH Server Manager changes it later. An upgrade recreates the rule with
-  these defaults, so pass `FIREWALL_PROFILES` again if you use a different setting. Official
-  Microsoft packages enable the rule for Private only.
+  Firewall tab of OpenSSH Server Manager changes it later. Official Microsoft packages enable the
+  rule for Private only.
+  Since the builds after 10.5.1.0, an upgrade, downgrade or repair keeps the rule's ports,
+  networks, enabled state and allowed remote addresses; `FIREWALL_PROFILES` and `SSHD_PORT` given
+  on the command line take precedence. 10.5.1.0 and earlier recreated the rule with the defaults
+  above, so after an upgrade *to* 10.5.1.0 pass `FIREWALL_PROFILES` again, and move the port back
+  on the Firewall tab if you changed it.
 - The product appears as **OpenSSH Server PN** in *Apps & features*, with links to this project.
 - Registry keys `HKLM\SOFTWARE\OpenSSH` (with `agent` subkey) and the process-mitigation
   entries for `sshd.exe` and `ssh-agent.exe` under `Image File Execution Options`.
@@ -105,9 +114,13 @@ installed and clears it before it copies a single file:
 5. Files, services, firewall rule and registry entries are re-created and the services started.
 
 All of this runs inside one Windows Installer transaction: if the install fails, the previous
-package is restored. The cleanup in steps 2 to 4 is best effort and never fails an install. If
-it cannot run at all, Windows Installer falls back to its usual handling of files in use and
-may ask for a restart. `%ProgramData%\ssh`, with its configuration, host keys and logs, is never
+package is restored, and in builds after 10.5.1.0 also its firewall settings. The pre-install
+steps are not undone: sessions it ended stay ended, and a removed in-box *OpenSSH Server*
+capability stays removed (`Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0`
+brings it back). Pass `ACTIVE_SESSIONS=abort` to stop an install instead of ending sessions.
+The cleanup in steps 2 to 4 is best effort and never fails an install. If it cannot run at
+all, Windows Installer falls back to its usual handling of files in use and may ask for a
+restart. `%ProgramData%\ssh`, with its configuration, host keys and logs, is never
 touched. Back it up anyway:
 
 ```powershell
