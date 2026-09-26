@@ -474,6 +474,19 @@ namespace OpenSSHServerManager
         /// <summary>sshd -T for one account with Match blocks applied: lower-case keyword => value. Null, with a message, on failure.</summary>
         public static Dictionary<string, string> EffectiveSettingsFor(string user, string configPath, int port, out string error)
         {
+            var lines = EffectiveLinesFor(user, configPath, port, out error);
+            if (lines == null) return null;
+            var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in lines) d[kv.Key] = d.ContainsKey(kv.Key) ? d[kv.Key] + " " + kv.Value : kv.Value;
+            return d;
+        }
+
+        /// <summary>
+        /// The lines of sshd -T for one account, in order, as (lower-case keyword, value): a keyword such as allowgroups comes
+        /// once per entry, so a group name with spaces stays one entry. Null, with a message, on failure.
+        /// </summary>
+        public static List<KeyValuePair<string, string>> EffectiveLinesFor(string user, string configPath, int port, out string error)
+        {
             var spec = "user=" + user + ",host=localhost,addr=127.0.0.1,laddr=127.0.0.1,lport=" + port;
             // Run by an administrator, sshd sees the groups of the administrator's own account only; for another account a
             // "Match Group" never applies. Run as SYSTEM, like the service, it gives the running server's answer.
@@ -482,15 +495,91 @@ namespace OpenSSHServerManager
                              : Proc.Run(Ssh.Exe("sshd.exe"), "-T" + (configPath != null ? " -f " + Proc.Quote(configPath) : "") + " -C " + Proc.Quote(spec), 20000);
             if (!r.Ok) { error = "sshd -T failed" + (r.TimedOut ? " (timed out)" : " (exit " + r.ExitCode + ")") + ": " + r.Output; return null; }
             error = null;
-            var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var l = new List<KeyValuePair<string, string>>();
             foreach (var line in r.StdOut.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
             {
                 var i = line.IndexOf(' ');
                 if (i <= 0) continue;
-                var k = line.Substring(0, i).ToLowerInvariant(); var v = line.Substring(i + 1).Trim();
-                d[k] = d.ContainsKey(k) ? d[k] + " " + v : v;
+                l.Add(new KeyValuePair<string, string>(line.Substring(0, i).ToLowerInvariant(), line.Substring(i + 1).Trim()));
             }
-            return d;
+            return l;
+        }
+
+        /// <summary>
+        /// Why sshd would refuse the account that runs this program with a candidate configuration (DenyUsers, AllowUsers,
+        /// DenyGroups, AllowGroups as sshd -T works them out for it), or null. A warning, not a verdict: the address a
+        /// client connects from (user@host patterns) is not known here.
+        /// </summary>
+        public static string AccessWarning(string configPath, int port)
+        {
+            string err;
+            var me = Accounts.Canonical(KeyGen.LoginName(), false, out err) ?? Accounts.AsciiLower(KeyGen.LoginName());
+            var lines = EffectiveLinesFor(me, configPath, port, out err);
+            if (lines == null) return null; // sshd -t and the other checks report a configuration sshd cannot read
+            Func<string, List<string>> values = k => lines.Where(x => x.Key == k).Select(x => x.Value).ToList();
+            return AccessRefusal(me, values("denyusers"), values("allowusers"), values("denygroups"), values("allowgroups"), CurrentAccountInGroup);
+        }
+
+        /// <summary>
+        /// The decision of allowed_user in sshd's auth.c for one account: DenyUsers, then AllowUsers, then DenyGroups, then
+        /// AllowGroups. User patterns are compared with the name as sshd has it (Accounts.Canonical), case-sensitively like
+        /// match_pattern; the part after @ (the client's host or address) is not known here and counts as matching.
+        /// inGroup answers whether the account is in a group or in a group that matches a pattern with * or ?.
+        /// </summary>
+        internal static string AccessRefusal(string user, List<string> denyUsers, List<string> allowUsers, List<string> denyGroups, List<string> allowGroups, Func<string, bool> inGroup)
+        {
+            Func<string, string> userPart = p => { int at = p.LastIndexOf('@'); return at >= 0 ? p.Substring(0, at) : p; };
+            foreach (var p in denyUsers)
+                if (Glob(user, userPart(p)))
+                    return user + " (you) is listed in DenyUsers (" + p + ")" + (p.IndexOf('@') >= 0 ? " for connections from " + p.Substring(p.LastIndexOf('@') + 1) : "") + ", so sshd refuses the login.";
+            if (allowUsers.Count > 0 && !allowUsers.Any(p => Glob(user, userPart(p))))
+                return "AllowUsers lists only " + string.Join(" ", allowUsers) + "; " + user + " (you) is not among them, so sshd refuses the login.";
+            foreach (var g in denyGroups)
+                if (inGroup(g)) return user + " (you) is a member of " + g + ", which DenyGroups lists, so sshd refuses the login.";
+            if (allowGroups.Count > 0 && !allowGroups.Any(inGroup))
+                return "AllowGroups lists only " + string.Join(", ", allowGroups) + "; " + user + " (you) is in none of these groups, so sshd refuses the login.";
+            return null;
+        }
+
+        /// <summary>match_pattern of OpenSSH (match.c): * any run of characters, ? one character, everything else exactly.</summary>
+        internal static bool Glob(string s, string pattern)
+        {
+            s = s ?? ""; pattern = pattern ?? "";
+            int si = 0, pi = 0, star = -1, mark = 0;
+            while (si < s.Length)
+            {
+                if (pi < pattern.Length && (pattern[pi] == '?' || pattern[pi] == s[si])) { si++; pi++; }
+                else if (pi < pattern.Length && pattern[pi] == '*') { star = pi++; mark = si; }
+                else if (star >= 0) { pi = star + 1; si = ++mark; }
+                else return false;
+            }
+            while (pi < pattern.Length && pattern[pi] == '*') pi++;
+            return pi == pattern.Length;
+        }
+
+        /// <summary>
+        /// Whether the account running this program is in a group, the way sshd checks it (win32_groupaccess.c): a name without
+        /// wildcards through its SID (CheckTokenMembership), a pattern against the account's local, built-in and domain group
+        /// names, lower-cased, "name" for local and built-in groups and "domain\name" for domain groups.
+        /// </summary>
+        public static bool CurrentAccountInGroup(string pattern)
+        {
+            var id = WindowsIdentity.GetCurrent();
+            var groups = (id.Groups ?? new IdentityReferenceCollection()).OfType<SecurityIdentifier>().ToList();
+            if (pattern.IndexOfAny(new[] { '*', '?' }) < 0)
+            {
+                var sid = Acl.SidOfAccount(pattern);
+                return sid != null && groups.Contains(sid);
+            }
+            foreach (var sid in groups.Where(s => s.Value.StartsWith("S-1-5-32-") || s.Value.StartsWith("S-1-5-21-")))
+            {
+                string name;
+                try { name = sid.Translate(typeof(NTAccount)).Value; } catch { continue; }
+                int i = name.IndexOf('\\');
+                if (i > 0 && (sid.Value.StartsWith("S-1-5-32-") || string.Equals(name.Substring(0, i), Environment.MachineName, StringComparison.OrdinalIgnoreCase))) name = name.Substring(i + 1);
+                if (Glob(name.ToLowerInvariant(), pattern)) return true;
+            }
+            return false;
         }
 
         /// <summary>True when a configuration has a Match block with a Group condition, or includes files that may have one.</summary>

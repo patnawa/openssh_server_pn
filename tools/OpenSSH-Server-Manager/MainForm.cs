@@ -54,9 +54,9 @@ namespace OpenSSHServerManager
     // ------------------------------------------------------------------------------------------
     // Main window
     // ------------------------------------------------------------------------------------------
-    internal sealed class MainForm : Form
+    internal sealed class MainForm : ThemedForm
     {
-        private readonly TabControl _tabs = new TabControl();
+        private readonly ThemedTabControl _tabs = new ThemedTabControl();
         private readonly StatusStrip _status = new StatusStrip();
         private readonly ToolStripStatusLabel _statusText = new ToolStripStatusLabel("Ready");
         private readonly ToolStripProgressBar _busy = new ToolStripProgressBar { Style = ProgressBarStyle.Marquee, Visible = false, Width = Ui.Px(90) };
@@ -78,7 +78,7 @@ namespace OpenSSHServerManager
         private string _pwshShown, _shellShown, _shellOptionShown, _rawShown = "";
         private bool _loadingSettings;
         private TabPage _pgSettings, _pgAuth, _pgRaw;
-        private Label _setPending, _rawPending;
+        private Label _setPending, _rawPending, _setIncludeNote;
         private CheckBox _chkPwshSubsystem; private TextBox _txtPwshPath;
         private ComboBox _cmbShell; private TextBox _txtShellOption;
         private TextBox _rawEditor;
@@ -102,7 +102,10 @@ namespace OpenSSHServerManager
         private List<AuthRule> _auRules = new List<AuthRule>(); // being edited
         private bool _auLoading;
 
-        private static readonly Color Green = Color.FromArgb(0, 128, 0), Red = Color.FromArgb(192, 0, 0), Orange = Color.FromArgb(200, 110, 0);
+        // State colours of the current palette (Theme): light, dark or high contrast.
+        private static Color Green { get { return Theme.Good; } }
+        private static Color Red { get { return Theme.Bad; } }
+        private static Color Orange { get { return Theme.Warn; } }
 
         public MainForm()
         {
@@ -116,33 +119,38 @@ namespace OpenSSHServerManager
             else { try { Icon = Icon.ExtractAssociatedIcon(Ssh.Exe("sshd.exe")); } catch { } }
 
             _tabs.Dock = DockStyle.Fill;
-            _tabs.TabPages.Add(BuildDashboard());
-            _tabs.TabPages.Add(BuildSessions());
+            _tabs.TabPages.Add(_pgDashboard = BuildDashboard());
+            _tabs.TabPages.Add(_pgSessions = BuildSessions());
             _tabs.TabPages.Add(_pgSettings = BuildSettings());
             _tabs.TabPages.Add(_pgAuth = BuildAuthentication());
             _tabs.TabPages.Add(_pgRaw = BuildRawEditor());
-            _tabs.TabPages.Add(BuildKeys());
-            _tabs.TabPages.Add(BuildKeyGen());
-            _tabs.TabPages.Add(BuildFirewall());
-            _tabs.TabPages.Add(BuildLogs());
-            _tabs.TabPages.Add(BuildHardening());
-            _tabs.TabPages.Add(BuildAbout());
+            _tabs.TabPages.Add(_pgKeys = BuildKeys());
+            _tabs.TabPages.Add(_pgKeyGen = BuildKeyGen());
+            _tabs.TabPages.Add(_pgClient = BuildClient());
+            _tabs.TabPages.Add(_pgFirewall = BuildFirewall());
+            _tabs.TabPages.Add(_pgLogs = BuildLogs());
+            _tabs.TabPages.Add(_pgHardening = BuildHardening());
+            _tabs.TabPages.Add(_pgAbout = BuildAbout());
             _tabs.SelectedIndexChanged += (s, e) => Safe(() => OnTabSelected());
+            _tabs.AccessibleName = "Sections";
 
-            _status.Items.Add(_statusText); _status.Items.Add(_busy);
+            _cancelButton.Click += (s, e) => { var c = _cancel; if (c != null) { c.Cancel(); Status("Cancelling..."); } };
+            _status.Items.Add(_statusText); _status.Items.Add(_busy); _status.Items.Add(_cancelButton);
             Controls.Add(_tabs); Controls.Add(_status);
+            KeyPreview = true;
 
             _timer.Tick += (s, e) =>
             {
-                if (_tabs.SelectedTab == null) return;
                 // In the background: service, network, firewall and process queries can take seconds, and the
-                // window must stay responsive meanwhile.
-                if (_tabs.SelectedTab.Text == "Dashboard") RefreshInBackground(CollectDashboard, ShowDashboard);
-                else if (_tabs.SelectedTab.Text == "Sessions") RefreshInBackground(CollectSessions, ShowSessions);
+                // window must stay responsive meanwhile. The notification area icon needs the service state even
+                // while another tab (or no window) is shown.
+                if (_tabs.SelectedTab == _pgSessions) RefreshInBackground(CollectSessions, ShowSessions);
+                else if (_tabs.SelectedTab == _pgDashboard || _tray != null) RefreshInBackground(CollectDashboard, ShowDashboard);
             };
-            Shown += (s, e) => { Safe(LoadEverything); _timer.Start(); };
+            Shown += (s, e) => { Safe(LoadEverything); _timer.Start(); Safe(OfferWizard, false); };
             FormClosing += (s, e) =>
             {
+                if (_busyDepth > 0 && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Status("Wait until the running operation has finished"); return; }
                 if (!Program.Unattended && e.CloseReason == CloseReason.UserClosing)
                 {
                     var unsaved = UnsavedTabs();
@@ -150,7 +158,65 @@ namespace OpenSSHServerManager
                             MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) { e.Cancel = true; return; }
                 }
                 _timer.Stop();
+                StopWatchers();
             };
+            InitTray();
+            // "Like Windows" follows a change of the Windows colours (dark mode, high contrast) while the window is open.
+            SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
+            FormClosed += (s, e) => SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+        }
+
+        private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+        {
+            if (Program.Unattended) return;
+            var want = Theme.For(Prefs.Theme);
+            if (want.Dark == Theme.Current.Dark && want.HighContrast == Theme.Current.HighContrast) return;
+            try { BeginInvoke((Action)(() => Safe(ApplyTheme, false))); } catch (InvalidOperationException) { }
+        }
+
+        private TabPage _pgDashboard, _pgSessions, _pgKeys, _pgKeyGen, _pgClient, _pgFirewall, _pgLogs, _pgHardening, _pgAbout;
+
+        /// <summary>Keyboard shortcuts: Ctrl+S saves the tab shown, F5 refreshes it, Ctrl+F finds in the sshd_config text, Ctrl+1 to Ctrl+9 open tabs.</summary>
+        protected override bool ProcessCmdKey(ref Message msg, System.Windows.Forms.Keys keyData)
+        {
+            if (_busyDepth == 0)
+            {
+                var tab = _tabs.SelectedTab;
+                switch (keyData)
+                {
+                    case System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.S:
+                        if (tab == _pgSettings) Safe(() => SaveSettings(false));
+                        else if (tab == _pgRaw) Safe(() => SaveRaw());
+                        else if (tab == _pgAuth) Safe(ApplyAuth);
+                        else if (tab == _pgFirewall) Safe(ApplyFirewall);
+                        else return base.ProcessCmdKey(ref msg, keyData);
+                        return true;
+                    case System.Windows.Forms.Keys.F5:
+                        if (tab == _pgDashboard) Safe(RefreshDashboard);
+                        else if (tab == _pgSessions) Safe(RefreshSessions);
+                        else if (tab == _pgLogs) Safe(LoadLogs);
+                        else if (tab == _pgHardening) Safe(RunChecks);
+                        else if (tab == _pgKeys) Safe(LoadKeys);
+                        else if (tab == _pgFirewall) Safe(LoadFirewall);
+                        else if (tab == _pgClient) Safe(LoadClient);
+                        else return base.ProcessCmdKey(ref msg, keyData);
+                        return true;
+                    case System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.F:
+                        if (tab == _pgRaw) { ShowFind(); return true; }
+                        break;
+                    case System.Windows.Forms.Keys.F3:
+                    case System.Windows.Forms.Keys.Shift | System.Windows.Forms.Keys.F3:
+                        if (tab == _pgRaw) { FindNext((keyData & System.Windows.Forms.Keys.Shift) == 0); return true; }
+                        break;
+                }
+                var digit = keyData & ~System.Windows.Forms.Keys.Control;
+                if ((keyData & System.Windows.Forms.Keys.Control) != 0 && (keyData & (System.Windows.Forms.Keys.Alt | System.Windows.Forms.Keys.Shift)) == 0 && digit >= System.Windows.Forms.Keys.D1 && digit <= System.Windows.Forms.Keys.D9)
+                {
+                    int i = digit - System.Windows.Forms.Keys.D1;
+                    if (i < _tabs.TabCount) { _tabs.SelectedIndex = i; _tabs.Focus(); return true; }
+                }
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
 
         // ---------------- test hooks (used by --screenshot) ----------------
@@ -215,6 +281,16 @@ namespace OpenSSHServerManager
         public string WorkingValueForTest(string key) { return _cfg.Get(key); }
         /// <summary>sshd_config as Apply on the Authentication tab would write it.</summary>
         public SshdConfig AuthCandidateForTest() { return AuthCandidate(); }
+        /// <summary>Switches the colours as the Appearance preference does, and reports those of a list, a button, a text box and the window.</summary>
+        public Color[] ThemeForTest(string pref, out bool ownerDrawnList, out FlatStyle buttonStyle)
+        {
+            Prefs.Theme = pref; ApplyTheme();
+            var all = _tabs.TabPages.Cast<TabPage>().SelectMany(p => Descendants(p)).ToList();
+            var lv = all.OfType<ListView>().First(); var b = all.OfType<Button>().First(); var tb = all.OfType<TextBox>().First(t => !t.ReadOnly && !t.Multiline);
+            ownerDrawnList = lv.OwnerDraw; buttonStyle = b.FlatStyle;
+            return new[] { lv.BackColor, tb.BackColor, BackColor, _tabs.TabPages[0].BackColor };
+        }
+        public List<string> TabNamesForTest() { return _tabs.TabPages.Cast<TabPage>().Select(p => p.Text).ToList(); }
 
         /// <summary>
         /// Text that does not fit, on every tab: a button narrower than its text, a control wider than its table column
@@ -260,6 +336,7 @@ namespace OpenSSHServerManager
         private void Safe(Action a, bool show = true)
         {
             try { a(); }
+            catch (OperationCanceledException) { Status("Cancelled: nothing was changed"); }
             catch (ConfigException ex)
             {
                 Log.Info("Configuration rejected: " + ex.Message);
@@ -269,14 +346,72 @@ namespace OpenSSHServerManager
             catch (Exception ex) { Log.Error("Operation failed", ex, show); Status("Error: " + ex.Message); }
         }
 
+        private int _busyDepth; private bool _timerWasRunning;
+        private CancellationTokenSource _cancel;
+        private readonly ToolStripButton _cancelButton = new ToolStripButton("Cancel") { Visible = false, AccessibleName = "Cancel the running operation" };
+
+        /// <summary>
+        /// Marks the window busy while an operation runs: the tabs take no input, the progress bar moves and the window
+        /// can still be moved, repainted and closed-guarded. The refresh timer pauses so that no second operation starts.
+        /// </summary>
+        private void BeginBusy(string text)
+        {
+            if (_busyDepth++ == 0)
+            {
+                _timerWasRunning = _timer.Enabled; _timer.Stop();
+                _busy.Visible = true; UseWaitCursor = true; _tabs.Enabled = false;
+            }
+            Status(text);
+        }
+
+        private void EndBusy()
+        {
+            if (--_busyDepth > 0) return;
+            _tabs.Enabled = true; UseWaitCursor = false; _busy.Visible = false; _cancelButton.Visible = false;
+            if (_timerWasRunning && !IsDisposed) _timer.Start();
+        }
+
+        /// <summary>Runs work on the window's thread with the window marked busy (work that shows dialogs or fills controls).</summary>
         private void Busy(string text, Action work)
         {
-            // The refresh timer must not run a second operation (e.g. a dashboard refresh while a dialog inside
-            // 'work' pumps messages) until this one has finished.
-            bool timerWasRunning = _timer.Enabled; _timer.Stop();
-            _busy.Visible = true; Status(text); UseWaitCursor = true; Enabled = false;
+            BeginBusy(text);
             try { Application.DoEvents(); work(); }
-            finally { Enabled = true; UseWaitCursor = false; _busy.Visible = false; if (timerWasRunning && !IsDisposed) _timer.Start(); }
+            finally { EndBusy(); }
+        }
+
+        /// <summary>
+        /// Runs work that does not touch the window (services, sshd, ssh-keygen, event log, firewall) on a background thread
+        /// and waits for it while the window keeps handling messages, so it never shows "Not Responding". Returns work's
+        /// result, or throws its exception. Called from a background thread, it simply runs work.
+        /// </summary>
+        private T Bg<T>(string text, Func<T> work)
+        {
+            if (!IsHandleCreated || InvokeRequired) return work();
+            T result = default(T); Exception error = null;
+            var t = new Thread(() => { try { result = work(); } catch (Exception ex) { error = ex; } }) { IsBackground = true, Name = "operation" };
+            t.SetApartmentState(ApartmentState.STA); // COM objects of the firewall and network list APIs
+            BeginBusy(text);
+            try
+            {
+                t.Start();
+                while (!t.Join(15)) Application.DoEvents();
+            }
+            finally { EndBusy(); }
+            if (error != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+            return result;
+        }
+
+        private void Bg(string text, Action work) { Bg<object>(text, () => { work(); return null; }); }
+
+        /// <summary>Bg with a Cancel button in the status bar; work receives the token and stops when it is cancelled.</summary>
+        private T BgCancellable<T>(string text, Func<CancellationToken, T> work)
+        {
+            using (var cts = new CancellationTokenSource())
+            {
+                _cancel = cts; _cancelButton.Visible = true;
+                try { return Bg(text, () => work(cts.Token)); }
+                finally { _cancel = null; _cancelButton.Visible = false; }
+            }
         }
 
         private void Status(string s) { _statusText.Text = DateTime.Now.ToString("HH:mm:ss") + "  " + s; }
@@ -296,6 +431,7 @@ namespace OpenSSHServerManager
         {
             var lv = new ListView { View = View.Details, FullRowSelect = true, GridLines = true, Dock = DockStyle.Fill, HideSelection = false, MultiSelect = false };
             foreach (var c in cols) { var parts = c.Split('|'); lv.Columns.Add(parts[0], Ui.Px(parts.Length > 1 ? int.Parse(parts[1]) : 150)); }
+            lv.ColumnClick += (s, e) => ListSorter.Toggle((ListView)s, e.Column);
             return lv;
         }
 
@@ -316,15 +452,14 @@ namespace OpenSSHServerManager
 
         private void OnTabSelected()
         {
+            // By page, not by caption: captions change ("Settings *") and could be translated.
             var tab = _tabs.SelectedTab;
             if (tab == null) return;
-            switch (tab.Text)
-            {
-                case "Dashboard": RefreshDashboard(); break;
-                case "Sessions": RefreshSessions(); break;
-                case "Logs": if (_lvEvents.Items.Count == 0) LoadLogs(); break;
-                case "Hardening": if (_lvChecks.Items.Count == 0) RunChecks(); break;
-            }
+            if (tab == _pgDashboard) RefreshDashboard();
+            else if (tab == _pgSessions) RefreshSessions();
+            else if (tab == _pgLogs) { if (_lvEvents.Items.Count == 0) LoadLogs(); }
+            else if (tab == _pgHardening) { if (_lvChecks.Items.Count == 0) RunChecks(); }
+            else if (tab == _pgClient) { if (!_clientLoaded) LoadClient(); }
         }
 
         // ---------------- Dashboard ----------------
@@ -358,6 +493,7 @@ namespace OpenSSHServerManager
             actions.Controls.Add(Btn("Add my public key", (s, e) => Safe(QuickAddMyKey), 150));
             actions.Controls.Add(Btn("Generate missing host keys", (s, e) => Safe(GenerateHostKeys), 200));
             actions.Controls.Add(Btn("Connect (ssh localhost)", (s, e) => Proc.OpenExternal(Ssh.Exe("ssh.exe"), "-p " + (_cfg == null ? 22 : _cfg.EffectivePort) + " localhost"), 170));
+            actions.Controls.Add(Btn("Setup wizard...", (s, e) => Safe(RunWizard), 130));
             _tips.SetToolTip(_btnRestart, "Stops and starts sshd, which then reads sshd_config again. Connected sessions stay connected: each runs in its own sshd-session.exe process.");
             _tips.SetToolTip(actions.Controls[3], "Runs sshd -t against the live sshd_config and reports syntax errors.");
             root.Controls.Add(actions, 0, 1);
@@ -390,7 +526,8 @@ namespace OpenSSHServerManager
         private void RefreshDashboard()
         {
             if (_cfg == null) _cfg = SshdConfig.Load();
-            ShowDashboard(CollectDashboard(_cfg));
+            var cfg = _cfg;
+            ShowDashboard(Bg("Refreshing the dashboard...", () => CollectDashboard(cfg)));
         }
 
         private void ShowDashboard(DashboardData d)
@@ -409,6 +546,7 @@ namespace OpenSSHServerManager
                             : d.RestartPending ? "   saved after sshd started: restart sshd to apply the changes" : "");
             _lblConfig.ForeColor = d.RestartPending ? Orange : ForeColor;
             _btnStart.Enabled = sshd.Exists && sshd.Status != "Running"; _btnStop.Enabled = sshd.Status == "Running"; _btnRestart.Enabled = sshd.Status == "Running";
+            TrayState(sshd, d.Sessions.Count);
             // Rebuilt only when the keys changed, so a selected row stays selected.
             var rows = d.HostKeys.Select(k => new[] { k.File, k.Type, k.Bits ?? "", k.Fingerprint ?? "" }).ToList();
             var shown = _lvHostKeys.Items.Cast<ListViewItem>().Select(i => i.SubItems.Cast<ListViewItem.ListViewSubItem>().Select(s => s.Text).ToArray()).ToList();
@@ -443,7 +581,7 @@ namespace OpenSSHServerManager
                     {
                         _refreshRunning = false;
                         if (error != null) { Log.Error("Refresh", error, false); return; }
-                        if (Enabled) Safe(() => show(data), false); // not while an operation (Busy) runs
+                        if (_busyDepth == 0) Safe(() => show(data), false); // not while an operation (Busy) runs
                     }));
                 }
                 catch (InvalidOperationException) { } // the window was closed meanwhile
@@ -458,7 +596,9 @@ namespace OpenSSHServerManager
             Safe(() =>
             {
                 if (action == "stop" && MessageBox.Show(this, "Stop the SSH server? New connections are refused until it starts again.\n\nConnected sessions stay connected; end them on the Sessions tab if needed.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-                Busy((action == "stop" ? "Stopping" : action == "start" ? "Starting" : "Restarting") + " sshd...", () =>
+                if (action == "restart" && !Program.Unattended && MessageBox.Show(this, "Restart the SSH server? sshd reads sshd_config again; new connections are refused for a moment.\n\nConnected sessions stay connected: each runs in its own sshd-session.exe process.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+                _expectedStateChange = DateTime.UtcNow;
+                Bg((action == "stop" ? "Stopping" : action == "start" ? "Starting" : "Restarting") + " sshd...", () =>
                 {
                     switch (action)
                     {
@@ -467,21 +607,23 @@ namespace OpenSSHServerManager
                         case "restart": Services.Restart("sshd"); break;
                     }
                     Thread.Sleep(800);
-                    RefreshDashboard();
                 });
+                _expectedStateChange = DateTime.UtcNow;
+                RefreshDashboard();
                 Status("sshd " + action + " completed");
             });
         }
 
         private void TestLiveConfig()
         {
-            var r = Ssh.TestConfig(null);
+            var r = Bg("Running sshd -t...", () => Ssh.TestConfig(null));
             MessageBox.Show(this, r.Ok ? "sshd -t reports no problems with\n" + Ssh.ConfigPath : "sshd -t reported:\n\n" + r.Output, Program.AppName, MessageBoxButtons.OK, r.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
 
         private void GenerateHostKeys()
         {
-            Busy("Generating host keys...", () => { var o = HostKeys.GenerateMissing(); RefreshDashboard(); Status("ssh-keygen -A: " + (o.Length == 0 ? "done" : o)); });
+            var o = Bg("Generating host keys...", () => HostKeys.GenerateMissing());
+            RefreshDashboard(); Status("ssh-keygen -A: " + (o.Length == 0 ? "done" : o));
         }
 
         private void QuickAddMyKey()
@@ -513,13 +655,15 @@ namespace OpenSSHServerManager
             bar.Controls.Add(Btn("Refresh", (s, e) => Safe(RefreshSessions), 100));
             bar.Controls.Add(Btn("Disconnect selected", (s, e) => Safe(() => DisconnectSessions(false)), 160));
             bar.Controls.Add(Btn("Disconnect all", (s, e) => Safe(() => DisconnectSessions(true)), 130));
-            bar.Controls.Add(new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), ForeColor = Color.DimGray, Text = "Each connection runs as an sshd-session.exe process: one owned by SYSTEM before login, then one owned by the user. Refreshes every 5 seconds." });
+            bar.Controls.Add(new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), ForeColor = Theme.Muted, Text = "Each connection runs as an sshd-session.exe process: one owned by SYSTEM before login, then one owned by the user. Refreshes every 5 seconds." });
             root.Controls.Add(bar, 0, 1);
             var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
             bool splitInit = false;
             split.SizeChanged += (s, e) => { if (splitInit || split.Height < Ui.Px(300)) return; splitInit = true; try { split.SplitterDistance = split.Height * 62 / 100; } catch { } };
             var sessBox = new GroupBox { Text = "Session processes (sshd-session.exe)", Dock = DockStyle.Fill, Padding = new Padding(6) };
             _lvSessions = Lv("PID|80", "User|260", "Started|160", "Duration|100", "Role|200"); _lvSessions.AccessibleName = "Session processes";
+            _lvSessions.MultiSelect = true; // "Disconnect selected" ends every selected session
+            _lvSessions.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Safe(() => DisconnectSessions(false)); } };
             sessBox.Controls.Add(_lvSessions); split.Panel1.Controls.Add(sessBox);
             var connBox = new GroupBox { Text = "Established TCP connections on the server port (peer address, owning process)", Dock = DockStyle.Fill, Padding = new Padding(6) };
             _lvConnections = Lv("Peer|260", "Owning process|260"); _lvConnections.AccessibleName = "Established connections";
@@ -542,13 +686,14 @@ namespace OpenSSHServerManager
         private void RefreshSessions()
         {
             if (_cfg == null) _cfg = SshdConfig.Load();
-            ShowSessions(CollectSessions(_cfg));
+            var cfg = _cfg;
+            ShowSessions(Bg("Reading sessions...", () => CollectSessions(cfg)));
         }
 
         private void ShowSessions(SessionsData data)
         {
             var list = data.List;
-            var selected = _lvSessions.SelectedItems.Count > 0 ? (int)_lvSessions.SelectedItems[0].Tag : -1;
+            var selected = new HashSet<int>(_lvSessions.SelectedItems.Cast<ListViewItem>().Select(i => (int)i.Tag));
             _lvSessions.BeginUpdate(); _lvSessions.Items.Clear();
             foreach (var s in list)
             {
@@ -557,8 +702,8 @@ namespace OpenSSHServerManager
                 if (ts < TimeSpan.Zero) ts = TimeSpan.Zero;
                 var dur = s.Start == DateTime.MinValue ? "" : ((int)ts.TotalHours).ToString("00") + ":" + ts.Minutes.ToString("00") + ":" + ts.Seconds.ToString("00");
                 var it = new ListViewItem(new[] { s.Pid == 0 ? "" : s.Pid.ToString(), s.User, s.Start == DateTime.MinValue ? "" : s.Start.ToString("yyyy-MM-dd HH:mm:ss"), dur, s.Pid == 0 ? "" : (system ? "privileged monitor (pre-login or supervisor)" : "user session") }) { Tag = s.Pid };
-                if (system) it.ForeColor = Color.Gray;
-                if (s.Pid == selected) it.Selected = true;
+                if (system) it.ForeColor = Theme.Faint;
+                if (selected.Contains(s.Pid)) it.Selected = true;
                 _lvSessions.Items.Add(it);
             }
             _lvSessions.EndUpdate();
@@ -633,8 +778,10 @@ namespace OpenSSHServerManager
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Ui.Px(210))); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Ui.Px(420))); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
             grid.Controls.Add(Lbl("Server settings (empty = sshd default; the grey text shows the effective value)", true)); grid.SetColumnSpan(grid.Controls[grid.Controls.Count - 1], 3);
-            var authHint = new Label { AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(4, 0, 4, 6), Text = "Login methods (Windows authentication, public key, Kerberos; rules per user and group) are set on the Authentication tab." };
+            var authHint = new Label { AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(4, 0, 4, 6), Text = "Login methods (Windows authentication, public key, Kerberos; rules per user and group) are set on the Authentication tab." };
             grid.Controls.Add(authHint); grid.SetColumnSpan(authHint, 3);
+            _setIncludeNote = new Label { AutoSize = true, ForeColor = Orange, MaximumSize = new Size(Ui.Px(960), 0), Margin = new Padding(4, 0, 4, 6), Visible = false };
+            grid.Controls.Add(_setIncludeNote); grid.SetColumnSpan(_setIncludeNote, 3);
             foreach (var f in FieldDefs)
             {
                 var lbl = Lbl(f.Label); grid.Controls.Add(lbl);
@@ -642,7 +789,7 @@ namespace OpenSSHServerManager
                 if (f.Choices != null) { var cb = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = Ui.Px(160) }; cb.Items.AddRange(f.Choices.Select(x => (object)(x == "" ? "(default)" : x)).ToArray()); c = cb; }
                 else { c = new TextBox { Width = Ui.Px(f.Wide ? 410 : 200) }; }
                 c.Margin = new Padding(4); grid.Controls.Add(c);
-                var hint = new Label { AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(4, 8, 4, 4) }; grid.Controls.Add(hint);
+                var hint = new Label { AutoSize = true, ForeColor = Theme.Faint, Margin = new Padding(4, 8, 4, 4) }; grid.Controls.Add(hint);
                 _fields[f.Key] = c; _hints[f.Key] = hint;
                 _tips.SetToolTip(c, f.Tip); _tips.SetToolTip(lbl, f.Tip);
                 c.AccessibleName = f.Label; c.AccessibleDescription = f.Tip;
@@ -661,10 +808,10 @@ namespace OpenSSHServerManager
             grid.Controls.Add(Lbl("Default shell"));
             _cmbShell = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, Width = Ui.Px(410), Margin = new Padding(4) };
             grid.Controls.Add(_cmbShell);
-            var shellHint = new Label { AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(4, 8, 4, 4), Text = "registry HKLM\\SOFTWARE\\OpenSSH\\DefaultShell; empty = cmd.exe" }; grid.Controls.Add(shellHint);
+            var shellHint = new Label { AutoSize = true, ForeColor = Theme.Faint, Margin = new Padding(4, 8, 4, 4), Text = "registry HKLM\\SOFTWARE\\OpenSSH\\DefaultShell; empty = cmd.exe" }; grid.Controls.Add(shellHint);
             grid.Controls.Add(Lbl("Shell command option"));
             _txtShellOption = new TextBox { Width = Ui.Px(200), Margin = new Padding(4) }; grid.Controls.Add(_txtShellOption);
-            var optHint = new Label { AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(4, 8, 4, 4), Text = "e.g. /c for cmd-like shells, -c for bash; empty = automatic" }; grid.Controls.Add(optHint);
+            var optHint = new Label { AutoSize = true, ForeColor = Theme.Faint, Margin = new Padding(4, 8, 4, 4), Text = "e.g. /c for cmd-like shells, -c for bash; empty = automatic" }; grid.Controls.Add(optHint);
             _tips.SetToolTip(_cmbShell, "Shell started for interactive sessions and remote commands. Applies immediately to new sessions; no restart needed.");
             _txtPwshPath.AccessibleName = "PowerShell subsystem command"; _cmbShell.AccessibleName = "Default shell"; _txtShellOption.AccessibleName = "Shell command option";
             EventHandler other = (s, e) => { if (!_loadingSettings) UpdatePending(); };
@@ -677,11 +824,13 @@ namespace OpenSSHServerManager
             bar.Controls.Add(Btn("Save", (s, e) => Safe(() => SaveSettings(false)), 110));
             bar.Controls.Add(Btn("Save and restart sshd", (s, e) => Safe(() => SaveSettings(true)), 180));
             bar.Controls.Add(Btn("Reload from file", (s, e) => Safe(() => ReloadFromFile(true, false)), 140));
-            bar.Controls.Add(Btn("Restore a backup...", (s, e) => Safe(RestoreBackup), 150));
+            bar.Controls.Add(Btn("Backups...", (s, e) => Safe(RestoreBackup), 110));
             bar.Controls.Add(Btn("Reset to shipped defaults", (s, e) => Safe(ResetToDefault), 190));
+            _tips.SetToolTip(bar.Controls[0], "Ctrl+S");
+            _tips.SetToolTip(bar.Controls[3], "Compare the backups kept at every save with the current file, and restore one.");
             _setPending = new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), ForeColor = Orange };
             bar.Controls.Add(_setPending);
-            var note = new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), ForeColor = Color.DimGray, Text = "Every save is validated with sshd -t first; a timestamped backup is kept next to sshd_config." };
+            var note = new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), ForeColor = Theme.Muted, Text = "Every save shows the changes, is validated with sshd -t first, and keeps a timestamped backup next to sshd_config." };
             bar.Controls.Add(note);
             root.Controls.Add(bar, 0, 1);
             page.Controls.Add(root);
@@ -692,12 +841,31 @@ namespace OpenSSHServerManager
         private void LoadSettings(bool keepEdits = false)
         {
             Dictionary<string, string> eff;
-            try { eff = Ssh.EffectiveSettings(); } catch { eff = new Dictionary<string, string>(); }
+            try { eff = Bg("Reading the effective settings (sshd -T)...", () => Ssh.EffectiveSettings()); } catch { eff = new Dictionary<string, string>(); }
+            _effective = eff;
             _loadingSettings = true;
             try { LoadSettingsFields(eff, keepEdits); }
             finally { _loadingSettings = false; }
             foreach (var f in FieldDefs) ShowFieldError(f);
+            var inc = _cfg.Includes();
+            _setIncludeNote.Visible = inc.Count > 0;
+            _setIncludeNote.Text = inc.Count == 0 ? "" : "sshd_config includes other files (Include " + string.Join("; ", inc) + "). sshd takes the first value it reads, so a value in an included file can win over a field here; the grey \"effective\" text shows what sshd really uses. New settings are written before the first Include.";
             UpdatePending();
+        }
+
+        /// <summary>The values sshd -T reported when the Settings tab was last loaded (lower-case keywords).</summary>
+        private Dictionary<string, string> _effective = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The text a field shows for the file: the first line's value; for the Allow and Deny lists, every line together, as
+        /// sshd adds them up (saving then writes them as one line).
+        /// </summary>
+        private string FileValue(Field f)
+        {
+            var v = _cfg.Get(f.Key) ?? "";
+            if (!f.List) return v;
+            string err; var args = _cfg.GetCombinedArgs(f.Key, out err);
+            return (args == null ? null : SshdArgs.FormatTyped(args)) ?? v;
         }
 
         private void LoadSettingsFields(Dictionary<string, string> eff, bool keepEdits)
@@ -705,8 +873,7 @@ namespace OpenSSHServerManager
             foreach (var f in FieldDefs)
             {
                 bool keep = keepEdits && FieldEdited(f);
-                var v = _cfg.Get(f.Key) ?? "";
-                if (f.List) { string err; var args = SshdArgs.Split(v, out err); v = (args == null ? null : SshdArgs.FormatTyped(args)) ?? v; }
+                var v = FileValue(f);
                 _shown[f.Key] = v;
                 var c = _fields[f.Key];
                 if (keep) { SetHint(f, eff); continue; }
@@ -736,7 +903,9 @@ namespace OpenSSHServerManager
         {
             string ev; var hint = eff.TryGetValue(f.Key, out ev) ? "effective: " + (ev.Length > 70 ? ev.Substring(0, 70) + "..." : ev) : "";
             int occurrences = _cfg.GetAll(f.Key).Count;
-            if (occurrences > 1) hint += (hint.Length > 0 ? "   " : "") + "(" + occurrences + " entries in the file; this field edits the first, the others are on the text tab)";
+            if (occurrences > 1)
+                hint += (hint.Length > 0 ? "   " : "") + (f.List ? "(" + occurrences + " lines in the file, shown together as sshd adds them up; saving writes one line)"
+                                                              : "(" + occurrences + " lines in the file; this field edits the first, the others stay as they are: see the text tab)");
             _hintText[f.Key] = hint;
         }
 
@@ -767,7 +936,7 @@ namespace OpenSSHServerManager
             _errors.SetError(c, err ?? "");
             string hint; _hintText.TryGetValue(f.Key, out hint);
             _hints[f.Key].Text = err ?? hint ?? "";
-            _hints[f.Key].ForeColor = err != null ? Red : Color.Gray;
+            _hints[f.Key].ForeColor = err != null ? Red : Theme.Faint;
             c.AccessibleDescription = err ?? FieldDefs.First(x => x.Key == f.Key).Tip;
         }
 
@@ -807,29 +976,37 @@ namespace OpenSSHServerManager
             bool shellChanged = !string.Equals(shell, (DefaultShell.Get() ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
             if (shellChanged && shell.Length > 0 && !File.Exists(shell)) throw new ConfigException("Default shell not found:\n" + shell + "\n\nEnter the full path of an existing program, or leave the field empty for cmd.exe.");
             var cand = _cfg.Copy();
+            var changed = new List<Field>();
             foreach (var f in FieldDefs)
             {
                 var v = FieldValue(f);
-                var error = FieldError(f, v); if (error != null) throw new ConfigException(error);
-                // Only fields the user changed are written: an untouched field must not normalise the line or comment
-                // out further occurrences of a repeatable directive (ListenAddress, Port, AllowUsers ...).
-                string shown; if (!_shown.TryGetValue(f.Key, out shown)) shown = _cfg.Get(f.Key) ?? "";
+                // Only fields the user changed are checked and written: an untouched field must not normalise the line or
+                // comment out further occurrences of a repeatable directive, and a value sshd accepts in the file (with
+                // a comment after it, say) must not block saving another field.
+                string shown; if (!_shown.TryGetValue(f.Key, out shown)) shown = FileValue(f);
                 if (v == shown) continue;
+                var error = FieldError(f, v); if (error != null) throw new ConfigException(error);
+                changed.Add(f);
                 if (f.List)
                 {
-                    string err; v = SshdArgs.Join(SshdArgs.ParseTyped(v, out err));
+                    // The field shows every line of the list; one line with all of them replaces them (sshd adds them up).
+                    string err; cand.Set(f.Key, SshdArgs.Join(SshdArgs.ParseTyped(v, out err)));
                 }
-                cand.Set(f.Key, v);
+                else if (SshdConfig.RepeatableKeywords.Contains(f.Key, StringComparer.OrdinalIgnoreCase)) cand.SetFirst(f.Key, v); // the other Port and ListenAddress lines stay
+                else cand.Set(f.Key, v);
             }
             var pwshCurrent = cand.GetSubsystem("powershell");
             var pwshWanted = PwshWanted();
             if (pwshWanted != pwshCurrent) cand.SetSubsystem("powershell", pwshWanted);
-            var backup = cand.SaveValidated();
-            DefaultShell.Set(shell, _txtShellOption.Text);
+            var backup = SaveConfig(cand, changed.Count == 0 ? "Save the settings of the Settings tab." : "Save " + string.Join(", ", changed.Select(f => f.Label)) + ".", restart ? "Save and restart" : "Save");
+            // The registry value is written only when it changed (HKLM\SOFTWARE\OpenSSH\DefaultShell applies to new sessions at once).
+            bool optionChanged = _txtShellOption.Text.Trim() != (DefaultShell.GetOption() ?? "").Trim();
+            if (shellChanged || optionChanged) DefaultShell.Set(shell, _txtShellOption.Text);
             UseConfig(cand, false, true);
+            ReportOverridden(changed);
             var port = _cfg.EffectivePort;
-            var fw = Firewall.Get();
-            if (fw != null && !Firewall.Covers(fw.Ports, port))
+            var fw = Bg("Reading the firewall rule...", () => Firewall.Get());
+            if (fw != null && !Firewall.Covers(fw.Ports, port) && !Program.Unattended)
             {
                 // A single-port rule follows sshd to the new port; a multi-port rule keeps its list and gains the port.
                 bool single = Firewall.IsSinglePort(fw.Ports);
@@ -843,31 +1020,182 @@ namespace OpenSSHServerManager
             else Status("Saved. Restart sshd to apply (default shell applies immediately).");
         }
 
-        /// <summary>Restarts sshd and offers to restore the backup when it does not start. True when sshd runs the new configuration.</summary>
+        // ---------------- saving sshd_config, restarting, going back ----------------
+
+        /// <summary>
+        /// Saves a candidate configuration the way every tab does: warns when the account running this program would be
+        /// refused afterwards, shows what changes (unless switched off), checks it with sshd -t, asks before writing over a
+        /// file another program changed, keeps a backup. Returns the backup, or null when there was no file before.
+        /// Throws OperationCanceledException (nothing written) when the person cancels.
+        /// </summary>
+        private string SaveConfig(SshdConfig cand, string what, string okText = "Save")
+        {
+            var access = Bg("Checking that you can still log in with the new settings...", () =>
+            {
+                var tmp = WriteCandidate(cand);
+                try { return AuthConfig.AccessWarning(tmp, cand.EffectivePort); } finally { try { File.Delete(tmp); } catch { } }
+            });
+            if (access != null && !Program.Unattended &&
+                MessageBox.Show(this, "Warning: " + access + "\n\nOpen sessions stay connected, but new logins of your account would fail. Save anyway?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                throw new OperationCanceledException();
+            if (!ConfirmChanges(cand, what, okText)) throw new OperationCanceledException();
+            try { return Bg("Checking with sshd -t and saving...", () => cand.SaveValidated()); }
+            catch (ConfigChangedException)
+            {
+                if (Program.Unattended) throw;
+                var answer = MessageBox.Show(this, "sshd_config was changed by another program (or in Notepad) after this window read it.\n\n" +
+                    "Yes: save anyway; the file as it is now is kept as a backup.\nNo: save nothing, so you can reload the file and make your change again.",
+                    Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                if (answer != DialogResult.Yes) throw new OperationCanceledException();
+                return Bg("Saving...", () => cand.SaveValidated(true));
+            }
+        }
+
+        /// <summary>The preview before a save: true to go on. Not shown when switched off, in unattended modes, or when nothing changes.</summary>
+        private bool ConfirmChanges(SshdConfig cand, string what, string okText)
+        {
+            if (Program.Unattended || !Prefs.PreviewChanges) return true;
+            string current = "";
+            try { if (File.Exists(cand.Path)) current = File.ReadAllText(cand.Path); } catch (Exception ex) { Log.Error("Reading " + cand.Path, ex, false); }
+            if (Diff.SplitLines(current).SequenceEqual(Diff.SplitLines(cand.Text))) return true;
+            using (var d = new ChangesDialog("Changes to sshd_config", what + " This is what changes in " + cand.Path + ". The file is checked with sshd -t before it is written, and the file as it is now is kept as a backup.", current, cand.Text, okText))
+                return d.ShowDialog(this) == DialogResult.OK;
+        }
+
+        /// <summary>After a Settings save: a changed value that sshd does not use (an Include or a Match all block sets it first) is reported.</summary>
+        private void ReportOverridden(List<Field> changed)
+        {
+            var eff = _effective; // LoadSettings (in UseConfig) read sshd -T again
+            if (eff == null || eff.Count == 0) return;
+            var notes = new List<string>();
+            foreach (var f in changed.Where(x => x.Numeric || x.Choices != null))
+            {
+                var want = FieldValue(f); string have;
+                if (want.Length == 0 || !eff.TryGetValue(f.Key, out have)) continue;
+                if (f.Key.Equals("LogLevel", StringComparison.OrdinalIgnoreCase) && want.Equals("DEBUG", StringComparison.OrdinalIgnoreCase)) want = "DEBUG1";
+                if (f.Key.Equals("Port", StringComparison.OrdinalIgnoreCase)) { if (!have.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries).Contains(want)) notes.Add(f.Label + ": sshd uses " + have); continue; }
+                if (!have.Equals(want, StringComparison.OrdinalIgnoreCase)) notes.Add(f.Label + ": saved " + want + ", but sshd uses " + have);
+            }
+            if (notes.Count == 0) return;
+            Status("Saved, but sshd uses other values for " + notes.Count + " setting(s)");
+            if (!Program.Unattended)
+                MessageBox.Show(this, "Saved, but sshd does not use these values:\n\n" + string.Join("\n", notes) + "\n\nAn Include file or a \"Match all\" block sets them before this line does. Look on the sshd_config (text) tab.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        /// <summary>The result of checking a restarted server: what to show, and whether something looks wrong.</summary>
+        private sealed class ServerCheck { public string Text; public bool Problems; public string Summary; }
+
+        /// <summary>
+        /// Checks the running server against a configuration: every port it should listen on has a listener that answers
+        /// with an SSH banner, the firewall rule admits the ports, and the account running this program is not refused.
+        /// Waits up to five seconds for listeners after a restart. Runs on a background thread.
+        /// </summary>
+        private static ServerCheck CheckServer(SshdConfig cfg)
+        {
+            var ports = new List<int>();
+            foreach (var p in cfg.GetAll("Port")) { int n; if (int.TryParse(p.Value, out n) && n > 0 && n < 65536 && !ports.Contains(n)) ports.Add(n); }
+            foreach (var la in cfg.GetAll("ListenAddress")) { int n = SshdConfig.ListenPort(la.Value); if (n > 0 && !ports.Contains(n)) ports.Add(n); }
+            if (ports.Count == 0) ports.Add(22);
+            var lines = new List<string>(); bool problems = false; var listening = new List<string>();
+            var until = DateTime.UtcNow.AddSeconds(5);
+            foreach (var port in ports)
+            {
+                var l = Net.Listeners(port);
+                while (l.Count == 0 && DateTime.UtcNow < until) { Thread.Sleep(250); l = Net.Listeners(port); }
+                if (l.Count == 0) { lines.Add("Nothing listens on port " + port + "."); problems = true; continue; }
+                var banner = Net.BannerAt(l[0]);
+                bool ssh = banner.StartsWith("SSH-", StringComparison.Ordinal);
+                if (!ssh) problems = true;
+                listening.AddRange(l);
+                lines.Add("Listening on " + string.Join(", ", l) + (ssh ? "; answers " + banner : "; but " + l[0] + " gives no SSH answer: " + banner));
+            }
+            try
+            {
+                var fw = Firewall.Get();
+                var blocked = fw == null ? ports : ports.Where(p => !Firewall.Covers(fw.Ports, p)).ToList();
+                if (fw == null) { lines.Add("There is no inbound firewall rule for sshd: other computers cannot connect."); problems = true; }
+                else if (!fw.Enabled) { lines.Add("The firewall rule for sshd is disabled: other computers cannot connect."); problems = true; }
+                else if (blocked.Count > 0) { lines.Add("The firewall rule allows port " + fw.Ports + " but not " + string.Join(", ", blocked) + ": other computers cannot connect there."); problems = true; }
+            }
+            catch (Exception ex) { lines.Add("Firewall not checked: " + ex.Message); }
+            try
+            {
+                var access = AuthConfig.AccessWarning(null, ports[0]);
+                if (access != null) { lines.Add(access); problems = true; }
+                string err; var me = Accounts.AsciiLower(KeyGen.LoginName());
+                var offered = AuthConfig.Probe(me, "localhost", ports[0], out err);
+                if (offered != null) lines.Add("It offers " + me + " (you): " + AuthConfig.MethodNames(offered) + ".");
+            }
+            catch (Exception ex) { Log.Error("Checking the login methods after a restart", ex, false); }
+            return new ServerCheck { Text = string.Join("\n", lines), Problems = problems, Summary = listening.Count > 0 ? "sshd restarted; listening on " + string.Join(", ", listening) : "sshd restarted, but nothing is listening on port " + string.Join(", ", ports) };
+        }
+
+        /// <summary>Puts a backup back in place of sshd_config (the current file is kept as another backup first). Returns that backup.</summary>
+        private static string RestoreFile(string backup)
+        {
+            string kept = null;
+            if (File.Exists(Ssh.ConfigPath)) { kept = SshdConfig.NewBackupPath(Ssh.ConfigPath, DateTime.Now); File.Copy(Ssh.ConfigPath, kept, false); }
+            SshdConfig.WriteReplacing(Ssh.ConfigPath, File.ReadAllText(backup, Encoding.UTF8));
+            Log.Info("Restored " + backup + " to " + Ssh.ConfigPath + (kept != null ? " (the replaced file is kept as " + kept + ")" : ""));
+            return kept;
+        }
+
+        /// <summary>When sshd was restarted or started by this window (or a stop is expected): no "sshd stopped" notification then.</summary>
+        private DateTime _expectedStateChange = DateTime.MinValue;
+
+        /// <summary>
+        /// Restarts sshd with the saved configuration. When it does not start, the previous file (backup) goes back and sshd
+        /// starts again, without a question. When it starts, the server is checked (listening, answering, firewall, your
+        /// access) and, unless switched off, you are asked to keep the new settings; without an answer in time, or with
+        /// "Restore", the previous file goes back. True when sshd runs the new configuration.
+        /// </summary>
         private bool RestartWithRollback(string backup)
         {
-            bool applied = false;
-            Busy("Restarting sshd...", () =>
+            _expectedStateChange = DateTime.UtcNow;
+            var failure = Bg("Restarting sshd...", () => { try { Services.Restart("sshd"); return (Exception)null; } catch (Exception ex) { return ex; } });
+            _expectedStateChange = DateTime.UtcNow;
+            if (failure != null)
             {
-                try { Services.Restart("sshd"); }
-                catch (Exception ex)
+                if (backup == null || !File.Exists(backup)) { RefreshDashboard(); throw failure; }
+                string kept = null; Exception again = null;
+                Bg("sshd did not start: restoring the previous configuration...", () =>
                 {
-                    if (backup != null && MessageBox.Show(this, "sshd did not start with the new configuration:\n" + ex.Message + "\n\nRestore the previous configuration and start sshd again?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Error) == DialogResult.Yes)
-                    {
-                        File.Copy(backup, Ssh.ConfigPath, true); UseConfig(SshdConfig.Load());
-                        Services.Start("sshd");
-                        Status("Previous configuration restored, sshd running");
-                        return;
-                    }
-                    throw;
-                }
-                applied = true;
-                Thread.Sleep(800);
-                var l = Net.Listeners(_cfg.EffectivePort);
-                Status(l.Count > 0 ? "Saved and restarted; listening on " + string.Join(", ", l) : "Saved and restarted, but nothing is listening yet on port " + _cfg.EffectivePort);
-                LoadSettings(true); RefreshDashboard(); // the effective values after the restart
+                    kept = RestoreFile(backup);
+                    try { Services.Start("sshd"); } catch (Exception ex) { again = ex; }
+                });
+                _expectedStateChange = DateTime.UtcNow;
+                UseConfig(SshdConfig.Load()); RefreshDashboard();
+                Status(again == null ? "sshd did not start with the new configuration; the previous one was restored and sshd runs" : "sshd did not start, not even with the previous configuration");
+                if (!Program.Unattended)
+                    MessageBox.Show(this, "sshd did not start with the new configuration:\n" + failure.Message + "\n\n" +
+                        (again == null ? "The previous sshd_config was restored and sshd started again." : "The previous sshd_config was restored, but sshd did not start either: " + again.Message + "\nSee the Logs tab.") +
+                        (kept != null ? "\n\nThe configuration that failed is kept as " + Path.GetFileName(kept) + " (Settings tab, Backups)." : ""),
+                        Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+            var cfg = _cfg;
+            var check = Bg("Checking the restarted server...", () => CheckServer(cfg));
+            LoadSettings(true); RefreshDashboard(); // the effective values after the restart
+            Status(check.Summary);
+            if (backup == null || !File.Exists(backup) || Program.Unattended || !Prefs.ConfirmAfterRestart) return true;
+            DialogResult answer;
+            using (var d = new KeepSettingsDialog(check.Text, check.Problems, Prefs.ConfirmSeconds, () => { var c = Bg("Checking...", () => CheckServer(cfg)); return new KeyValuePair<string, bool>(c.Text, c.Problems); }))
+                answer = d.ShowDialog(this);
+            if (answer == DialogResult.OK) { Status("New settings kept. " + check.Summary); Log.Info("New settings kept after the restart"); return true; }
+            Exception startError = null; string replaced = null;
+            Bg("Restoring the previous settings...", () =>
+            {
+                replaced = RestoreFile(backup);
+                try { Services.Restart("sshd"); } catch (Exception ex) { startError = ex; }
             });
-            return applied;
+            _expectedStateChange = DateTime.UtcNow;
+            UseConfig(SshdConfig.Load()); RefreshDashboard();
+            Log.Info("The previous settings were restored after the restart (" + (answer == DialogResult.Abort ? "no answer or Restore" : answer.ToString()) + ")");
+            Status(startError == null ? "The previous settings were restored and sshd restarted" : "The previous settings were restored, but sshd did not start: " + startError.Message);
+            MessageBox.Show(this, (startError == null ? "The previous settings were restored and sshd restarted with them." : "The previous settings were restored, but sshd did not start: " + startError.Message) +
+                (replaced != null ? "\n\nThe new settings are kept as " + Path.GetFileName(replaced) + " (Settings tab, Backups), in case you want them back." : ""),
+                Program.AppName, MessageBoxButtons.OK, startError == null ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+            return false;
         }
 
         /// <summary>Reload on the Settings tab (discardRaw false) or on the text tab (discardSettings false): the tab's own edits are discarded.</summary>
@@ -897,24 +1225,27 @@ namespace OpenSSHServerManager
 
         private void RestoreBackup()
         {
-            using (var dlg = new OpenFileDialog { Title = "Choose a backup to restore", InitialDirectory = Ssh.ConfigDir, Filter = "sshd_config backups (sshd_config.bak.*)|sshd_config.bak.*|All files|*.*" })
+            string chosen;
+            var current = File.Exists(Ssh.ConfigPath) ? File.ReadAllText(Ssh.ConfigPath) : "";
+            using (var dlg = new BackupsDialog(Ssh.ConfigPath, current))
             {
-                if (dlg.ShowDialog(this) != DialogResult.OK) return;
-                var cand = SshdConfig.Load(dlg.FileName); cand.Path = Ssh.ConfigPath;
-                var backup = cand.SaveValidated();
-                UseConfig(SshdConfig.Load());
-                if (MessageBox.Show(this, "Backup restored (previous file saved as " + Path.GetFileName(backup) + "). Restart sshd now?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes) RestartWithRollback(backup);
+                if (dlg.ShowDialog(this) != DialogResult.OK || dlg.Chosen == null) return;
+                chosen = dlg.Chosen;
             }
+            var cand = SshdConfig.Load(chosen); cand.Path = Ssh.ConfigPath; cand.LoadedHash = _cfg.LoadedHash;
+            var backup = SaveConfig(cand, "Restore the backup " + Path.GetFileName(chosen) + ".", "Restore");
+            UseConfig(SshdConfig.Load());
+            if (MessageBox.Show(this, "Backup restored (previous file saved as " + (backup == null ? "none" : Path.GetFileName(backup)) + "). Restart sshd now?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes) RestartWithRollback(backup);
         }
 
         private void ResetToDefault()
         {
             if (!File.Exists(Ssh.DefaultConfigPath)) throw new Exception("sshd_config_default not found in " + Ssh.InstallDir);
-            if (MessageBox.Show(this, "Replace sshd_config with the shipped sshd_config_default? Your current file is backed up first.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-            var cand = SshdConfig.Load(Ssh.DefaultConfigPath); cand.Path = Ssh.ConfigPath;
-            var backup = cand.SaveValidated();
+            var cand = SshdConfig.Load(Ssh.DefaultConfigPath); cand.Path = Ssh.ConfigPath; cand.LoadedHash = _cfg.LoadedHash;
+            if (!Prefs.PreviewChanges && MessageBox.Show(this, "Replace sshd_config with the shipped sshd_config_default? Your current file is backed up first.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            var backup = SaveConfig(cand, "Replace sshd_config with the shipped sshd_config_default: every setting and rule made here is removed.", "Replace");
             UseConfig(SshdConfig.Load());
-            Status("Defaults written; backup " + Path.GetFileName(backup));
+            Status("Defaults written; backup " + (backup == null ? "none" : Path.GetFileName(backup)) + ". Restart sshd to apply.");
         }
 
         // ---------------- Authentication ----------------
@@ -940,20 +1271,22 @@ namespace OpenSSHServerManager
             top.Controls.Add(_auSummary);
             top.Controls.Add(new Label
             {
-                AutoSize = true, ForeColor = Color.DimGray, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(16, 2, 4, 6),
+                AutoSize = true, ForeColor = Theme.Muted, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(16, 2, 4, 6),
                 Text = "Keyboard-interactive is switched off when you apply: OpenSSH for Windows has no back end for it, so it never logs anyone in, and each client attempt at it counts against MaxAuthTries. Windows passwords use the password method."
             });
             root.Controls.Add(top, 0, 0);
 
             var head = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Dock = DockStyle.Top };
             head.Controls.Add(Lbl("Rules for specific users and groups", true));
-            _auRulesNote = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(16, 0, 4, 4), ForeColor = Color.DimGray };
+            _auRulesNote = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(16, 0, 4, 4), ForeColor = Theme.Muted };
             head.Controls.Add(_auRulesNote);
             root.Controls.Add(head, 0, 1);
 
             _lvRules = Lv("Applies to|90", "Name|220", "Login methods|560"); _lvRules.AccessibleName = "Rules for users and groups";
             _lvRules.Margin = new Padding(16, 0, 4, 0);
-            _lvRules.DoubleClick += (s, e) => Safe(EditRule);
+            ListSorter.Disable(_lvRules); // the order is the precedence: the first rule that matches applies
+            _lvRules.ItemActivate += (s, e) => Safe(EditRule); // double-click or Enter
+            _lvRules.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Safe(RemoveRule); } };
             _lvRules.SelectedIndexChanged += (s, e) => UpdateRuleButtons();
             root.Controls.Add(_lvRules, 0, 2);
             var rb = Flow();
@@ -980,7 +1313,7 @@ namespace OpenSSHServerManager
 
             _auResult = new Label
             {
-                AutoSize = true, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(8, 2, 4, 4), ForeColor = Color.DimGray,
+                AutoSize = true, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(8, 2, 4, 4), ForeColor = Theme.Muted,
                 Text = "Apply checks the settings with sshd -t, keeps the previous sshd_config as a backup, restarts sshd (and restores the backup if sshd does not start), then asks the running server which methods it offers you. Connected sessions stay connected."
             };
             root.Controls.Add(_auResult, 0, 5);
@@ -1038,7 +1371,7 @@ namespace OpenSSHServerManager
             if (_auState.OtherMatchSettings.Count > 0)
                 notes.Add("Other Match blocks in sshd_config set login methods too, as written there: " + string.Join("; ", _auState.OtherMatchSettings.Take(3)) + (_auState.OtherMatchSettings.Count > 3 ? "; ..." : "") + ".");
             _auRulesNote.Text = string.Join("\n", notes);
-            _auRulesNote.ForeColor = _auState.RulesProblem != null || _auState.OtherMatchSettings.Count > 0 ? Orange : Color.DimGray;
+            _auRulesNote.ForeColor = _auState.RulesProblem != null || _auState.OtherMatchSettings.Count > 0 ? Orange : Theme.Muted;
             UpdateRuleButtons();
         }
 
@@ -1066,7 +1399,7 @@ namespace OpenSSHServerManager
             _auEither.Enabled = _auBoth.Enabled = _auPassword.Checked && _auKey.Checked;
             var m = AuthFromUi();
             _auSummary.Text = m.AnyEnabled ? "Accounts without a rule log in with: " + m.Describe() : "Tick at least one login method.";
-            _auSummary.ForeColor = m.AnyEnabled ? SystemColors.ControlText : Red;
+            _auSummary.ForeColor = m.AnyEnabled ? Theme.Text : Red;
             _auPending.Text = AuthEdited() ? "Changes not applied yet" : "";
             UpdatePending();
         }
@@ -1139,7 +1472,7 @@ namespace OpenSSHServerManager
             var tmp = WriteCandidate(cand);
             try
             {
-                Busy("Checking the new settings with sshd...", () =>
+                Bg("Checking the new settings with sshd...", () =>
                 {
                     t = Ssh.TestConfig(tmp);
                     if (t.Ok) warning = AuthConfig.LockoutWarning(tmp, cand.EffectivePort);
@@ -1154,7 +1487,7 @@ namespace OpenSSHServerManager
                        "\n\nsshd_config is backed up first. Connected sessions stay connected.";
             if (MessageBox.Show(this, text, Program.AppName, MessageBoxButtons.YesNo, warning != null ? MessageBoxIcon.Warning : MessageBoxIcon.Question,
                     warning != null ? MessageBoxDefaultButton.Button2 : MessageBoxDefaultButton.Button1) != DialogResult.Yes) { Status("Login methods not applied"); return; }
-            var backup = cand.SaveValidated();
+            var backup = SaveConfig(cand, "Apply the login methods of the Authentication tab.", "Apply");
             Log.Info("Login methods applied: " + global.Describe() + "; " + (_auState.RulesProblem == null ? _auRules.Count + " rule(s)" : "rules section left as it is"));
             _cfg = SshdConfig.Load(); LoadAuth(); UseConfig(_cfg); // the applied methods are now the file's
             if (RestartWithRollback(backup)) VerifyAuth();
@@ -1166,7 +1499,7 @@ namespace OpenSSHServerManager
             var me = Accounts.AsciiLower(KeyGen.LoginName());
             int port = _cfg.EffectivePort;
             string e1 = null, e2 = null; AuthMethods expected = null; SortedSet<string> offered = null;
-            Busy("Asking the running server which login methods it offers...", () =>
+            Bg("Asking the running server which login methods it offers...", () =>
             {
                 expected = AuthConfig.EffectiveFor(me, null, port, out e1);
                 offered = AuthConfig.Probe(me, "localhost", port, out e2);
@@ -1193,14 +1526,14 @@ namespace OpenSSHServerManager
             if (live)
             {
                 SortedSet<string> offered = null;
-                Busy("Asking the running server...", () => offered = AuthConfig.Probe(name, "localhost", port, out err));
+                Bg("Asking the running server...", () => offered = AuthConfig.Probe(name, "localhost", port, out err));
                 if (offered == null) { SetAuthResult("The running server gave no list of methods for " + name + ": " + err, Red); return; }
-                SetAuthResult("The running server offers " + name + ": " + AuthConfig.MethodNames(offered) + "." + (_auPending.Text.Length > 0 ? " Changes on this tab count only after Apply." : ""), SystemColors.ControlText);
+                SetAuthResult("The running server offers " + name + ": " + AuthConfig.MethodNames(offered) + "." + (_auPending.Text.Length > 0 ? " Changes on this tab count only after Apply." : ""), Theme.Text);
                 return;
             }
             var tmp = WriteCandidate(AuthCandidate());
             Dictionary<string, string> d = null;
-            try { Busy("Asking sshd...", () => d = AuthConfig.EffectiveSettingsFor(name, tmp, port, out err)); }
+            try { Bg("Asking sshd...", () => d = AuthConfig.EffectiveSettingsFor(name, tmp, port, out err)); }
             finally { try { File.Delete(tmp); } catch { } }
             if (d == null) throw new ConfigException("sshd could not work out the settings for " + name + ":\n\n" + (err ?? "").Replace(tmp, "sshd_config"));
             var m = AuthConfig.MethodsFrom(d);
@@ -1220,33 +1553,104 @@ namespace OpenSSHServerManager
             }
             var limits = new[] { "allowusers", "allowgroups", "denyusers", "denygroups" }.Where(k => d.ContainsKey(k) && d[k].Length > 0).Select(k => k + " " + d[k]).ToList();
             if (limits.Count > 0) sb.Append(" sshd_config also limits who may log in: " + string.Join("; ", limits) + ".");
-            SetAuthResult(sb.ToString(), SystemColors.ControlText);
+            SetAuthResult(sb.ToString(), Theme.Text);
         }
 
         // ---------------- Raw editor ----------------
         private TabPage BuildRawEditor()
         {
             var page = new TabPage("sshd_config (text)");
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             // MaxLength 0 lifts the 32767-character typing limit of a multiline TextBox (sshd_config files can be larger).
-            _rawEditor = new TextBox { Multiline = true, ScrollBars = ScrollBars.Both, WordWrap = false, Dock = DockStyle.Fill, Font = new Font("Consolas", Ui.Pt(10f)), AcceptsTab = true, AcceptsReturn = true, MaxLength = 0 };
-            root.Controls.Add(_rawEditor, 0, 0);
+            _rawEditor = new TextBox { Multiline = true, ScrollBars = ScrollBars.Both, WordWrap = false, Dock = DockStyle.Fill, Font = new Font("Consolas", Ui.Pt(10f)), AcceptsTab = true, AcceptsReturn = true, MaxLength = 0, HideSelection = false };
+            // Find bar (Ctrl+F, F3 next, Shift+F3 previous, Esc closes it).
+            _findBar = Flow(); _findBar.Visible = false; _findBar.WrapContents = false;
+            _findBar.Controls.Add(Lbl("Find:"));
+            _findText = new TextBox { Width = Ui.Px(260), Margin = new Padding(4, 6, 4, 4), AccessibleName = "Text to find in sshd_config" };
+            _findText.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode == System.Windows.Forms.Keys.Enter) { e.SuppressKeyPress = true; FindNext(!e.Shift); }
+                else if (e.KeyCode == System.Windows.Forms.Keys.Escape) { e.SuppressKeyPress = true; _findBar.Visible = false; _rawEditor.Focus(); }
+            };
+            _findBar.Controls.Add(_findText);
+            _findBar.Controls.Add(Btn("Next", (s, e) => FindNext(true), 80));
+            _findBar.Controls.Add(Btn("Previous", (s, e) => FindNext(false), 90));
+            _findResult = new Label { AutoSize = true, Margin = new Padding(8, 10, 4, 4), ForeColor = Theme.Muted };
+            _findBar.Controls.Add(_findResult);
+            _findBar.Controls.Add(Btn("Close", (s, e) => { _findBar.Visible = false; _rawEditor.Focus(); }, 80));
+            root.Controls.Add(_findBar, 0, 0);
+            root.Controls.Add(_rawEditor, 0, 1);
             var bar = Flow();
-            bar.Controls.Add(Btn("Validate", (s, e) => Safe(() => { var c = FromEditor(); var tmp = Path.GetTempFileName(); try { File.WriteAllText(tmp, c.Text, new UTF8Encoding(false)); var r = Ssh.TestConfig(tmp); MessageBox.Show(this, r.Ok ? "No problems found." : r.Output.Replace(tmp, "sshd_config"), Program.AppName, MessageBoxButtons.OK, r.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning); } finally { try { File.Delete(tmp); } catch { } } }), 110));
+            bar.Controls.Add(Btn("Validate", (s, e) => Safe(() =>
+            {
+                var c = FromEditor(); var tmp = WriteCandidate(c);
+                try { var r = Bg("Running sshd -t...", () => Ssh.TestConfig(tmp)); MessageBox.Show(this, r.Ok ? "No problems found." : r.Output.Replace(tmp, "sshd_config"), Program.AppName, MessageBoxButtons.OK, r.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning); }
+                finally { try { File.Delete(tmp); } catch { } }
+            }), 110));
             // The editor text becomes the working configuration only after sshd accepted it; a rejected text must not
             // replace the configuration the Settings tab works on.
-            bar.Controls.Add(Btn("Save", (s, e) => Safe(() => { var c = FromEditor(); var b = c.SaveValidated(); UseConfig(c, true, false); Status("Saved (backup " + (b == null ? "none" : Path.GetFileName(b)) + "). Restart sshd to apply."); }), 110));
-            bar.Controls.Add(Btn("Save and restart sshd", (s, e) => Safe(() => { var c = FromEditor(); var b = c.SaveValidated(); UseConfig(c, true, false); RestartWithRollback(b); }), 180));
+            bar.Controls.Add(Btn("Save", (s, e) => Safe(() => SaveRaw()), 110));
+            bar.Controls.Add(Btn("Save and restart sshd", (s, e) => Safe(() => { var b = SaveRaw(); RestartWithRollback(b); }), 180));
             bar.Controls.Add(Btn("Reload", (s, e) => Safe(() => ReloadFromFile(false, true)), 100));
+            bar.Controls.Add(Btn("Find...", (s, e) => ShowFind(), 90));
             bar.Controls.Add(Btn("Open in Notepad", (s, e) => Proc.OpenExternal("notepad.exe", "\"" + Ssh.ConfigPath + "\""), 140));
+            _tips.SetToolTip(bar.Controls[1], "Ctrl+S"); _tips.SetToolTip(bar.Controls[4], "Ctrl+F; F3 finds the next match, Shift+F3 the previous one");
             _rawPending = new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), ForeColor = Orange, MaximumSize = new Size(Ui.Px(560), 0) };
             bar.Controls.Add(_rawPending);
             _rawEditor.AccessibleName = "sshd_config text";
             _rawEditor.TextChanged += (s, e) => UpdatePending();
-            root.Controls.Add(bar, 0, 1);
+            root.Controls.Add(bar, 0, 2);
             page.Controls.Add(root);
             return page;
+        }
+
+        private FlowLayoutPanel _findBar; private TextBox _findText; private Label _findResult;
+
+        private void ShowFind()
+        {
+            _findBar.Visible = true;
+            if (_rawEditor.SelectionLength > 0 && _rawEditor.SelectedText.IndexOf('\n') < 0) _findText.Text = _rawEditor.SelectedText;
+            _findText.Focus(); _findText.SelectAll();
+        }
+
+        /// <summary>Selects the next (or previous) match of the find text in the editor, wrapping around the end; case is ignored.</summary>
+        private void FindNext(bool forward)
+        {
+            var what = _findText.Text;
+            if (what.Length == 0) { ShowFind(); return; }
+            var text = _rawEditor.Text;
+            int from = forward ? _rawEditor.SelectionStart + Math.Max(_rawEditor.SelectionLength, 0) : _rawEditor.SelectionStart - 1;
+            int i = FindIn(text, what, from, forward);
+            if (i < 0) { _findResult.Text = "not found"; _findResult.ForeColor = Red; return; }
+            int total = 0; for (int k = text.IndexOf(what, StringComparison.OrdinalIgnoreCase); k >= 0; k = text.IndexOf(what, k + 1, StringComparison.OrdinalIgnoreCase)) total++;
+            int line = _rawEditor.GetLineFromCharIndex(i) + 1;
+            _findResult.Text = total + " match(es); line " + line; _findResult.ForeColor = Theme.Muted;
+            _rawEditor.Select(i, what.Length); _rawEditor.ScrollToCaret();
+        }
+
+        /// <summary>The index of the next match at or after from (or before it, backwards), wrapping around; -1 when there is none.</summary>
+        internal static int FindIn(string text, string what, int from, bool forward)
+        {
+            if (string.IsNullOrEmpty(what) || string.IsNullOrEmpty(text)) return -1;
+            if (forward)
+            {
+                from = Math.Max(0, Math.Min(from, text.Length));
+                int i = text.IndexOf(what, from, StringComparison.OrdinalIgnoreCase);
+                return i >= 0 ? i : text.IndexOf(what, StringComparison.OrdinalIgnoreCase);
+            }
+            int j = from < 0 ? -1 : text.LastIndexOf(what, Math.Min(from, text.Length - 1), StringComparison.OrdinalIgnoreCase);
+            return j >= 0 ? j : text.LastIndexOf(what, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Save on the text tab: the editor text, checked and saved like every other save. Returns the backup.</summary>
+        private string SaveRaw()
+        {
+            var c = FromEditor();
+            var b = SaveConfig(c, "Save the text of the sshd_config (text) tab.");
+            UseConfig(c, true, false);
+            Status("Saved (backup " + (b == null ? "none" : Path.GetFileName(b)) + "). Restart sshd to apply.");
+            return b;
         }
 
         /// <summary>Shows sshd_config on the text tab. keepEdits: text changed and not saved stays, with a note that the file changed.</summary>
@@ -1263,7 +1667,7 @@ namespace OpenSSHServerManager
         }
         private SshdConfig FromEditor()
         {
-            var c = new SshdConfig { Path = Ssh.ConfigPath, NewLine = _cfg.NewLine };
+            var c = new SshdConfig { Path = Ssh.ConfigPath, NewLine = _cfg.NewLine, LoadedHash = _cfg.LoadedHash };
             c.Lines = _rawEditor.Text.Replace("\r\n", "\n").Split('\n').ToList();
             while (c.Lines.Count > 0 && c.Lines[c.Lines.Count - 1].Trim().Length == 0) c.Lines.RemoveAt(c.Lines.Count - 1);
             return c;
@@ -1287,6 +1691,7 @@ namespace OpenSSHServerManager
             var adminRoot = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
             adminRoot.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); adminRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             _lvAdminKeys = Lv("Type|230", "Comment|200", "SHA256 fingerprint|420", "Options|150"); _lvAdminKeys.AccessibleName = "Authorized keys of administrators"; // Type fits ssh-mldsa44-ed25519@openssh.com and sk- types
+            _lvAdminKeys.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Safe(() => RemoveKey(true)); } };
             adminRoot.Controls.Add(_lvAdminKeys, 0, 0);
             var abar = Flow();
             abar.Controls.Add(Btn("Add from file...", (s, e) => Safe(() => AddKeyFromFile(true)), 130));
@@ -1308,6 +1713,7 @@ namespace OpenSSHServerManager
             top.Controls.Add(_cmbUsers);
             userRoot.Controls.Add(top, 0, 0);
             _lvUserKeys = Lv("Type|230", "Comment|200", "SHA256 fingerprint|420", "Options|150"); _lvUserKeys.AccessibleName = "Authorized keys of the selected user";
+            _lvUserKeys.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Safe(() => RemoveKey(false)); } };
             userRoot.Controls.Add(_lvUserKeys, 0, 1);
             var ubar = Flow();
             ubar.Controls.Add(Btn("Add from file...", (s, e) => Safe(() => AddKeyFromFile(false)), 130));
@@ -1338,10 +1744,11 @@ namespace OpenSSHServerManager
             if (sid == null) throw new Exception("Cannot determine the account that owns " + _cmbUsers.SelectedItem + ". The authorized_keys file would not be readable by that user, so nothing was written.");
             return sid;
         }
-        private static void FillKeyList(ListView lv, string path)
+        private void FillKeyList(ListView lv, string path)
         {
+            var keys = Bg("Reading " + Path.GetFileName(path) + "...", () => Keys.Read(path)); // ssh-keygen -l for keys not seen before
             lv.BeginUpdate(); lv.Items.Clear();
-            foreach (var k in Keys.Read(path)) lv.Items.Add(new ListViewItem(new[] { k.Type, k.Comment, k.Fingerprint, k.Options }) { Tag = k.Line });
+            foreach (var k in keys) lv.Items.Add(new ListViewItem(new[] { k.Type, k.Comment, k.Fingerprint, k.Options }) { Tag = k.Line });
             lv.EndUpdate();
         }
         private void AddKeyFromFile(bool admin)
@@ -1424,13 +1831,13 @@ namespace OpenSSHServerManager
             bar.Controls.Add(Btn("Open folder", (s, e) => Safe(() => { var p = _kgPath.Text.Trim(); if (File.Exists(p)) Proc.OpenExternal("explorer.exe", "/select,\"" + p + "\""); else if (Directory.Exists(Path.GetDirectoryName(p))) Proc.OpenExternal("explorer.exe", "\"" + Path.GetDirectoryName(p) + "\""); }), 120));
             root.Controls.Add(bar, 0, 1);
 
-            _kgResult = new Label { AutoSize = true, Margin = new Padding(6, 6, 6, 2), MaximumSize = new Size(Ui.Px(980), 0), ForeColor = Color.DimGray, Text = "The public key appears below after generation." };
+            _kgResult = new Label { AutoSize = true, Margin = new Padding(6, 6, 6, 2), MaximumSize = new Size(Ui.Px(980), 0), ForeColor = Theme.Muted, Text = "The public key appears below after generation." };
             root.Controls.Add(_kgResult, 0, 2);
             _kgPublic = new TextBox { Multiline = true, ReadOnly = true, WordWrap = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Font = new Font("Consolas", Ui.Pt(9.5f)) };
             _kgPublic.AccessibleName = "Public key"; root.Controls.Add(_kgPublic, 0, 3);
             root.Controls.Add(new Label
             {
-                AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(6), MaximumSize = new Size(Ui.Px(980), 0),
+                AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(6), MaximumSize = new Size(Ui.Px(980), 0),
                 Text = "The private key stays on this computer and only you, SYSTEM and Administrators can read it; ssh refuses a key that others can read. " +
                        "The passphrase goes to ssh-keygen through SSH_ASKPASS and never appears on a command line. Give other servers the public key " +
                        "(the .pub file or the text above), never the private key. PuTTY and WinSCP: import the private key in PuTTYgen (Conversions, Import key)."
@@ -1464,7 +1871,7 @@ namespace OpenSSHServerManager
             }
             string pass = _kgNoPass.Checked ? null : _kgPass1.Text;
             KeyGenResult res = null;
-            try { Busy("Generating " + type.Label + " key...", () => res = KeyGen.GenerateReplacing(type, path, _kgComment.Text.Trim(), pass, now)); }
+            try { Bg("Generating " + type.Label + " key...", () => res = KeyGen.GenerateReplacing(type, path, _kgComment.Text.Trim(), pass, now)); }
             finally { _kgPass1.Text = ""; _kgPass2.Text = ""; pass = null; }
             _kgPublic.Text = res.PublicKey;
             var text = "Created " + res.PrivatePath + " (private key" + (res.Encrypted ? ", protected by the passphrase" : ", NO passphrase") + ") and " + Path.GetFileName(res.PublicPath) +
@@ -1502,7 +1909,7 @@ namespace OpenSSHServerManager
                 Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return false;
             var cand = _cfg.Copy();
             cand.Set("PubkeyAcceptedAlgorithms", value);
-            var backup = cand.SaveValidated();
+            var backup = SaveConfig(cand, "Accept the experimental key type " + t.PublicType + ".", "Save and restart");
             UseConfig(cand);
             RestartWithRollback(backup);
             return KeyGen.ServerAccepts(t.PublicType);
@@ -1520,7 +1927,7 @@ namespace OpenSSHServerManager
             }
             RunResult r = null;
             int port = _cfg == null ? 22 : _cfg.EffectivePort;
-            try { Busy("Logging in to this server with " + Path.GetFileName(path) + "...", () => r = KeyGen.TestLogin(path, pass, port)); }
+            try { Bg("Logging in to this server with " + Path.GetFileName(path) + "...", () => r = KeyGen.TestLogin(path, pass, port)); }
             finally { pass = null; }
             if (KeyGen.LoginOk(r))
             {
@@ -1534,6 +1941,201 @@ namespace OpenSSHServerManager
                                  "\nIf the key is not authorized yet, tick \"Allow this key to log in\" and generate it again, or add the .pub file on the Keys tab."; _kgResult.ForeColor = Red;
                 Status("Login test failed");
             }
+        }
+
+        // ---------------- Client (the ssh client of this account) ----------------
+        private ListView _lvKnownHosts, _lvClientHosts, _lvAgentKeys; private Label _lblAgent2; private bool _clientLoaded;
+        private List<ClientHost> _clientHosts = new List<ClientHost>();
+
+        private TabPage BuildClient()
+        {
+            var page = new TabPage("Client");
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(4) };
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 36)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 34)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 30));
+            root.Controls.Add(new Label { AutoSize = true, ForeColor = Theme.Muted, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(6, 6, 4, 4), Text = "The ssh client of " + KeyGen.LoginName() + " (you), for connections from this computer to other servers: the hosts ssh knows, the host names of %USERPROFILE%\\.ssh\\config, and the keys in ssh-agent." }, 0, 0);
+
+            var hostsBox = new GroupBox { Text = "Known hosts (" + SshClient.KnownHostsPath + ")", Dock = DockStyle.Fill, Padding = new Padding(6) };
+            var hostsRoot = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+            hostsRoot.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); hostsRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            _lvKnownHosts = Lv("Hosts|300", "Type|200", "SHA256 fingerprint|420", "Marker|110"); _lvKnownHosts.AccessibleName = "Known hosts"; _lvKnownHosts.MultiSelect = true;
+            _lvKnownHosts.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Safe(RemoveKnownHosts); } };
+            hostsRoot.Controls.Add(_lvKnownHosts, 0, 0);
+            var hb = Flow();
+            hb.Controls.Add(Btn("Add a server's keys...", (s, e) => Safe(AddKnownHost), 180));
+            hb.Controls.Add(Btn("Remove selected", (s, e) => Safe(RemoveKnownHosts), 140));
+            hb.Controls.Add(Btn("Open in Notepad", (s, e) => Proc.OpenExternal("notepad.exe", "\"" + SshClient.KnownHostsPath + "\""), 140));
+            _tips.SetToolTip(hb.Controls[0], "Reads the host keys a server offers (ssh-keyscan) and adds them after you compared the fingerprints, so the first connection is not a blind trust-on-first-use.");
+            hostsRoot.Controls.Add(hb, 0, 1);
+            hostsBox.Controls.Add(hostsRoot);
+            root.Controls.Add(hostsBox, 0, 1);
+
+            var cfgBox = new GroupBox { Text = "Hosts in " + SshClient.ConfigPath, Dock = DockStyle.Fill, Padding = new Padding(6) };
+            var cfgRoot = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+            cfgRoot.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); cfgRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            _lvClientHosts = Lv("Host|180", "Host name|220", "User|140", "Port|60", "Key file|260", "Jump host|140"); _lvClientHosts.AccessibleName = "Hosts of the ssh client configuration";
+            ListSorter.Disable(_lvClientHosts); // ssh takes the first matching block: the order matters
+            _lvClientHosts.ItemActivate += (s, e) => Safe(EditClientHost);
+            _lvClientHosts.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Safe(RemoveClientHost); } };
+            cfgRoot.Controls.Add(_lvClientHosts, 0, 0);
+            var cb = Flow();
+            cb.Controls.Add(Btn("Add...", (s, e) => Safe(AddClientHost), 90));
+            cb.Controls.Add(Btn("Edit...", (s, e) => Safe(EditClientHost), 90));
+            cb.Controls.Add(Btn("Remove", (s, e) => Safe(RemoveClientHost), 90));
+            cb.Controls.Add(Btn("Connect", (s, e) => Safe(() => { if (_lvClientHosts.SelectedItems.Count > 0) { var h = (ClientHost)_lvClientHosts.SelectedItems[0].Tag; if (!h.IsMatch && h.Pattern.IndexOfAny(new[] { '*', '?', '!', ' ' }) < 0) Proc.OpenExternal(Ssh.Exe("ssh.exe"), Proc.Quote(h.Pattern)); else Status("Choose a host with a single name (no wildcards)"); } }), 100));
+            cb.Controls.Add(Btn("Open in Notepad", (s, e) => Proc.OpenExternal("notepad.exe", "\"" + SshClient.ConfigPath + "\""), 140));
+            cfgRoot.Controls.Add(cb, 0, 1);
+            cfgBox.Controls.Add(cfgRoot);
+            root.Controls.Add(cfgBox, 0, 2);
+
+            var agentBox = new GroupBox { Text = "ssh-agent (keys it holds for your connections)", Dock = DockStyle.Fill, Padding = new Padding(6) };
+            var agentRoot = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
+            agentRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize)); agentRoot.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); agentRoot.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            _lblAgent2 = new Label { AutoSize = true, Margin = new Padding(4, 4, 4, 4) };
+            agentRoot.Controls.Add(_lblAgent2, 0, 0);
+            _lvAgentKeys = Lv("Type|230", "Comment|260", "SHA256 fingerprint|420"); _lvAgentKeys.AccessibleName = "Keys in ssh-agent";
+            _lvAgentKeys.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Safe(RemoveAgentKey); } };
+            agentRoot.Controls.Add(_lvAgentKeys, 0, 1);
+            var ab = Flow();
+            ab.Controls.Add(Btn("Add a key...", (s, e) => Safe(AddAgentKey), 110));
+            ab.Controls.Add(Btn("Remove selected", (s, e) => Safe(RemoveAgentKey), 140));
+            ab.Controls.Add(Btn("Start the agent", (s, e) => Safe(() =>
+            {
+                if (MessageBox.Show(this, "Set the ssh-agent service to start automatically and start it now?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+                Bg("Starting ssh-agent...", () => { Services.SetStartMode("ssh-agent", "auto"); Services.Start("ssh-agent"); });
+                LoadClient();
+            }), 130));
+            agentRoot.Controls.Add(ab, 0, 2);
+            agentBox.Controls.Add(agentRoot);
+            root.Controls.Add(agentBox, 0, 3);
+            page.Controls.Add(root);
+            return page;
+        }
+
+        private void LoadClient()
+        {
+            _clientLoaded = true;
+            string agentMessage = null;
+            var data = Bg("Reading the ssh client files and the agent...", () => new
+            {
+                Known = SshClient.ReadKnownHosts(SshClient.KnownHostsPath),
+                Config = File.Exists(SshClient.ConfigPath) ? File.ReadAllLines(SshClient.ConfigPath).ToList() : new List<string>(),
+                Agent = Services.Status("ssh-agent"),
+                Keys = SshClient.AgentKeys(out agentMessage).Select(Keys.Parse).ToList(),
+            });
+            _lvKnownHosts.BeginUpdate(); _lvKnownHosts.Items.Clear();
+            foreach (var k in data.Known) _lvKnownHosts.Items.Add(new ListViewItem(new[] { k.Hashed ? "(hashed name)" : k.Hosts, k.Type, k.Fingerprint ?? "", k.Marker }) { Tag = k });
+            _lvKnownHosts.EndUpdate();
+            _clientHosts = SshClient.ParseConfig(data.Config);
+            _lvClientHosts.BeginUpdate(); _lvClientHosts.Items.Clear();
+            foreach (var h in _clientHosts) _lvClientHosts.Items.Add(new ListViewItem(new[] { h.Pattern, h.Get("HostName"), h.Get("User"), h.Get("Port"), h.Get("IdentityFile"), h.Get("ProxyJump") }) { Tag = h });
+            _lvClientHosts.EndUpdate();
+            _lblAgent2.Text = "ssh-agent service: " + data.Agent.Status + ", start " + data.Agent.StartMode + (agentMessage != null && data.Agent.Status == "Running" ? ". " + agentMessage : "");
+            _lblAgent2.ForeColor = data.Agent.Status == "Running" ? Green : Orange;
+            _lvAgentKeys.BeginUpdate(); _lvAgentKeys.Items.Clear();
+            foreach (var k in data.Keys) _lvAgentKeys.Items.Add(new ListViewItem(new[] { k.Type, k.Comment, k.Fingerprint }) { Tag = k.Line });
+            _lvAgentKeys.EndUpdate();
+            Status(data.Known.Count + " known host key(s), " + _clientHosts.Count + " host block(s), " + data.Keys.Count + " key(s) in the agent");
+        }
+
+        private void RemoveKnownHosts()
+        {
+            var sel = _lvKnownHosts.SelectedItems.Cast<ListViewItem>().Select(i => (KnownHost)i.Tag).ToList();
+            if (sel.Count == 0) { Status("Select one or more known hosts first"); return; }
+            if (MessageBox.Show(this, "Remove " + sel.Count + " known host key(s)?\n\n" + string.Join("\n", sel.Take(10).Select(k => (k.Hashed ? "(hashed name)" : k.Hosts) + "  " + k.Type)) + "\n\nssh asks again the next time it connects to such a host. The previous file is kept as known_hosts.old.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            int n = SshClient.RemoveLines(SshClient.KnownHostsPath, new HashSet<int>(sel.Select(k => k.Line)));
+            LoadClient(); Status(n + " known host key(s) removed");
+        }
+
+        private void AddKnownHost()
+        {
+            string input;
+            using (var d = new InputDialog("Add a server's host keys", "Server name or address, optionally with :port (for example server.example.com or 192.168.1.10:2222):", "")) { if (d.ShowDialog(this) != DialogResult.OK) return; input = d.Value; }
+            // name, name:port, IPv6 address, [IPv6 address]:port
+            int port = 22; var host = input;
+            var m = input.StartsWith("[") ? Regex.Match(input, @"^\[([^\]]+)\](?::(\d{1,5}))?$") : input.Count(c => c == ':') == 1 ? Regex.Match(input, @"^([^:]+):(\d{1,5})$") : Match.Empty;
+            if (m.Success) { host = m.Groups[1].Value; if (m.Groups[2].Success) port = int.Parse(m.Groups[2].Value); }
+            host = SshClient.CheckHostName(host);
+            if (host == null || port < 1 || port > 65535) throw new ConfigException("\"" + input + "\" is not a host name or address.");
+            var r = Bg("Asking " + host + " for its host keys (ssh-keyscan)...", () => SshClient.Scan(host, port));
+            var lines = r.StdOut.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Where(l => !l.StartsWith("#") && SshClient.ParseKnownHost(l) != null).ToList();
+            if (lines.Count == 0) throw new ConfigException("No host keys from " + host + " port " + port + ".\n\n" + r.Output);
+            var fps = Bg("Working out the fingerprints...", () => lines.Select(l => { var k = SshClient.ParseKnownHost(l); var parts = l.Split(' '); return k.Type + "  " + Keys.Fingerprint(k.Type + " " + parts[2]); }).ToList());
+            if (MessageBox.Show(this, host + " port " + port + " offers these host keys:\n\n" + string.Join("\n", fps) +
+                "\n\nCompare them with the fingerprints the server's administrator gives you (on that server: ssh-keygen -lf on its host keys, or the Dashboard of OpenSSH Server Manager). Add them to your known_hosts only when they match.\n\nAdd them?",
+                Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            Directory.CreateDirectory(KeyGen.SshDir);
+            var existing = File.Exists(SshClient.KnownHostsPath) ? File.ReadAllText(SshClient.KnownHostsPath) : "";
+            File.AppendAllText(SshClient.KnownHostsPath, (existing.Length > 0 && !existing.EndsWith("\n") ? "\n" : "") + string.Join("\n", lines) + "\n", new UTF8Encoding(false));
+            LoadClient(); Status(lines.Count + " host key(s) of " + host + " added to known_hosts");
+        }
+
+        private List<string> ClientConfigLines() { return File.Exists(SshClient.ConfigPath) ? File.ReadAllLines(SshClient.ConfigPath).ToList() : new List<string>(); }
+
+        private void AddClientHost()
+        {
+            using (var d = new ClientHostDialog(null))
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                SshClient.WriteConfig(SshClient.WithHost(ClientConfigLines(), null, d.Pattern, d.Values));
+            }
+            LoadClient(); Status("Host added to " + SshClient.ConfigPath);
+        }
+
+        private void EditClientHost()
+        {
+            if (_lvClientHosts.SelectedItems.Count == 0) { Status("Select a host first"); return; }
+            var h = (ClientHost)_lvClientHosts.SelectedItems[0].Tag;
+            if (h.IsMatch) { Status("Match blocks are edited in Notepad"); return; }
+            var lines = ClientConfigLines();
+            var fresh = SshClient.ParseConfig(lines).FirstOrDefault(x => x.First == h.First && x.Pattern == h.Pattern);
+            if (fresh == null) { LoadClient(); throw new ConfigException("The file changed meanwhile; it was read again. Choose the host again."); }
+            using (var d = new ClientHostDialog(fresh))
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                SshClient.WriteConfig(SshClient.WithHost(lines, fresh, d.Pattern, d.Values));
+            }
+            LoadClient(); Status("Host saved in " + SshClient.ConfigPath);
+        }
+
+        private void RemoveClientHost()
+        {
+            if (_lvClientHosts.SelectedItems.Count == 0) { Status("Select a host first"); return; }
+            var h = (ClientHost)_lvClientHosts.SelectedItems[0].Tag;
+            if (MessageBox.Show(this, "Remove \"" + h.Pattern + "\" and its settings from " + SshClient.ConfigPath + "? The previous file is kept as config.bak.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            var lines = ClientConfigLines();
+            var fresh = SshClient.ParseConfig(lines).FirstOrDefault(x => x.First == h.First && x.Pattern == h.Pattern);
+            if (fresh == null) { LoadClient(); throw new ConfigException("The file changed meanwhile; it was read again. Choose the host again."); }
+            SshClient.WriteConfig(SshClient.WithoutHost(lines, fresh));
+            LoadClient(); Status("Host removed");
+        }
+
+        private void AddAgentKey()
+        {
+            string path;
+            using (var dlg = new OpenFileDialog { Title = "Choose a private key (not the .pub file)", InitialDirectory = KeyGen.SshDir, Filter = "Private keys|id_*;*.key;*|All files|*.*" })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                path = dlg.FileName;
+            }
+            if (path.EndsWith(".pub", StringComparison.OrdinalIgnoreCase)) throw new ConfigException("That is the public key. Choose the private key file (the same name without .pub).");
+            string pass = null;
+            if (KeyGen.IsEncrypted(path)) using (var d = new PasswordDialog("Passphrase for " + Path.GetFileName(path))) { if (d.ShowDialog(this) != DialogResult.OK) return; pass = d.Value; }
+            RunResult r;
+            try { r = Bg("Adding the key to ssh-agent...", () => SshClient.AgentAdd(path, pass)); }
+            finally { pass = null; }
+            LoadClient();
+            if (!r.Ok) throw new ConfigException("ssh-add did not add the key:\n\n" + r.Output);
+            Status("Key added to ssh-agent");
+        }
+
+        private void RemoveAgentKey()
+        {
+            if (_lvAgentKeys.SelectedItems.Count == 0) { Status("Select a key first"); return; }
+            var line = (string)_lvAgentKeys.SelectedItems[0].Tag;
+            var r = Bg("Removing the key from ssh-agent...", () => SshClient.AgentRemove(line));
+            LoadClient();
+            if (!r.Ok) throw new ConfigException("ssh-add -d did not remove the key:\n\n" + r.Output);
+            Status("Key removed from ssh-agent");
         }
 
         // ---------------- Firewall ----------------
@@ -1553,31 +2155,39 @@ namespace OpenSSHServerManager
             _fwPort = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = 22, Width = Ui.Px(90), Margin = new Padding(4, 6, 4, 4) }; _fwPort.AccessibleName = "TCP port"; portRow.Controls.Add(_fwPort);
             flow.Controls.Add(portRow);
             var bar = Flow();
-            bar.Controls.Add(Btn("Apply", (s, e) => Safe(() =>
-            {
-                int chosen = (int)_fwPort.Value;
-                string ports = chosen.ToString();
-                // A rule with several ports (edited in the Windows Firewall console) keeps its list unless the user decides otherwise.
-                if (!string.IsNullOrEmpty(_fwLoadedPorts) && !Firewall.IsSinglePort(_fwLoadedPorts))
-                {
-                    if (Firewall.Covers(_fwLoadedPorts, chosen)) ports = _fwLoadedPorts;
-                    else
-                    {
-                        var answer = MessageBox.Show(this, "The rule allows ports " + _fwLoadedPorts + ".\n\nYes: add port " + chosen + " to them.\nNo: allow only port " + chosen + ".", Program.AppName, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-                        if (answer == DialogResult.Cancel) return;
-                        ports = answer == DialogResult.Yes ? _fwLoadedPorts + "," + chosen : chosen.ToString();
-                    }
-                }
-                Firewall.Apply(_fwEnabled.Checked, (_fwDomain.Checked ? 1 : 0) | (_fwPrivate.Checked ? 2 : 0) | (_fwPublic.Checked ? 4 : 0), ports);
-                LoadFirewall(); Status("Firewall rule updated");
-            }), 110));
+            bar.Controls.Add(Btn("Apply", (s, e) => Safe(ApplyFirewall), 110));
+            _tips.SetToolTip(bar.Controls[0], "Ctrl+S");
             bar.Controls.Add(Btn("Use sshd port", (s, e) => Safe(() => { _fwPort.Value = _cfg.EffectivePort; }), 120));
             bar.Controls.Add(Btn("Remove rule", (s, e) => Safe(() => { if (MessageBox.Show(this, "Remove the inbound firewall rule for sshd? Remote clients will no longer reach the server.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) { Firewall.Remove(); LoadFirewall(); } }), 120));
             bar.Controls.Add(Btn("Windows Firewall console", (s, e) => Proc.OpenExternal("wf.msc"), 190));
             flow.Controls.Add(bar);
-            flow.Controls.Add(new Label { AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(4, 12, 4, 4), MaximumSize = new Size(Ui.Px(800), 0), Text = "The rule is scoped to sshd.exe. Domain-joined Windows Servers use the Domain profile; laptops on untrusted networks use Public. Restrict remote addresses in the Windows Firewall console if the server must only be reachable from specific networks." });
+            flow.Controls.Add(new Label { AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(4, 12, 4, 4), MaximumSize = new Size(Ui.Px(800), 0), Text = "The rule is scoped to sshd.exe. Domain-joined Windows Servers use the Domain profile; laptops on untrusted networks use Public. Restrict remote addresses in the Windows Firewall console if the server must only be reachable from specific networks." });
             page.Controls.Add(flow);
             return page;
+        }
+
+        private void ApplyFirewall()
+        {
+            int chosen = (int)_fwPort.Value;
+            string ports = chosen.ToString();
+            // A rule with several ports (edited in the Windows Firewall console) keeps its list unless the user decides otherwise.
+            if (!string.IsNullOrEmpty(_fwLoadedPorts) && !Firewall.IsSinglePort(_fwLoadedPorts))
+            {
+                if (Firewall.Covers(_fwLoadedPorts, chosen)) ports = _fwLoadedPorts;
+                else
+                {
+                    var answer = MessageBox.Show(this, "The rule allows ports " + _fwLoadedPorts + ".\n\nYes: add port " + chosen + " to them.\nNo: allow only port " + chosen + ".", Program.AppName, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                    if (answer == DialogResult.Cancel) return;
+                    ports = answer == DialogResult.Yes ? _fwLoadedPorts + "," + chosen : chosen.ToString();
+                }
+            }
+            int profiles = (_fwDomain.Checked ? 1 : 0) | (_fwPrivate.Checked ? 2 : 0) | (_fwPublic.Checked ? 4 : 0);
+            // Taking sshd's own port away from the rule, or switching the rule off, cuts off remote clients: ask first.
+            int sshdPort = _cfg == null ? 22 : _cfg.EffectivePort;
+            if (!Program.Unattended && (!_fwEnabled.Checked || !Firewall.Covers(ports, sshdPort)) &&
+                MessageBox.Show(this, (!_fwEnabled.Checked ? "The rule will be switched off" : "The rule will not allow port " + sshdPort + ", the port sshd listens on") + ": other computers can then no longer connect over SSH.\n\nApply anyway?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            Firewall.Apply(_fwEnabled.Checked, profiles, ports);
+            LoadFirewall(); Status("Firewall rule updated");
         }
 
         private void LoadFirewall()
@@ -1606,17 +2216,25 @@ namespace OpenSSHServerManager
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             var bar = Flow();
             bar.Controls.Add(Lbl("Event log " + EventLogs.LogName + "   filter:"));
-            _txtFilter = new TextBox { Width = Ui.Px(240), Margin = new Padding(4, 6, 4, 4) }; _txtFilter.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Enter) { e.SuppressKeyPress = true; Safe(LoadLogs); } };
+            _txtFilter = new TextBox { Width = Ui.Px(200), Margin = new Padding(4, 6, 4, 4) }; _txtFilter.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Enter) { e.SuppressKeyPress = true; Safe(LoadLogs); } };
             _txtFilter.AccessibleName = "Event filter"; bar.Controls.Add(_txtFilter);
+            _cmbPeriod = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = Ui.Px(130), Margin = new Padding(4, 6, 4, 4), AccessibleName = "Period" };
+            _cmbPeriod.Items.AddRange(new object[] { "Last hour", "Last 24 hours", "Last 7 days", "Last 30 days", "All" }); _cmbPeriod.SelectedIndex = 1;
+            _cmbPeriod.SelectedIndexChanged += (s, e) => { if (_lvEvents.Items.Count > 0) Safe(LoadLogs); };
+            bar.Controls.Add(_cmbPeriod);
             bar.Controls.Add(Lbl("max:"));
-            _numEvents = new NumericUpDown { Minimum = 50, Maximum = 5000, Value = 300, Increment = 50, Width = Ui.Px(80), Margin = new Padding(4, 6, 4, 4) }; _numEvents.AccessibleName = "Maximum number of events"; bar.Controls.Add(_numEvents);
+            _numEvents = new NumericUpDown { Minimum = 50, Maximum = 20000, Value = 500, Increment = 50, Width = Ui.Px(80), Margin = new Padding(4, 6, 4, 4) }; _numEvents.AccessibleName = "Maximum number of events"; bar.Controls.Add(_numEvents);
             bar.Controls.Add(Btn("Refresh", (s, e) => Safe(LoadLogs), 100));
             bar.Controls.Add(Btn("Failed logins only", (s, e) => Safe(() => { _txtFilter.Text = "Failed"; LoadLogs(); }), 150));
             bar.Controls.Add(Btn("Accepted logins only", (s, e) => Safe(() => { _txtFilter.Text = "Accepted"; LoadLogs(); }), 160));
-            bar.Controls.Add(Btn("Copy selected", (s, e) => Safe(() => { if (_lvEvents.SelectedItems.Count > 0) Clipboard.SetText(string.Join("\t", _lvEvents.SelectedItems[0].SubItems.Cast<ListViewItem.ListViewSubItem>().Select(x => x.Text))); }), 120));
+            bar.Controls.Add(Btn("Failed logins by address...", (s, e) => Safe(ShowFailedByAddress), 200));
+            bar.Controls.Add(Btn("Copy selected", (s, e) => Safe(() => { var rows = _lvEvents.SelectedItems.Cast<ListViewItem>().Select(i => string.Join("\t", i.SubItems.Cast<ListViewItem.ListViewSubItem>().Select(x => x.Text))).ToList(); if (rows.Count > 0) Clipboard.SetText(string.Join("\r\n", rows)); }), 120));
+            bar.Controls.Add(Btn("Export...", (s, e) => Safe(() => { var f = Export.SaveList(this, "OpenSSH events", "openssh-events", "Events of " + EventLogs.LogName + " on " + Environment.MachineName + ", " + _cmbPeriod.Text.ToLowerInvariant() + (_txtFilter.Text.Trim().Length > 0 ? ", filter \"" + _txtFilter.Text.Trim() + "\"" : "") + ".", _lvEvents, r => r.Count > 2 && r[2].StartsWith("Err", StringComparison.OrdinalIgnoreCase) ? "error" : null); if (f != null) Status("Exported to " + f); }), 100));
+            _tips.SetToolTip(bar.Controls[bar.Controls.Count - 3], "Addresses with failed or abandoned logins in the events shown, and a firewall block list for them.");
             root.Controls.Add(bar, 0, 0);
             _lvEvents = Lv("Time|140", "ID|50", "Level|80", "Message|760"); _lvEvents.AccessibleName = "Events";
-            _lvEvents.DoubleClick += (s, e) => { if (_lvEvents.SelectedItems.Count > 0) MessageBox.Show(this, _lvEvents.SelectedItems[0].SubItems[3].Text, "Event " + _lvEvents.SelectedItems[0].SubItems[1].Text); };
+            _lvEvents.MultiSelect = true;
+            _lvEvents.ItemActivate += (s, e) => { if (_lvEvents.SelectedItems.Count > 0) using (var d = new TextDialog("Event " + _lvEvents.SelectedItems[0].SubItems[1].Text + ", " + _lvEvents.SelectedItems[0].SubItems[0].Text, _lvEvents.SelectedItems[0].SubItems[3].Text)) d.ShowDialog(this); };
             root.Controls.Add(_lvEvents, 0, 1);
             split.Panel1.Controls.Add(root);
             var fileBox = new GroupBox { Text = "File log (%ProgramData%\\ssh\\logs, used when SyslogFacility is LOCAL0-7)", Dock = DockStyle.Fill, Padding = new Padding(6) };
@@ -1627,24 +2245,55 @@ namespace OpenSSHServerManager
             return page;
         }
 
+        private ComboBox _cmbPeriod;
+        private List<LogEvent> _events = new List<LogEvent>();
+
+        /// <summary>The period chosen on the Logs tab, or null for all events.</summary>
+        private TimeSpan? LogPeriod()
+        {
+            switch (_cmbPeriod.SelectedIndex)
+            {
+                case 0: return TimeSpan.FromHours(1);
+                case 1: return TimeSpan.FromDays(1);
+                case 2: return TimeSpan.FromDays(7);
+                case 3: return TimeSpan.FromDays(30);
+                default: return null;
+            }
+        }
+
         private void LoadLogs()
         {
-            Busy("Reading events...", () =>
+            int max = (int)_numEvents.Value; var filter = _txtFilter.Text.Trim(); var period = LogPeriod();
+            string fileText = null;
+            var events = BgCancellable("Reading events (Cancel stops and shows what was read)...", token =>
             {
-                var events = EventLogs.Read((int)_numEvents.Value, _txtFilter.Text.Trim());
-                _lvEvents.BeginUpdate(); _lvEvents.Items.Clear();
-                foreach (var ev in events)
-                {
-                    var it = new ListViewItem(new[] { ev.Time.ToString("yyyy-MM-dd HH:mm:ss"), ev.Id.ToString(), ev.Level, ev.Message });
-                    if (ev.Level.StartsWith("Err", StringComparison.OrdinalIgnoreCase)) it.ForeColor = Red;
-                    else if (ev.Level.StartsWith("Warn", StringComparison.OrdinalIgnoreCase) || ev.Message.IndexOf("Failed", StringComparison.OrdinalIgnoreCase) >= 0) it.ForeColor = Orange;
-                    _lvEvents.Items.Add(it);
-                }
-                _lvEvents.EndUpdate();
+                var l = EventLogs.Read(max, filter, period, token);
                 var f = EventLogs.FileLogPath();
-                _txtFileLog.Text = f == null ? "No file log present. Set 'Log destination' to LOCAL0 on the Settings tab to log to a file." : ("== " + f + "\r\n" + EventLogs.TailFile(f, 300).Replace("\r\n", "\n").Replace("\n", "\r\n"));
+                fileText = f == null ? "No file log present. Set 'Log destination' to LOCAL0 on the Settings tab to log to a file." : ("== " + f + "\r\n" + EventLogs.TailFile(f, 300).Replace("\r\n", "\n").Replace("\n", "\r\n"));
+                return l;
             });
-            Status(_lvEvents.Items.Count + " event(s)");
+            _events = events;
+            _lvEvents.BeginUpdate(); _lvEvents.Items.Clear();
+            foreach (var ev in events)
+            {
+                var it = new ListViewItem(new[] { ev.Time.ToString("yyyy-MM-dd HH:mm:ss"), ev.Id.ToString(), ev.Level, ev.Message });
+                if (ev.Level.StartsWith("Err", StringComparison.OrdinalIgnoreCase)) it.ForeColor = Red;
+                else if (ev.Level.StartsWith("Warn", StringComparison.OrdinalIgnoreCase) || ev.Message.IndexOf("Failed", StringComparison.OrdinalIgnoreCase) >= 0) it.ForeColor = Orange;
+                _lvEvents.Items.Add(it);
+            }
+            _lvEvents.EndUpdate();
+            _txtFileLog.Text = fileText ?? "";
+            Status(_lvEvents.Items.Count + " event(s)" + (_lvEvents.Items.Count >= max ? " (the maximum; raise it or choose a shorter period to see more)" : ""));
+        }
+
+        /// <summary>The addresses with failed logins among the events read, and the block list in the firewall.</summary>
+        private void ShowFailedByAddress()
+        {
+            if (_events.Count == 0) LoadLogs();
+            var sources = EventLogs.FailedByAddress(_events);
+            var ports = _cfg == null ? "22" : string.Join(",", Enumerable.Repeat(_cfg.EffectivePort, 1).Concat(_cfg.GetAll("Port").Select(p => { int n; return int.TryParse(p.Value, out n) ? n : 0; }).Where(n => n > 0)).Distinct());
+            using (var d = new FailedLoginsDialog(sources, _cmbPeriod.Text.ToLowerInvariant(), ports, Net.Sessions(_cfg == null ? 22 : _cfg.EffectivePort)))
+                d.ShowDialog(this);
         }
 
         // ---------------- Hardening ----------------
@@ -1655,10 +2304,15 @@ namespace OpenSSHServerManager
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             var bar = Flow();
             bar.Controls.Add(Btn("Run checks", (s, e) => Safe(RunChecks), 110));
+            bar.Controls.Add(Btn("Fix selected...", (s, e) => Safe(FixSelectedChecks), 130));
             bar.Controls.Add(Btn("Apply recommended settings", (s, e) => Safe(ApplyRecommended), 210));
-            bar.Controls.Add(new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), ForeColor = Color.DimGray, MaximumSize = new Size(Ui.Px(700), 0), Text = "Recommended: ClientAliveInterval 300, MaxAuthTries 4, LoginGraceTime 60, RequiredRSASize 2048, LogLevel VERBOSE, keyboard-interactive off, PerSourcePenalties on. Windows authentication and login restrictions are never changed automatically (see the Authentication and Settings tabs)." });
+            bar.Controls.Add(Btn("Export report...", (s, e) => Safe(() => { var f = Export.SaveList(this, "OpenSSH hardening report", "openssh-hardening", "Hardening checks of " + Environment.MachineName + " (" + Ssh.ServerVersion() + "), " + DateTime.Now.ToString("yyyy-MM-dd HH:mm") + ", by " + Program.AppName + " " + Program.AppVersion + ".", _lvChecks, r => r.Count > 1 ? (r[1] == "OK" ? "ok" : r[1] == "WARN" ? "warn" : null) : null); if (f != null) Status("Exported to " + f); }), 140));
+            _tips.SetToolTip(bar.Controls[1], "Fixes the selected warnings (double-click or Enter on one also works). Settings in sshd_config are shown before they are saved; login methods and login restrictions open their tab instead.");
+            bar.Controls.Add(new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), ForeColor = Theme.Muted, MaximumSize = new Size(Ui.Px(700), 0), Text = "Recommended: ClientAliveInterval 300, MaxAuthTries 4, LoginGraceTime 60, RequiredRSASize 2048, LogLevel VERBOSE, keyboard-interactive off, PerSourcePenalties on. Windows authentication and login restrictions are never changed automatically (see the Authentication and Settings tabs)." });
             root.Controls.Add(bar, 0, 0);
             _lvChecks = Lv("Check|220", "Status|70", "Detail|700"); _lvChecks.AccessibleName = "Hardening checks";
+            _lvChecks.MultiSelect = true;
+            _lvChecks.ItemActivate += (s, e) => Safe(FixSelectedChecks);
             root.Controls.Add(_lvChecks, 0, 1);
             page.Controls.Add(root);
             return page;
@@ -1666,18 +2320,83 @@ namespace OpenSSHServerManager
 
         private void RunChecks()
         {
-            Busy("Running checks...", () =>
+            var cfg = _cfg;
+            var checks = Bg("Running checks...", () => Hardening.Run(cfg));
+            _lvChecks.BeginUpdate(); _lvChecks.Items.Clear();
+            foreach (var c in checks)
             {
-                _lvChecks.BeginUpdate(); _lvChecks.Items.Clear();
-                foreach (var c in Hardening.Run(_cfg))
-                {
-                    var it = new ListViewItem(new[] { c.Name, c.Status, c.Detail });
-                    it.ForeColor = c.Status == "OK" ? Green : c.Status == "WARN" ? Orange : Color.Black;
-                    _lvChecks.Items.Add(it);
-                }
-                _lvChecks.EndUpdate();
-            });
+                var it = new ListViewItem(new[] { c.Name, c.Status, c.Detail }) { Tag = c };
+                it.ForeColor = c.Status == "OK" ? Green : c.Status == "WARN" ? Orange : Theme.Text;
+                _lvChecks.Items.Add(it);
+            }
+            _lvChecks.EndUpdate();
             Status("Checks complete: " + _lvChecks.Items.Cast<ListViewItem>().Count(i => i.SubItems[1].Text == "WARN") + " warning(s)");
+        }
+
+        /// <summary>The sshd_config change that fixes a check, or null when the check is not fixed by a setting.</summary>
+        internal static Action<SshdConfig> ConfigFix(string check)
+        {
+            switch (check)
+            {
+                case "Keyboard-interactive": return c => { c.Set("KbdInteractiveAuthentication", "no"); c.Set("ChallengeResponseAuthentication", ""); };
+                case "Empty passwords": return c => c.Set("PermitEmptyPasswords", "no");
+                case "MaxAuthTries": return c => c.Set("MaxAuthTries", "4");
+                case "Per-source penalties": return c => { if ((c.Get("PerSourcePenalties") ?? "").Equals("no", StringComparison.OrdinalIgnoreCase)) c.Set("PerSourcePenalties", ""); else c.Set("PerSourcePenalties", "authfail:5 noauth:1 crash:90 max:600"); };
+                case "MaxStartups throttling": return c => c.Set("MaxStartups", "10:30:100");
+                case "Idle session timeout": return c => { c.Set("ClientAliveInterval", "300"); c.Set("ClientAliveCountMax", "3"); };
+                case "Login grace time": return c => c.Set("LoginGraceTime", "60");
+                case "Minimum RSA key size": return c => c.Set("RequiredRSASize", "2048");
+                case "Log level": return c => c.Set("LogLevel", "VERBOSE");
+                // The defaults of OpenSSH 10.5 are the modern sets: an explicit list is what brings the old algorithms back.
+                case "Key exchange": return c => c.Set("KexAlgorithms", "");
+                case "Host key algorithms": return c => c.Set("HostKeyAlgorithms", "");
+                case "Ciphers": return c => c.Set("Ciphers", "");
+            }
+            return null;
+        }
+
+        /// <summary>Fixes the selected warnings: settings in one save (shown first) and one restart; other fixes one by one, each asked.</summary>
+        private void FixSelectedChecks()
+        {
+            var selected = _lvChecks.SelectedItems.Cast<ListViewItem>().Select(i => i.Tag as CheckResult).Where(c => c != null && c.Status == "WARN").ToList();
+            if (selected.Count == 0) { Status("Select one or more checks with WARN first"); return; }
+            var cfgFixes = selected.Where(c => ConfigFix(c.Name) != null).ToList();
+            foreach (var c in selected.Where(x => ConfigFix(x.Name) == null))
+            {
+                if (c.Name == "Password authentication") { _tabs.SelectedTab = _pgAuth; Status("Login methods are changed on the Authentication tab"); return; }
+                if (c.Name == "Login restriction") { _tabs.SelectedTab = _pgSettings; _fields["AllowGroups"].Focus(); Status("Enter the groups allowed to log in (AllowGroups), for example administrators \"openssh users\""); return; }
+                if (c.Name == "Firewall rule") { _tabs.SelectedTab = _pgFirewall; Status("Tick \"Inbound rule enabled\" and click Apply"); return; }
+                if (c.Name == "sshd service")
+                {
+                    if (MessageBox.Show(this, "Set the sshd service to start automatically and start it now?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) continue;
+                    _expectedStateChange = DateTime.UtcNow;
+                    Bg("Starting sshd...", () => { Services.SetStartMode("sshd", "auto"); Services.Start("sshd"); });
+                    continue;
+                }
+                if (c.Name == "Host keys") { GenerateHostKeys(); continue; }
+                if (c.Name == "administrators_authorized_keys ACL")
+                {
+                    Bg("Fixing permissions...", () => { Acl.Restrict(Ssh.AdminKeysPath, null); Acl.EnsureOwner(Ssh.AdminKeysPath, null); });
+                    LoadKeys(); continue;
+                }
+                if (c.Name == "Public network exposure")
+                {
+                    var fw = Firewall.Get(); if (fw == null) continue;
+                    int profiles = fw.Profiles & 3; if ((fw.Profiles & 0x7fffffff) == 0x7fffffff) profiles = 3; if (profiles == 0) profiles = 3;
+                    if (MessageBox.Show(this, "Limit the sshd firewall rule to the " + FirewallRule.ProfileText(profiles) + " profile(s)? Computers on a public network (a café, a hotel) can then no longer connect.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) continue;
+                    Firewall.Apply(fw.Enabled, profiles, fw.Ports); LoadFirewall(); continue;
+                }
+                MessageBox.Show(this, c.Name + ": " + c.Detail + "\n\nThis cannot be fixed from here. Repair the package (msiexec /fa <package>.msi) or correct the permissions by hand.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            if (cfgFixes.Count > 0)
+            {
+                var cand = _cfg.Copy();
+                foreach (var c in cfgFixes) ConfigFix(c.Name)(cand);
+                var b = SaveConfig(cand, "Fix: " + string.Join(", ", cfgFixes.Select(c => c.Name)) + ".", "Save and restart");
+                UseConfig(cand);
+                RestartWithRollback(b);
+            }
+            RunChecks();
         }
 
         private void ApplyRecommended()
@@ -1688,8 +2407,187 @@ namespace OpenSSHServerManager
             c.Set("LoginGraceTime", "60"); c.Set("RequiredRSASize", "2048");
             c.Set("KbdInteractiveAuthentication", "no"); c.Set("ChallengeResponseAuthentication", "");
             if ((c.Get("PerSourcePenalties") ?? "").Equals("no", StringComparison.OrdinalIgnoreCase)) c.Set("PerSourcePenalties", "");
-            var b = c.SaveValidated(); UseConfig(c);
+            var b = SaveConfig(c, "Apply the recommended settings.", "Save and restart"); UseConfig(c);
             RestartWithRollback(b); RunChecks();
+        }
+
+        // ---------------- Notification area icon, notifications ----------------
+        private NotifyIcon _tray; private ContextMenuStrip _trayMenu; private string _lastSshdStatus;
+        private EventLogWatcher _failureWatcher;
+        private readonly Queue<DateTime> _failures = new Queue<DateTime>();
+        private DateTime _lastFailureNotice = DateTime.MinValue;
+
+        /// <summary>The icon in the notification area: the service state in its tooltip, a menu, and notifications.</summary>
+        private void InitTray()
+        {
+            if (Program.Unattended || !Prefs.TrayIcon || _tray != null) return;
+            _trayMenu = new ContextMenuStrip();
+            _trayMenu.Items.Add("Open " + Program.AppName, null, (s, e) => ShowFromTray());
+            _trayMenu.Items.Add(new ToolStripSeparator());
+            _trayMenu.Items.Add("Start sshd", null, (s, e) => { ShowFromTray(); ServiceAction("start"); });
+            _trayMenu.Items.Add("Restart sshd", null, (s, e) => { ShowFromTray(); ServiceAction("restart"); });
+            _trayMenu.Items.Add("Stop sshd", null, (s, e) => { ShowFromTray(); ServiceAction("stop"); });
+            _trayMenu.Items.Add(new ToolStripSeparator());
+            _trayMenu.Items.Add("Sessions", null, (s, e) => { ShowFromTray(); _tabs.SelectedTab = _pgSessions; });
+            _trayMenu.Items.Add("Logs", null, (s, e) => { ShowFromTray(); _tabs.SelectedTab = _pgLogs; });
+            _trayMenu.Items.Add(new ToolStripSeparator());
+            _trayMenu.Items.Add("Exit", null, (s, e) => { ShowFromTray(); Close(); });
+            _tray = new NotifyIcon { Icon = Ui.AppIcon ?? SystemIcons.Application, Text = Program.AppName, ContextMenuStrip = _trayMenu, Visible = true };
+            _tray.DoubleClick += (s, e) => ShowFromTray();
+            _tray.BalloonTipClicked += (s, e) => ShowFromTray();
+            Resize += (s, e) => { if (WindowState == FormWindowState.Minimized && Prefs.MinimizeToTray && _tray != null) { Hide(); Notify(Program.AppName, "Still running here; double-click the icon to open the window.", ToolTipIcon.Info, false); } };
+            StartFailureWatcher();
+        }
+
+        private void ShowFromTray()
+        {
+            if (!Visible) Show();
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            Activate();
+        }
+
+        private DateTime _lastInfoNotice = DateTime.MinValue;
+        private void Notify(string title, string text, ToolTipIcon icon, bool important = true)
+        {
+            if (_tray == null) return;
+            if (!important && DateTime.UtcNow - _lastInfoNotice < TimeSpan.FromHours(1)) return; // "still running" only now and then
+            if (!important) _lastInfoNotice = DateTime.UtcNow;
+            _tray.ShowBalloonTip(10000, title, text, icon);
+            Log.Info("Notification: " + title + ": " + text);
+        }
+
+        /// <summary>Called with every dashboard refresh: the tooltip, and a notification when sshd stopped without this window stopping it.</summary>
+        private void TrayState(ServiceState sshd, int sessions)
+        {
+            if (_tray == null) return;
+            var t = "sshd: " + sshd.Status + (sshd.Status == "Running" ? ", " + sessions + " connection(s)" : "");
+            _tray.Text = t.Length > 63 ? t.Substring(0, 63) : t;
+            if (_lastSshdStatus == "Running" && sshd.Status != "Running" && DateTime.UtcNow - _expectedStateChange > TimeSpan.FromMinutes(2))
+                Notify("sshd is not running", "The SSH server is " + sshd.Status.ToLowerInvariant() + ". New connections are refused. Open the manager to start it, and see the Logs tab for the reason.", ToolTipIcon.Error);
+            else if (_lastSshdStatus != null && _lastSshdStatus != "Running" && sshd.Status == "Running" && DateTime.UtcNow - _expectedStateChange > TimeSpan.FromMinutes(2))
+                Notify("sshd is running again", "The SSH server was started.", ToolTipIcon.Info);
+            _lastSshdStatus = sshd.Status;
+        }
+
+        /// <summary>Counts failed logins as sshd logs them and notifies when a threshold is crossed (Prefs.FailedLoginThreshold).</summary>
+        private void StartFailureWatcher()
+        {
+            if (Prefs.FailedLoginThreshold <= 0) return;
+            try
+            {
+                _failureWatcher = new EventLogWatcher(new EventLogQuery(EventLogs.LogName, PathType.LogName, "*"));
+                _failureWatcher.EventRecordWritten += (s, e) =>
+                {
+                    if (e.EventRecord == null) return;
+                    string msg;
+                    using (e.EventRecord) { try { msg = e.EventRecord.FormatDescription(); } catch { msg = null; } }
+                    string user; var addr = EventLogs.FailedLoginAddress(msg, out user);
+                    if (addr == null) return;
+                    try { BeginInvoke((Action)(() => CountFailure(addr))); } catch (InvalidOperationException) { }
+                };
+                _failureWatcher.Enabled = true;
+            }
+            catch (Exception ex) { Log.Error("Watching the event log for failed logins", ex, false); _failureWatcher = null; }
+        }
+
+        private void CountFailure(string address)
+        {
+            var now = DateTime.UtcNow; var window = TimeSpan.FromMinutes(Prefs.FailedLoginMinutes);
+            _failures.Enqueue(now);
+            while (_failures.Count > 0 && now - _failures.Peek() > window) _failures.Dequeue();
+            if (_failures.Count >= Prefs.FailedLoginThreshold && now - _lastFailureNotice > window)
+            {
+                _lastFailureNotice = now;
+                Notify("Failed SSH logins", _failures.Count + " failed logins in the last " + Prefs.FailedLoginMinutes + " minute(s), the latest from " + address + ". The Logs tab shows them by address and can block addresses.", ToolTipIcon.Warning);
+            }
+        }
+
+        private void StopWatchers()
+        {
+            try { if (_failureWatcher != null) { _failureWatcher.Enabled = false; _failureWatcher.Dispose(); _failureWatcher = null; } } catch { }
+            try { if (_tray != null) { _tray.Visible = false; _tray.Dispose(); _tray = null; } } catch { }
+        }
+
+        // ---------------- Setup wizard ----------------
+        /// <summary>Offers the setup wizard once, on the first start of the manager on this account.</summary>
+        private void OfferWizard()
+        {
+            if (Program.Unattended || Prefs.WizardOffered) return;
+            Prefs.WizardOffered = true;
+            if (MessageBox.Show(this, "Set up the SSH server now? A short wizard helps with the port and networks, a key for you, how accounts log in, and the recommended settings.\n\nYou can start it any time with \"Setup wizard...\" on the Dashboard.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                RunWizard();
+        }
+
+        /// <summary>Keys authorized for the account running this program, in the file sshd reads for it.</summary>
+        private static int MyKeyCount()
+        {
+            try
+            {
+                var file = Ssh.AuthorizedKeysFileFor(KeyGen.LoginName(), Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+                if (file == null) file = Elevation.IsAdministrator() ? Ssh.AdminKeysPath : Keys.UserKeysPath(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+                return Keys.Read(file).Count(k => k.Type != "?");
+            }
+            catch { return 0; }
+        }
+
+        private void RunWizard()
+        {
+            var fw = Bg("Reading the current settings...", () => Firewall.Get());
+            string err; var allow = _cfg.GetCombinedArgs("AllowGroups", out err);
+            WizardPlan plan;
+            using (var w = new SetupWizard(_cfg.EffectivePort, fw, allow == null || allow.Count == 0 ? null : SshdArgs.FormatTyped(allow), () => Bg("Reading your keys...", () => MyKeyCount()), QuickAddMyKey))
+            {
+                if (w.ShowDialog(this) != DialogResult.OK) return;
+                plan = w.Plan;
+            }
+            ApplyWizard(plan, fw);
+        }
+
+        /// <summary>Applies the wizard's plan: one save of sshd_config (with the preview and your-access check), the firewall rule, one restart with the keep-or-restore question.</summary>
+        private void ApplyWizard(WizardPlan plan, FirewallRule fw)
+        {
+            var cand = _cfg.Copy();
+            if (plan.Port != _cfg.EffectivePort) cand.SetFirst("Port", plan.Port.ToString());
+            if (plan.Login != WizardLogin.Keep)
+            {
+                var st = AuthConfig.Read(cand);
+                if (plan.Login == WizardLogin.EveryoneKeyOnly)
+                    AuthConfig.Apply(cand, new AuthMethods { Password = false, PublicKey = true, Kerberos = st.Global.Kerberos }, st.RulesProblem == null ? st.Rules : null);
+                else
+                {
+                    if (st.RulesProblem != null) throw new ConfigException("The rules section of sshd_config was changed by hand (" + st.RulesProblem + "), so the wizard cannot add the rule for administrators. Correct it on the sshd_config (text) tab, or add the rule on the Authentication tab.");
+                    string e;
+                    var admins = Accounts.Canonical(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null).Translate(typeof(NTAccount)).Value, true, out e) ?? "administrators";
+                    var rules = st.Rules.Where(r => !(r.IsGroup && r.Name == admins)).ToList();
+                    rules.Insert(0, new AuthRule { IsGroup = true, Name = admins, Methods = new AuthMethods { Password = false, PublicKey = true } });
+                    AuthConfig.Apply(cand, st.Global, rules);
+                }
+            }
+            if (plan.Recommended)
+            {
+                cand.Set("ClientAliveInterval", "300"); cand.Set("ClientAliveCountMax", "3"); cand.Set("MaxAuthTries", "4"); cand.Set("LogLevel", "VERBOSE");
+                cand.Set("LoginGraceTime", "60"); cand.Set("RequiredRSASize", "2048");
+                cand.Set("KbdInteractiveAuthentication", "no"); cand.Set("ChallengeResponseAuthentication", "");
+                if ((cand.Get("PerSourcePenalties") ?? "").Equals("no", StringComparison.OrdinalIgnoreCase)) cand.Set("PerSourcePenalties", "");
+            }
+            if (plan.AllowGroups != null) { string e; cand.Set("AllowGroups", plan.AllowGroups.Length == 0 ? "" : SshdArgs.Join(SshdArgs.ParseTyped(plan.AllowGroups, out e))); }
+            var fwProfiles = fw == null ? 0 : ((fw.Profiles & 0x7fffffff) == 0x7fffffff ? 7 : fw.Profiles & 7);
+            var changes = plan.Describe(_cfg.EffectivePort, fwProfiles, fw != null);
+            string backup = null;
+            if (cand.Text != _cfg.Text)
+            {
+                backup = SaveConfig(cand, "Setup wizard: " + string.Join(" ", changes), "Apply");
+                UseConfig(cand);
+            }
+            if (fw == null || fwProfiles != plan.Profiles || !Firewall.Covers(fw.Ports, plan.Port) || fw.Enabled != plan.FirewallEnabled)
+            {
+                var ports = fw == null || Firewall.IsSinglePort(fw.Ports) ? plan.Port.ToString() : (Firewall.Covers(fw.Ports, plan.Port) ? fw.Ports : fw.Ports + "," + plan.Port);
+                Firewall.Apply(plan.FirewallEnabled, plan.Profiles, ports);
+                LoadFirewall();
+            }
+            if (backup != null) RestartWithRollback(backup);
+            RefreshDashboard();
+            Status("Setup wizard applied");
         }
 
         // ---------------- About ----------------
@@ -1717,8 +2615,54 @@ namespace OpenSSHServerManager
             wiki.LinkClicked += (s, e) => Proc.OpenExternal("https://github.com/PowerShell/Win32-OpenSSH/wiki");
             flow.Controls.Add(wiki);
             flow.Controls.Add(Btn("Open manager log", (s, e) => Proc.OpenExternal("notepad.exe", "\"" + Log.Path + "\""), 150));
+
+            // Preferences of this account (HKCU\Software\OpenSSH Server Manager).
+            flow.Controls.Add(Lbl("Preferences", true));
+            var themeRow = Flow(); themeRow.Dock = DockStyle.None; themeRow.Padding = new Padding(0);
+            themeRow.Controls.Add(Lbl("Appearance:"));
+            var theme = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = Ui.Px(200), Margin = new Padding(4, 6, 4, 4), AccessibleName = "Appearance" };
+            theme.Items.AddRange(new object[] { "Like Windows", "Light", "Dark" });
+            theme.SelectedIndex = Prefs.Theme == "light" ? 1 : Prefs.Theme == "dark" ? 2 : 0;
+            theme.SelectedIndexChanged += (s, e) => Safe(() => { Prefs.Theme = theme.SelectedIndex == 1 ? "light" : theme.SelectedIndex == 2 ? "dark" : "system"; ApplyTheme(); });
+            themeRow.Controls.Add(theme);
+            if (SystemInformation.HighContrast) themeRow.Controls.Add(new Label { AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(8, 10, 4, 4), Text = "High contrast is on: its colours are used." });
+            flow.Controls.Add(themeRow);
+            Func<string, bool, Action<bool>, CheckBox> pref = (text, value, set) =>
+            {
+                var c = new CheckBox { Text = text, AutoSize = true, Checked = value, Margin = new Padding(4, 3, 4, 3), MaximumSize = new Size(Ui.Px(900), 0) };
+                c.CheckedChanged += (s, e) => set(c.Checked);
+                flow.Controls.Add(c); return c;
+            };
+            pref("Show the changes to sshd_config before every save", Prefs.PreviewChanges, v => Prefs.PreviewChanges = v);
+            pref("After a restart with new settings, ask to keep them; restore the previous settings after " + Prefs.ConfirmSeconds + " s without an answer", Prefs.ConfirmAfterRestart, v => Prefs.ConfirmAfterRestart = v);
+            pref("Icon in the notification area, with a notification when sshd stops or logins fail repeatedly", Prefs.TrayIcon, v => { Prefs.TrayIcon = v; if (v) InitTray(); else StopWatchers(); });
+            pref("Minimize to the notification area", Prefs.MinimizeToTray, v => Prefs.MinimizeToTray = v);
+            var failRow = Flow(); failRow.Dock = DockStyle.None; failRow.Padding = new Padding(0);
+            failRow.Controls.Add(Lbl("Notify after"));
+            var failN = new NumericUpDown { Minimum = 0, Maximum = 10000, Value = Prefs.FailedLoginThreshold, Width = Ui.Px(70), Margin = new Padding(4, 6, 4, 4), AccessibleName = "Failed logins before a notification (0 = never)" };
+            failN.ValueChanged += (s, e) => Prefs.FailedLoginThreshold = (int)failN.Value;
+            failRow.Controls.Add(failN);
+            failRow.Controls.Add(Lbl("failed logins within"));
+            var failM = new NumericUpDown { Minimum = 1, Maximum = 1440, Value = Prefs.FailedLoginMinutes, Width = Ui.Px(70), Margin = new Padding(4, 6, 4, 4), AccessibleName = "Minutes for counting failed logins" };
+            failM.ValueChanged += (s, e) => Prefs.FailedLoginMinutes = (int)failM.Value;
+            failRow.Controls.Add(failM);
+            failRow.Controls.Add(Lbl("minute(s) (0 = never)"));
+            flow.Controls.Add(failRow);
+            flow.Controls.Add(new Label { AutoSize = true, ForeColor = Theme.Muted, MaximumSize = new Size(Ui.Px(900), 0), Margin = new Padding(4, 6, 4, 4), Text = "Keyboard: Ctrl+S saves the tab shown, F5 refreshes it, Ctrl+1 to Ctrl+9 open the tabs, Ctrl+F finds in the sshd_config text, Enter opens the selected item of a list, Delete removes it." });
             page.Controls.Add(flow);
+            flow.AutoScroll = true;
             return page;
+        }
+
+        /// <summary>Switches the colours of the window to the preference (light, dark, like Windows); high contrast always wins.</summary>
+        private void ApplyTheme()
+        {
+            var previous = Theme.Current;
+            Theme.Current = Theme.For(Prefs.Theme);
+            Theme.Apply(this, previous);
+            // List rows coloured by state take the new colours the next time they are filled.
+            _lvChecks.Items.Clear();
+            Invalidate(true);
         }
     }
 }

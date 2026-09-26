@@ -205,6 +205,32 @@ namespace OpenSSHServerManager
             File.SetAccessControl(path, fs);
         }
 
+        /// <summary>
+        /// Makes sure a file's owner is one sshd accepts for an authorized_keys file: the account (user), SYSTEM or
+        /// Administrators. Otherwise the owner becomes the Administrators group, which an elevated administrator may set.
+        /// Returns the owner afterwards.
+        /// </summary>
+        public static SecurityIdentifier EnsureOwner(string path, SecurityIdentifier user)
+        {
+            var fs = File.GetAccessControl(path, AccessControlSections.Owner);
+            var owner = fs.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+            if (OwnerAccepted(owner, user)) return owner;
+            try
+            {
+                fs.SetOwner(Admins);
+                File.SetAccessControl(path, fs);
+                Log.Info("Owner of " + path + " set to Administrators (was " + (owner == null ? "unknown" : owner.Value) + ")");
+                return Admins;
+            }
+            catch (Exception ex) { Log.Error("Could not set the owner of " + path, ex, false); return owner; }
+        }
+
+        /// <summary>The owners sshd accepts for a key file of an account: the account, SYSTEM, Administrators.</summary>
+        public static bool OwnerAccepted(SecurityIdentifier owner, SecurityIdentifier user)
+        {
+            return owner != null && (owner == Admins || owner == System || (user != null && owner == user));
+        }
+
         public static SecurityIdentifier SidOfAccount(string account)
         {
             try { return (SecurityIdentifier)new NTAccount(account).Translate(typeof(SecurityIdentifier)); } catch { return null; }

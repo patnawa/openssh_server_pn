@@ -82,7 +82,9 @@ namespace OpenSSHServerManager
         /// <summary>Runs sshd -t against the live configuration, or against a candidate file.</summary>
         public static RunResult TestConfig(string candidatePath)
         {
-            var args = "-t" + (candidatePath != null ? " -f \"" + candidatePath + "\"" : "");
+            // With the scratch folder of --selftest, the file there is the live one.
+            if (candidatePath == null && ConfigDirOverride != null) candidatePath = ConfigPath;
+            var args = "-t" + (candidatePath != null ? " -f " + Proc.Quote(candidatePath) : "");
             return Proc.Run(Exe("sshd.exe"), args, 20000);
         }
 
@@ -91,7 +93,7 @@ namespace OpenSSHServerManager
         public static Dictionary<string, string> EffectiveSettings(out string error)
         {
             var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            var r = Proc.Run(Exe("sshd.exe"), "-T", 20000);
+            var r = Proc.Run(Exe("sshd.exe"), "-T" + (ConfigDirOverride != null ? " -f " + Proc.Quote(ConfigPath) : ""), 20000);
             error = r.Ok ? null : ("sshd -T failed (exit " + r.ExitCode + "): " + r.Output);
             foreach (var line in r.StdOut.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
             {
@@ -335,13 +337,28 @@ namespace OpenSSHServerManager
             catch { }
             return l;
         }
-        public static string Banner(int port)
+        public static string Banner(int port) { return Banner(IPAddress.Loopback, port); }
+
+        /// <summary>
+        /// The SSH banner from a listener as Net.Listeners shows it ("0.0.0.0:22", "[::]:22", "192.168.1.10:2222"): a wildcard
+        /// address is reached through loopback, a specific one directly.
+        /// </summary>
+        public static string BannerAt(string endpoint)
+        {
+            int i = (endpoint ?? "").LastIndexOf(':'); int port; IPAddress ip;
+            if (i <= 0 || !int.TryParse(endpoint.Substring(i + 1), out port) || !IPAddress.TryParse(endpoint.Substring(0, i).Trim('[', ']'), out ip)) return "cannot read the address " + endpoint;
+            if (ip.Equals(IPAddress.Any)) ip = IPAddress.Loopback;
+            else if (ip.Equals(IPAddress.IPv6Any)) ip = IPAddress.IPv6Loopback;
+            return Banner(ip, port);
+        }
+
+        public static string Banner(IPAddress address, int port)
         {
             try
             {
-                using (var c = new System.Net.Sockets.TcpClient())
+                using (var c = new System.Net.Sockets.TcpClient(address.AddressFamily))
                 {
-                    var ar = c.BeginConnect(IPAddress.Loopback, port, null, null);
+                    var ar = c.BeginConnect(address, port, null, null);
                     if (!ar.AsyncWaitHandle.WaitOne(3000)) return "no answer on port " + port;
                     c.EndConnect(ar);
                     var s = c.GetStream(); s.ReadTimeout = 3000;

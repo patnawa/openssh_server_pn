@@ -69,15 +69,23 @@ namespace OpenSSHServerManager
             return m.Success ? m.Groups[2].Value : (line ?? "").Trim();
         }
 
+        /// <summary>Fingerprints already worked out, by key type and material: every reload of a list used to start one ssh-keygen per key.</summary>
+        private static readonly Dictionary<string, string> FingerprintCache = new Dictionary<string, string>(StringComparer.Ordinal);
+
         public static string Fingerprint(string keyLine)
         {
+            var m0 = KeyLine.Match(keyLine ?? "");
+            var cacheKey = m0.Success ? m0.Groups[1].Value + " " + m0.Groups[2].Value : null;
+            if (cacheKey != null) lock (FingerprintCache) { string fp; if (FingerprintCache.TryGetValue(cacheKey, out fp)) return fp; }
             var tmp = Path.Combine(Path.GetTempPath(), "key." + Guid.NewGuid().ToString("N") + ".pub");
             try
             {
                 File.WriteAllText(tmp, keyLine + "\n");
                 var r = Proc.Run(Ssh.Exe("ssh-keygen.exe"), "-lf \"" + tmp + "\"", 10000);
                 var m = Regex.Match(r.StdOut, @"(SHA256:[A-Za-z0-9+/=]+)");
-                return m.Success ? m.Groups[1].Value : (r.Ok ? r.StdOut.Trim() : "invalid key");
+                var result = m.Success ? m.Groups[1].Value : (r.Ok ? r.StdOut.Trim() : "invalid key");
+                if (m.Success && cacheKey != null) lock (FingerprintCache) FingerprintCache[cacheKey] = result;
+                return result;
             }
             catch { return "?"; }
             finally { try { File.Delete(tmp); } catch { } }
@@ -94,6 +102,9 @@ namespace OpenSSHServerManager
             if (File.Exists(path)) File.Copy(path, path + ".bak", true);
             File.WriteAllText(path, string.Join("\n", lines) + "\n", new UTF8Encoding(false));
             Acl.Restrict(path, ownerSid);
+            // sshd also checks the owner (w32-sshfileperm.c): the account itself, SYSTEM or Administrators. A file created by an
+            // elevated administrator whose objects are owned by the account (not the Administrators group) would be refused.
+            Acl.EnsureOwner(path, ownerSid);
         }
 
         /// <summary>Every line of an authorized_keys file as written, comments and blank lines included.</summary>

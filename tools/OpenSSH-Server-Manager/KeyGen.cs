@@ -89,7 +89,7 @@ namespace OpenSSHServerManager
         }
 
         /// <summary>Environment for ssh-keygen or ssh: askpass with the secret, or no prompting at all.</summary>
-        private static IDictionary<string, string> AskpassEnvironment(string secret)
+        internal static IDictionary<string, string> AskpassEnvironment(string secret)
         {
             if (secret == null) return new Dictionary<string, string> { { "SSH_ASKPASS_REQUIRE", "never" } };
             return new Dictionary<string, string> { { "SSH_ASKPASS", Application.ExecutablePath }, { "SSH_ASKPASS_REQUIRE", "force" }, { SecretVariable, secret } };

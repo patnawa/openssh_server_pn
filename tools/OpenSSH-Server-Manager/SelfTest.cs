@@ -330,6 +330,244 @@ namespace OpenSSHServerManager
                 if (!Services.RestartNeeded(start, start.AddMinutes(5))) throw new Exception("a file saved after the start was not reported");
                 return null;
             });
+            UnitSince16(test, tmpDir);
+        }
+
+        /// <summary>Unit tests of what manager 1.6.0 added or fixed.</summary>
+        private static void UnitSince16(Action<string, Func<string>> test, string tmpDir)
+        {
+            test("sshd_config: a comment after a value is not part of it, and survives a Set", () =>
+            {
+                var c = new SshdConfig { Lines = new List<string> { "MaxAuthTries 4 # company policy", "Banner C:\\notes\\a#b.txt", "AllowUsers \"x #y\" z #end" } };
+                if (c.Get("MaxAuthTries") != "4") throw new Exception("MaxAuthTries read as [" + c.Get("MaxAuthTries") + "]");
+                if (c.Get("Banner") != "C:\\notes\\a#b.txt") throw new Exception("a # inside an argument was cut: " + c.Get("Banner"));
+                if (c.Get("AllowUsers") != "\"x #y\" z") throw new Exception("quoted # or the comment: " + c.Get("AllowUsers"));
+                c.Set("MaxAuthTries", "3");
+                if (c.Lines[0] != "MaxAuthTries 3 # company policy") throw new Exception("the comment was lost: " + c.Lines[0]);
+                return null;
+            });
+            test("sshd_config: commented examples, not prose, are replaced", () =>
+            {
+                var c = new SshdConfig { Lines = new List<string> { "# Port forwarding is used by the tunnels", "#Port 22", "Match all" } };
+                c.Set("Port", "2222");
+                if (c.Lines[0] != "# Port forwarding is used by the tunnels" || c.Lines[1] != "Port 2222") throw new Exception(string.Join(" | ", c.Lines));
+                var d = new SshdConfig { Lines = new List<string> { "# Port forwarding", "Match all" } };
+                d.Set("Port", "2222");
+                if (d.Lines[0] != "# Port forwarding" || d.Lines.IndexOf("Port 2222") != 1) throw new Exception(string.Join(" | ", d.Lines));
+                return null;
+            });
+            test("sshd_config: SetFirst keeps the other Port and ListenAddress lines, Set keeps one", () =>
+            {
+                var c = new SshdConfig { Lines = new List<string> { "Port 22", "Port 2222", "ListenAddress 10.0.0.1", "ListenAddress ::1" } };
+                c.SetFirst("Port", "2200");
+                if (!c.Lines.SequenceEqual(new[] { "Port 2200", "Port 2222", "ListenAddress 10.0.0.1", "ListenAddress ::1" })) throw new Exception(string.Join(" | ", c.Lines));
+                c.SetFirst("ListenAddress", "");
+                if (c.Lines[2] != "#ListenAddress 10.0.0.1" || c.Lines[3] != "ListenAddress ::1") throw new Exception(string.Join(" | ", c.Lines));
+                c.Set("Port", "22");
+                if (c.Lines[0] != "Port 22" || c.Lines[1] != "#Port 2222") throw new Exception(string.Join(" | ", c.Lines));
+                return null;
+            });
+            test("sshd_config: Allow and Deny lines add up", () =>
+            {
+                var c = new SshdConfig { Lines = new List<string> { "AllowUsers alice bob", "AllowGroups administrators", "AllowUsers \"o'brien\"", "Match User x", "AllowUsers y" } };
+                string err; var all = c.GetCombinedArgs("AllowUsers", out err);
+                if (all == null || !all.SequenceEqual(new[] { "alice", "bob", "o'brien" })) throw new Exception(all == null ? err : string.Join(",", all));
+                c.Set("AllowUsers", SshdArgs.Join(all.Concat(new[] { "carol" })));
+                if (c.Lines[0] != "AllowUsers alice bob \"o'brien\" carol" || !c.Lines[2].StartsWith("#")) throw new Exception(string.Join(" | ", c.Lines));
+                if (!SshdConfig.CumulativeKeywords.Contains("DenyGroups")) throw new Exception("DenyGroups is cumulative in sshd");
+                return null;
+            });
+            test("sshd_config: the port of ListenAddress (IPv6 without a port has none)", () =>
+            {
+                var cases = new Dictionary<string, int> { { "::1", 0 }, { "fe80::1", 0 }, { "[::1]:2222", 2222 }, { "0.0.0.0:2200", 2200 }, { "10.0.0.1", 0 }, { "host.example:2022", 2022 }, { "[fe80::1%3]:22 rdomain x", 22 }, { "0.0.0.0:99999", 0 } };
+                foreach (var kv in cases) if (SshdConfig.ListenPort(kv.Key) != kv.Value) throw new Exception(kv.Key + " -> " + SshdConfig.ListenPort(kv.Key) + ", expected " + kv.Value);
+                var c = new SshdConfig { Lines = new List<string> { "ListenAddress ::1" } };
+                if (c.EffectivePort != 22) throw new Exception("ListenAddress ::1 gave port " + c.EffectivePort);
+                c = new SshdConfig { Lines = new List<string> { "ListenAddress [::1]:2222" } };
+                if (c.EffectivePort != 2222) throw new Exception("ListenAddress [::1]:2222 gave port " + c.EffectivePort);
+                return null;
+            });
+            test("sshd_config: new settings go before the first Include", () =>
+            {
+                var c = new SshdConfig { Lines = new List<string> { "Include C:/ProgramData/ssh/sshd_config.d/*.conf", "Port 22", "Match Group administrators", "\tX y" } };
+                c.Set("MaxAuthTries", "4");
+                if (c.Lines[0] != "MaxAuthTries 4") throw new Exception(string.Join(" | ", c.Lines));
+                if (c.Includes().Count != 1) throw new Exception("Include not found");
+                return null;
+            });
+            test("sshd_config: backups get unique names, are listed newest first and pruned", () =>
+            {
+                var dir = Path.Combine(tmpDir, "backups"); Directory.CreateDirectory(dir);
+                var p = Path.Combine(dir, "sshd_config"); File.WriteAllText(p, "Port 22\n");
+                var t = new DateTime(2026, 9, 26, 12, 0, 0);
+                var b1 = SshdConfig.NewBackupPath(p, t); File.WriteAllText(b1, "1");
+                var b2 = SshdConfig.NewBackupPath(p, t); File.WriteAllText(b2, "2");
+                var b3 = SshdConfig.NewBackupPath(p, t.AddSeconds(1)); File.WriteAllText(b3, "3");
+                File.WriteAllText(p + ".bak.notes.txt", "not a backup");
+                if (b1 == b2 || !b2.EndsWith("-2")) throw new Exception("two saves in the same second: " + b1 + ", " + b2);
+                var list = SshdConfig.ListBackups(p).Select(Path.GetFileName).ToList();
+                if (!list.SequenceEqual(new[] { b3, b2, b1 }.Select(Path.GetFileName))) throw new Exception("order: " + string.Join(", ", list));
+                if (SshdConfig.PruneBackups(p, 1) != 2 || File.Exists(b1) || File.Exists(b2) || !File.Exists(b3) || !File.Exists(p + ".bak.notes.txt")) throw new Exception("pruning");
+                return null;
+            });
+            test("sshd_config: ReplaceFile keeps the permissions of the file it replaces", () =>
+            {
+                var p = Path.Combine(tmpDir, "acl_config"); File.WriteAllText(p, "old\n");
+                var fs = File.GetAccessControl(p);
+                var everyone = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
+                fs.AddAccessRule(new FileSystemAccessRule(everyone, FileSystemRights.ReadData, AccessControlType.Allow)); File.SetAccessControl(p, fs);
+                SshdConfig.WriteReplacing(p, "new\n");
+                if (File.ReadAllText(p) != "new\n") throw new Exception("content not written");
+                if (!File.GetAccessControl(p).GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().Any(r => (SecurityIdentifier)r.IdentityReference == everyone)) throw new Exception("the explicit permission of the replaced file was lost");
+                if (Directory.GetFiles(tmpDir, "acl_config.new-*").Length > 0) throw new Exception("a temporary file was left behind");
+                return null;
+            });
+            test("sshd_config: a file changed on disk after it was read is detected", () =>
+            {
+                var p = Path.Combine(tmpDir, "changed_config"); File.WriteAllText(p, "Port 22\n");
+                var c = SshdConfig.Load(p);
+                if (c.LoadedHash != SshdConfig.FileHash(p) || c.LoadedHash.Length != 64) throw new Exception("hash at load: " + c.LoadedHash);
+                if (c.Copy().LoadedHash != c.LoadedHash) throw new Exception("a copy lost the hash");
+                File.WriteAllText(p, "Port 2222\n");
+                if (SshdConfig.FileHash(p) == c.LoadedHash) throw new Exception("the change was not seen");
+                if (SshdConfig.FileHash(Path.Combine(tmpDir, "no-such-file")) != "") throw new Exception("a missing file must hash to empty");
+                return null;
+            });
+            test("line differences", () =>
+            {
+                var a = new List<string> { "a", "b", "c", "d", "e" }; var b = new List<string> { "a", "B", "c", "d", "e", "f" };
+                var d = Diff.Lines(a, b);
+                var s = string.Join("", d.Select(x => x.Kind + x.Text));
+                if (s != " a-b+B c d e+f") throw new Exception(s);
+                if (Diff.Changed(d, '+') != 2 || Diff.Changed(d, '-') != 1) throw new Exception("counts");
+                var ctx = Diff.WithContext(Diff.Lines(Enumerable.Range(0, 40).Select(i => "l" + i).ToList(), Enumerable.Range(0, 40).Select(i => i == 20 ? "X" : "l" + i).ToList()), 2);
+                if (ctx.Count != 1 + 2 + 2 + 2 + 1 || ctx.First().Kind != '@' || ctx.Last().Kind != '@') throw new Exception("context: " + Diff.Format(ctx).Replace("\r\n", "|"));
+                if (Diff.Lines(new List<string>(), new List<string> { "x" }).Single().Kind != '+') throw new Exception("empty old text");
+                return null;
+            });
+            test("access check: DenyUsers, AllowUsers, DenyGroups, AllowGroups as sshd decides", () =>
+            {
+                Func<string, bool> admins = g => g == "administrators" || AuthConfig.Glob("administrators", g);
+                var none = new List<string>();
+                if (AuthConfig.AccessRefusal("alice", none, none, none, none, admins) != null) throw new Exception("no lists refused");
+                if (AuthConfig.AccessRefusal("alice", new List<string> { "al*" }, none, none, none, admins) == null) throw new Exception("DenyUsers al* did not refuse alice");
+                if (AuthConfig.AccessRefusal("alice", none, new List<string> { "bob", "carol" }, none, none, admins) == null) throw new Exception("AllowUsers without alice did not refuse");
+                if (AuthConfig.AccessRefusal("alice", none, new List<string> { "alice@10.0.0.*" }, none, none, admins) != null) throw new Exception("user@host counts as matching (the host is not known here)");
+                if (AuthConfig.AccessRefusal("alice", none, new List<string> { "Alice" }, none, none, admins) == null) throw new Exception("sshd compares user names case-sensitively");
+                if (AuthConfig.AccessRefusal("alice", none, none, new List<string> { "admin*" }, none, admins) == null) throw new Exception("DenyGroups admin* did not refuse an administrator");
+                if (AuthConfig.AccessRefusal("alice", none, none, none, new List<string> { "openssh users" }, admins) == null) throw new Exception("AllowGroups without a group of alice did not refuse");
+                if (AuthConfig.AccessRefusal("alice", none, none, none, new List<string> { "openssh users", "administrators" }, admins) != null) throw new Exception("AllowGroups with administrators refused an administrator");
+                foreach (var g in new[] { new[] { "abc", "a?c", "1" }, new[] { "abc", "a*", "1" }, new[] { "abc", "*c", "1" }, new[] { "abc", "a*d", "0" }, new[] { "", "*", "1" }, new[] { "ab", "a", "0" }, new[] { "a*b", "a*b", "1" } })
+                    if (AuthConfig.Glob(g[0], g[1]) != (g[2] == "1")) throw new Exception("Glob(" + g[0] + ", " + g[1] + ")");
+                return null;
+            });
+            test("failed logins: the client address of sshd's messages", () =>
+            {
+                var cases = new Dictionary<string, string>
+                {
+                    { "sshd: Failed password for alice from 192.0.2.10 port 50123 ssh2", "192.0.2.10|alice" },
+                    { "sshd: Failed password for invalid user admin from 2001:db8::5 port 22 ssh2", "2001:db8::5|admin" },
+                    { "sshd: Invalid user oracle from 198.51.100.7 port 4444", "198.51.100.7|oracle" },
+                    { "sshd: Connection closed by authenticating user bob 203.0.113.9 port 61000 [preauth]", "203.0.113.9|bob" },
+                    { "sshd: Disconnected from invalid user test 203.0.113.10 port 61001 [preauth]", "203.0.113.10|test" },
+                    { "sshd: error: maximum authentication attempts exceeded for root from 192.0.2.11 port 1 ssh2 [preauth]", "192.0.2.11|root" },
+                    { "sshd: Timeout before authentication for 192.0.2.12 port 2", "192.0.2.12|" },
+                    { "sshd: Failed password for alice from ::ffff:192.0.2.13 port 3 ssh2", "192.0.2.13|alice" },
+                    { "sshd: Accepted publickey for alice from 192.0.2.14 port 4 ssh2: ED25519 SHA256:x", null },
+                    { "sshd: Server listening on 0.0.0.0 port 22.", null },
+                };
+                foreach (var kv in cases)
+                {
+                    string user; var a = EventLogs.FailedLoginAddress(kv.Key, out user);
+                    var got = a == null ? null : a + "|" + (user ?? "");
+                    if (got != kv.Value) throw new Exception("[" + kv.Key + "] -> " + (got ?? "null") + ", expected " + (kv.Value ?? "null"));
+                }
+                var t = new DateTime(2026, 9, 26, 12, 0, 0);
+                var by = EventLogs.FailedByAddress(cases.Keys.Select((m, i) => new LogEvent { Time = t.AddMinutes(i), Message = m }).Concat(new[] { new LogEvent { Time = t.AddHours(1), Message = "sshd: Failed password for carol from 192.0.2.10 port 9 ssh2" } }));
+                if (by[0].Address != "192.0.2.10" || by[0].Count != 2 || by[0].Users.Count != 2 || by[0].Last != t.AddHours(1)) throw new Exception("grouping: " + by[0].Address + " " + by[0].Count);
+                return by.Count + " addresses";
+            });
+            test("firewall block list: addresses as Windows stores them, and addresses never blocked", () =>
+            {
+                if (Firewall.NormaliseAddress("192.0.2.1/255.255.255.255") != "192.0.2.1" || Firewall.NormaliseAddress("2001:db8::1/128") != "2001:db8::1" || Firewall.NormaliseAddress("10.0.0.0/255.0.0.0") != "10.0.0.0/255.0.0.0") throw new Exception("normalising");
+                if (Firewall.NotBlockable("127.0.0.1") == null || Firewall.NotBlockable("::1") == null || Firewall.NotBlockable("nonsense") == null) throw new Exception("loopback or garbage accepted");
+                if (Firewall.NotBlockable("192.0.2.200") != null) throw new Exception("a documentation address was refused");
+                return null;
+            });
+            test("list sorting: numbers, dates and text", () =>
+            {
+                if (ListSorter.CompareText("9", "10") >= 0 || ListSorter.CompareText("2026-09-26 10:00:00", "2026-09-26 09:00:00") <= 0 || ListSorter.CompareText("b", "A") <= 0) throw new Exception("order");
+                return null;
+            });
+            test("export: CSV quoting and formula cells, HTML encoding", () =>
+            {
+                var csv = Export.Csv(new[] { "a", "b" }, new[] { (IList<string>)new[] { "x,y", "=cmd|' /c calc'!A0" }, new[] { "-5", "say \"hi\"" } });
+                if (!csv.Contains("\"x,y\"") || !csv.Contains("\"'=cmd|' /c calc'!A0\"") || !csv.Contains("\"-5\"") || !csv.Contains("\"say \"\"hi\"\"\"")) throw new Exception(csv);
+                var html = Export.Html("T <1>", "i & j", new[] { "c" }, new[] { (IList<string>)new[] { "<script>" } });
+                if (html.Contains("<script>") || !html.Contains("&lt;script&gt;") || !html.Contains("T &lt;1&gt;")) throw new Exception("HTML not encoded");
+                return null;
+            });
+            test("ssh client: known_hosts and config parsing, host editing keeps other lines", () =>
+            {
+                var k = SshClient.ParseKnownHost("@cert-authority *.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGVkMjU1MTlzZWxmdGVzdGtleTAwMDAwMDAwMDAwMDAwMDA ca");
+                if (k == null || k.Marker != "@cert-authority" || k.Hosts != "*.example.com" || k.Type != "ssh-ed25519") throw new Exception("marker line");
+                if (!SshClient.ParseKnownHost("|1|abc=|def= ssh-rsa AAAA").Hashed || SshClient.ParseKnownHost("# comment") != null || SshClient.ParseKnownHost("host ssh-rsa") != null) throw new Exception("hashed, comment or short line");
+                var lines = new List<string> { "# my hosts", "Host web", "    HostName web.example.com", "    User alice", "    ForwardAgent no", "", "Host *", "    ServerAliveInterval 60" };
+                var hosts = SshClient.ParseConfig(lines);
+                if (hosts.Count != 2 || hosts[0].Pattern != "web" || hosts[0].Get("User") != "alice" || hosts[0].First != 1 || hosts[0].Last != 4) throw new Exception("parse: " + string.Join(";", hosts.Select(h => h.Pattern + " " + h.First + "-" + h.Last)));
+                var edited = SshClient.WithHost(lines, hosts[0], "web", new Dictionary<string, string> { { "HostName", "web2.example.com" }, { "User", "" }, { "Port", "2222" }, { "IdentityFile", "C:\\Users\\Jane Doe\\.ssh\\id_ed25519" } });
+                var e = string.Join("|", edited);
+                if (!e.Contains("Host web|    HostName web2.example.com|    Port 2222|    IdentityFile \"C:\\Users\\Jane Doe\\.ssh\\id_ed25519\"|    ForwardAgent no|") || e.Contains("User alice") || !e.StartsWith("# my hosts|")) throw new Exception(e);
+                var added = SshClient.WithHost(lines, null, "db", new Dictionary<string, string> { { "HostName", "10.0.0.5" } });
+                if (added[added.Count - 2] != "Host db" || added.Last() != "    HostName 10.0.0.5") throw new Exception("add: " + string.Join("|", added));
+                var removed = SshClient.WithoutHost(lines, hosts[0]);
+                if (string.Join("|", removed) != "# my hosts||Host *|    ServerAliveInterval 60") throw new Exception("remove: " + string.Join("|", removed));
+                try { SshClient.WithHost(lines, null, "x", new Dictionary<string, string> { { "User", "a\nProxyCommand evil" } }); throw new Exception("a line break was accepted"); } catch (ConfigException) { }
+                if (SshClient.CheckHostName("-oProxyCommand=x") != null || SshClient.CheckHostName("a b") != null || SshClient.CheckHostName("[::1]") == null || SshClient.CheckHostName("host.example.com") == null) throw new Exception("host names");
+                return null;
+            });
+            test("find in the sshd_config text", () =>
+            {
+                var t = "Port 22\nport 2222\nMatch all";
+                if (MainForm.FindIn(t, "PORT", 0, true) != 0 || MainForm.FindIn(t, "port", 1, true) != 8 || MainForm.FindIn(t, "port", 9, true) != 0) throw new Exception("forward");
+                if (MainForm.FindIn(t, "port", 7, false) != 0 || MainForm.FindIn(t, "port", -1, false) != 8 || MainForm.FindIn(t, "none", 0, true) != -1) throw new Exception("backward or missing");
+                return null;
+            });
+            test("hardening fixes: each writes the recommended value", () =>
+            {
+                var c = new SshdConfig { Lines = new List<string> { "PerSourcePenalties no", "Ciphers aes128-cbc,aes256-ctr", "Match all" } };
+                foreach (var name in new[] { "Keyboard-interactive", "Empty passwords", "MaxAuthTries", "Per-source penalties", "MaxStartups throttling", "Idle session timeout", "Login grace time", "Minimum RSA key size", "Log level", "Ciphers" })
+                {
+                    var fix = MainForm.ConfigFix(name); if (fix == null) throw new Exception("no fix for " + name); fix(c);
+                }
+                if (c.Get("KbdInteractiveAuthentication") != "no" || c.Get("MaxAuthTries") != "4" || c.Get("PerSourcePenalties") != null || c.Get("Ciphers") != null || c.Get("ClientAliveInterval") != "300" || c.Get("LogLevel") != "VERBOSE") throw new Exception(string.Join(" | ", c.Lines));
+                if (MainForm.ConfigFix("Password authentication") != null || MainForm.ConfigFix("Login restriction") != null) throw new Exception("login methods and restrictions must never be changed automatically");
+                return null;
+            });
+            test("themes: dark, light and high contrast palettes", () =>
+            {
+                var dark = Theme.Make(true, false); var light = Theme.Make(false, false); var hc = Theme.Make(true, true);
+                if (!dark.Dark || light.Dark || hc.Dark || !hc.HighContrast) throw new Exception("flags");
+                if (dark.Back.GetBrightness() > 0.3f || light.Surface != SystemColors.Window) throw new Exception("colours");
+                if (dark.Semantic.Length != light.Semantic.Length) throw new Exception("the semantic colours must correspond one to one");
+                return null;
+            });
+            test("preferences stay in memory in the unattended modes", () =>
+            {
+                if (!Program.Unattended) throw new Exception("not unattended");
+                var old = Prefs.ConfirmSeconds; Prefs.ConfirmSeconds = 5;
+                if (Prefs.ConfirmSeconds != 15) throw new Exception("the lower bound (15 s) was not applied: " + Prefs.ConfirmSeconds);
+                Prefs.ConfirmSeconds = old;
+                return null;
+            });
+            test("setup wizard: the plan in words", () =>
+            {
+                var p = new WizardPlan { Port = 2222, Profiles = 3, Login = WizardLogin.AdministratorsKeyOnly, Recommended = true, AllowGroups = "administrators" };
+                var l = p.Describe(22, 3, true);
+                if (l.Count != 5 || !l[0].Contains("2222") || !l[2].StartsWith("Administrators")) throw new Exception(string.Join(" / ", l));
+                if (new WizardPlan { Port = 22, Profiles = 3 }.Describe(22, 3, true).Count != 0) throw new Exception("no change described as a change");
+                return null;
+            });
         }
 
         private static void Server(Action<string, Func<string>> test, string tmpDir)
@@ -640,6 +878,57 @@ namespace OpenSSHServerManager
                 WithTestWindow(tmpDir, "Port 22\n", f => unnamed = f.UnnamedInputsForTest());
                 if (unnamed.Count > 0) throw new Exception(unnamed.Count + " without a name: " + string.Join(", ", unnamed));
                 return null;
+            });
+            test("window: Settings writes the first Port only, all AllowUsers lines as one, and never over a file changed meanwhile", () =>
+            {
+                // A host key of its own, so that sshd -t works without administrator rights.
+                var dir = Path.Combine(tmpDir, "window-hostkey"); Directory.CreateDirectory(dir);
+                var hk = KeyGen.Generate(KeyGen.Types[0], Path.Combine(dir, "host_key"), "selftest host key", null);
+                string detail = null;
+                WithTestWindow(tmpDir, "HostKey " + SshdArgs.Quote(hk.PrivatePath) + "\nPort 22\nPort 2222\nAllowUsers alice\nAllowUsers bob\n", f =>
+                {
+                    if (f.FieldTextForTest("AllowUsers") != "alice bob") throw new Exception("AllowUsers shows [" + f.FieldTextForTest("AllowUsers") + "], not both lines");
+                    f.SetSettingForTest("Port", "2200");
+                    f.SetSettingForTest("AllowUsers", "alice bob carol");
+                    var err = f.SaveSettingsForTest(); if (err != null) throw new Exception("not saved: " + err);
+                    var text = File.ReadAllText(Ssh.ConfigPath);
+                    if (!text.Contains("Port 2200\n") || !text.Contains("\nPort 2222\n")) throw new Exception("ports: " + text.Replace("\n", " | "));
+                    if (!text.Contains("AllowUsers alice bob carol\n") || !text.Contains("#AllowUsers bob")) throw new Exception("AllowUsers: " + text.Replace("\n", " | "));
+                    if (SshdConfig.ListBackups(Ssh.ConfigPath).Count != 1) throw new Exception("no backup was kept");
+                    File.WriteAllText(Ssh.ConfigPath, text + "# edited in Notepad\n", new UTF8Encoding(false)); // changed outside the window
+                    f.SetSettingForTest("MaxAuthTries", "3");
+                    detail = f.SaveSettingsForTest();
+                    var after = File.ReadAllText(Ssh.ConfigPath);
+                    if (detail == null || !after.Contains("# edited in Notepad") || after.Contains("MaxAuthTries 3")) throw new Exception("the file changed outside the window was written over");
+                });
+                return "refused: " + detail;
+            });
+            test("window: the changes shown before a save mark added and removed lines", () =>
+            {
+                using (var d = new ChangesDialog("Changes to sshd_config", "test", "a\nb\nc\n", "a\nB\nc\nd\n", "Save") { StartPosition = FormStartPosition.Manual, Location = new Point(-20000, -20000), ShowInTaskbar = false })
+                {
+                    d.Show(); Application.DoEvents();
+                    var text = d.DiffTextForTest.Replace("\r", "");
+                    if (text != "  a\n- b\n+ B\n  c\n+ d\n") throw new Exception("shown as [" + text.Replace("\n", "|") + "]");
+                    if (d.LineBackForTest("+ B") != Theme.Current.Added || d.LineBackForTest("- b") != Theme.Current.Removed) throw new Exception("line colours: " + d.LineBackForTest("+ B") + ", " + d.LineBackForTest("- b"));
+                    d.Close();
+                }
+                return null;
+            });
+            test("window: the dark palette reaches lists, buttons and text boxes; light gives the Windows look back", () =>
+            {
+                if (SystemInformation.HighContrast) return "skipped: high contrast is on (its colours are always used)";
+                string detail = null;
+                WithTestWindow(tmpDir, "Port 22\n", f =>
+                {
+                    bool owner; FlatStyle style;
+                    var dark = f.ThemeForTest("dark", out owner, out style); var p = Theme.Make(true, false);
+                    if (dark[0] != p.Surface || dark[1] != p.Surface || dark[2] != p.Back || !owner || style != FlatStyle.Flat) throw new Exception("dark: list " + dark[0] + ", text box " + dark[1] + ", window " + dark[2] + ", owner-drawn headers " + owner + ", buttons " + style);
+                    var light = f.ThemeForTest("light", out owner, out style);
+                    if (light[0] != SystemColors.Window || light[1] != SystemColors.Window || light[2] != SystemColors.Control || owner || style != FlatStyle.Standard) throw new Exception("light: list " + light[0] + ", text box " + light[1] + ", window " + light[2] + ", owner-drawn headers " + owner + ", buttons " + style);
+                    detail = string.Join(", ", f.TabNamesForTest());
+                });
+                return detail;
             });
             test("profile removal task: script for a profile that does not exist", () =>
             {
