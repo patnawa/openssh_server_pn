@@ -63,8 +63,13 @@ cd openssh_server_pn
 git clone https://github.com/microsoft/vcpkg.git
 cd vcpkg; .\bootstrap-vcpkg.bat -disableMetrics; .\vcpkg.exe integrate install; cd ..
 Invoke-WebRequest https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip -OutFile wix314-binaries.zip
+(Get-FileHash wix314-binaries.zip -Algorithm SHA256).Hash -eq '6AC824E1642D6F7277D0ED7EA09411A508F6116BA6FAE0AA5F2C7DAA2FF43D31'   # must print True (the pin of the CI workflow)
 Expand-Archive wix314-binaries.zip -DestinationPath tools\wix314
 ```
+
+The CI workflow `.github/workflows/openssh.yml` does the same on GitHub's runners, with vcpkg
+checked out at the manifest's `builtin-baseline` commit (`git -C vcpkg checkout <baseline>`), so
+the vcpkg tool and registry are those the manifest was written for.
 
 All commands below that say `cd C:\src\openssh_server_pn\src` mean the `src` folder of this
 repository.
@@ -140,6 +145,12 @@ repository root here, not `src`.
 
 Do not use `Start-OpenSSHPackage` (or `AzDOBuildTools\Copy-BuildResults`) on a machine that runs
 OpenSSH: it stops the `ssh-agent` service and, without elevation, loops forever trying.
+
+Unit tests **(admin)**: `.github\scripts\Invoke-UnitTests.ps1 -BinPath src\bin\x64\Release` runs
+every `unittest-*.exe` with a private, empty ProgramData folder (the test helper copies `moduli`
+there and fails without it); 767 tests in all. `unittest-win32compat` needs administrator rights
+(or Developer Mode) for its symbolic-link test; the other seven binaries pass without them. The
+CI workflow runs them for x64, x86 and ARM64.
 
 ## 5. Package the MSI
 
@@ -233,6 +244,10 @@ environment requires it.
 
 ## 6. Refreshing the vendored libraries
 
+`tools\release\Get-UpstreamVersions.ps1` compares the versions here with the newest releases of
+OpenSSH, LibreSSL, libfido2, libcbor and zlib; the workflow `upstream-watch.yml` runs it every
+week and opens an issue when something is newer.
+
 The versions live in `contrib\win32\openssh\vcpkg.json` (`overrides[]` and `builtin-baseline`)
 and, for LibreSSL and libfido2, in the overlay ports under `vcpkg_overlay_ports`. The repository
 ships a tool that performs the mechanical edits (manifest, overlay manifest, tarball SHA-512, and
@@ -318,4 +333,4 @@ anything older than Windows 7 (`VersionNT >= 601`).
 | `error LGHT0103: The system cannot find the file 'sshd_config_default'` (x86) | WiX binds from `bin\x86\Release`; mirror `bin\Win32\Release` there (section 5). |
 | `error LGHT0204: ICE18 ... ClientPATH` | Add `<CreateFolder />` to the `ClientPATH` component (section 5). |
 | VS installer exits with 8006 | Idle `MSBuild.exe` node-reuse processes are blocking it; stop them and retry. |
-| `msiexec` returns 1638 | Same version already installed. Uninstall it first (`msiexec /x {ProductCode}`); the MSI does not allow same-version upgrades. |
+| `msiexec` returns 1638 | Packages before 10.5.1.0 only: the same version is already installed. Uninstall it first (`msiexec /x {ProductCode}`). Since 10.5.1.0 a package replaces the same version (INSTALL.md, section 3). |

@@ -6,6 +6,57 @@ every change to the packaging, and how the result was verified. Published as Git
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
+## Installer and CI after 10.5.1.0 (not released yet)
+
+Changes to the packaging and the release process in the branch `improvements`; they go into the
+next build. The OpenSSH source and libraries are unchanged.
+
+Installer:
+
+- **The firewall rule keeps its settings on upgrade.** 10.5.1.0 removed the rule with the old
+  package and created it again with port 22 and the default networks, so a server moved to port
+  2222 lost remote access after an unattended upgrade. The rule's ports, networks, enabled state
+  and allowed remote addresses are now saved before the old package is removed and put back on
+  the new rule; a rollback puts them back on the old package's rule. `FIREWALL_PROFILES` and
+  `SSHD_PORT` take precedence. To make room for the save step, `InstallExecute` now comes
+  before `RemoveExistingProducts` (Windows Installer allows no deferred action between
+  `InstallInitialize` and `RemoveExistingProducts`, ICE63).
+- **`SSHD_PORT=<n>`** sets the port of the firewall rule and of `sshd_config` (after the services
+  started; backup kept; restored when `sshd` does not listen there) and restarts `sshd`.
+- **`ACTIVE_SESSIONS=abort`** stops the installation before anything changes (exit code 1603)
+  while SSH sessions are open; `close`, the default, ends them as before.
+- **Error control Normal** for `sshd` and `ssh-agent` (it was Critical).
+- **ARM64**: the package scheduled the x86 WiX firewall actions a second time, so the rule was
+  created and removed twice; it uses the ARM64 action now.
+- The script is embedded as two smaller scripts without comments and with LF line ends, so both
+  fit `powershell.exe`'s command line and the package no longer depends on the line endings of
+  the checkout; `.gitattributes` pins `preinstall.ps1` to CRLF.
+- Verified here without administrator rights: x64, x86 and ARM64 packages built with full ICE
+  validation (0 warnings); `tests\preinstall.Tests.ps1` 118 checks passed (the record of the
+  live firewall rule read without changing it, `sshd_config` edits including the real
+  `sshd_config_default`, ReplaceFile keeping permissions); `tests\package.Tests.ps1` 79 to 80
+  checks per package passed (sequence, action types, ErrorControl 32769, launch conditions
+  evaluated by Windows Installer: 22, 65535 and 0022 accepted; 0, 65536, `+22`, ` 22` and
+  `22' ; calc ; '` refused); the session check started as the package starts it: exit 0 with no
+  session, exit 1 with a connection open. **Not run**: an actual install, upgrade, repair,
+  rollback or `SSHD_PORT` change; the CI workflow runs these on its first run.
+
+CI and releases:
+
+- `.github/workflows/openssh.yml` builds x64, x86 and ARM64, runs the OpenSSH unit tests
+  (ARM64 binaries run for the first time, on windows-11-arm), installs the packages on Windows
+  Server 2022 and 2025 and Windows 11 on ARM, runs the manager's `--check`, `--selftest`,
+  `--keytest` and `--authtest`, and tests upgrade, repair, downgrade, `SSHD_PORT`,
+  `ACTIVE_SESSIONS` and uninstall. A tag creates a draft release with an SBOM and provenance
+  attestations; Authenticode signing when configured.
+- `manager.yml`: actions pinned to commit SHAs, a reproducibility report, attestations.
+- Weekly upstream version check, Dependabot for actions, winget manifests, Intune notes,
+  a pull request template, CODEOWNERS, and issue routing that sends bugs of this build here.
+- Verified here: `actionlint` 0 errors in the three workflows; the scripts parse; the unit-test
+  runner on the local binaries (7 of 8 binaries pass without administrator rights, 686 tests;
+  `unittest-win32compat` needs them); the SBOM of 10.5.1.0 against the CycloneDX 1.5 schema;
+  `winget validate`. **None of the workflows has run on GitHub yet.**
+
 ## OpenSSH Server Manager 1.6.0 (not released yet)
 
 A safety pass over every save of `sshd_config`, and the window a daily administrator asked for:
