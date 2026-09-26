@@ -59,15 +59,22 @@ namespace OpenSSHServerManager
     {
         public static string Csv(IList<string> header, IEnumerable<IList<string>> rows)
         {
-            Func<string, string> q = v => { v = v ?? ""; return v.IndexOfAny(new[] { ',', '"', '\r', '\n' }) >= 0 || v.StartsWith("=") || v.StartsWith("+") || v.StartsWith("-") || v.StartsWith("@") ? "\"" + (IsFormula(v) ? "'" : "") + v.Replace("\"", "\"\"") + "\"" : v; };
+            Func<string, string> q = v => { v = Neutralise(v); return v.IndexOfAny(new[] { ',', '"', '\r', '\n' }) >= 0 || v.StartsWith("'") || v.StartsWith("-") ? "\"" + v.Replace("\"", "\"\"") + "\"" : v; };
             var sb = new StringBuilder();
             sb.Append(string.Join(",", header.Select(q))).Append("\r\n");
             foreach (var r in rows) sb.Append(string.Join(",", r.Select(q))).Append("\r\n");
             return sb.ToString();
         }
 
-        /// <summary>A cell that a spreadsheet would run as a formula (CSV injection): it gets a leading apostrophe.</summary>
-        private static bool IsFormula(string v) { return v.Length > 0 && "=+-@".IndexOf(v[0]) >= 0 && !Regexish.IsNumber(v); }
+        /// <summary>
+        /// A cell that a spreadsheet would run as a formula (CSV injection: =, +, -, @, or a tab or carriage return before
+        /// them) gets a leading apostrophe. Event messages contain text chosen by clients (user names), so this matters.
+        /// </summary>
+        internal static string Neutralise(string v)
+        {
+            v = v ?? "";
+            return v.Length > 0 && "=+-@\t\r".IndexOf(v[0]) >= 0 && !Regexish.IsNumber(v) ? "'" + v : v;
+        }
 
         public static string Html(string title, string intro, IList<string> header, IEnumerable<IList<string>> rows, Func<IList<string>, string> rowClass = null)
         {
@@ -108,7 +115,7 @@ namespace OpenSSHServerManager
                 var header = Header(lv); var rows = Rows(lv);
                 var ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
                 string text = ext == ".html" || ext == ".htm" ? Html(title, intro, header, rows, rowClass)
-                            : ext == ".txt" ? string.Join("\t", header) + "\r\n" + string.Join("", rows.Select(r => string.Join("\t", r.Select(v => (v ?? "").Replace('\t', ' '))) + "\r\n"))
+                            : ext == ".txt" ? string.Join("\t", header) + "\r\n" + string.Join("", rows.Select(r => string.Join("\t", r.Select(v => Neutralise((v ?? "").Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ')))) + "\r\n"))
                             : Csv(header, rows);
                 // UTF-8 with a byte order mark: Excel then reads non-ASCII names correctly.
                 File.WriteAllText(dlg.FileName, text, new UTF8Encoding(ext == ".csv"));

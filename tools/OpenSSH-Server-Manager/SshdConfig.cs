@@ -186,13 +186,15 @@ namespace OpenSSHServerManager
             // first Include (sshd takes the first value it reads, so the value set here wins over an included file) or
             // the first Match block.
             int end = FirstMatchIndex();
-            for (int i = 0; i < end; i++)
+            var include = GetAll("Include");
+            bool beforeInclude = include.Count > 0 && !keyword.Equals("Include", StringComparison.OrdinalIgnoreCase);
+            // Only an example above the first Include: one below it would be read after the included files.
+            int examplesEnd = beforeInclude ? include[0].Key : end;
+            for (int i = 0; i < examplesEnd; i++)
             {
                 if (Regex.IsMatch(Lines[i], @"^\s*#" + Regex.Escape(keyword) + @"(\s|=)", RegexOptions.IgnoreCase)) { Lines[i] = newLine; return; }
             }
-            int at = end;
-            var include = GetAll("Include");
-            if (include.Count > 0 && !keyword.Equals("Include", StringComparison.OrdinalIgnoreCase)) at = include[0].Key;
+            int at = beforeInclude ? include[0].Key : end;
             Lines.Insert(at, newLine);
             if (at < Lines.Count - 1 && Lines[at + 1].Trim().Length > 0 && StartsMatchSection(Lines[at + 1])) Lines.Insert(at + 1, "");
         }
@@ -309,7 +311,8 @@ namespace OpenSSHServerManager
             WriteReplacing(Path, Text);
             LoadedHash = FileHash(Path);
             Log.Info("Saved " + Path + (backup != null ? " (backup " + backup + ")" : ""));
-            PruneBackups(Path, KeepBackups);
+            // Housekeeping only: a failure here must not turn a save that succeeded into an error.
+            try { PruneBackups(Path, KeepBackups); } catch (Exception ex) { Log.Error("Pruning old backups", ex, false); }
             return backup;
         }
 

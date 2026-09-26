@@ -171,8 +171,11 @@ namespace OpenSSHServerManager
             if (Program.Unattended) return;
             var want = Theme.For(Prefs.Theme);
             if (want.Dark == Theme.Current.Dark && want.HighContrast == Theme.Current.HighContrast) return;
-            try { BeginInvoke((Action)(() => Safe(ApplyTheme, false))); } catch (InvalidOperationException) { }
+            // Not in the middle of an operation: switching colours recreates the tab control's window. EndBusy applies it then.
+            try { BeginInvoke((Action)(() => { if (_busyDepth > 0) _themePending = true; else Safe(ApplyTheme, false); })); } catch (InvalidOperationException) { }
         }
+
+        private bool _themePending;
 
         private TabPage _pgDashboard, _pgSessions, _pgKeys, _pgKeyGen, _pgClient, _pgFirewall, _pgLogs, _pgHardening, _pgAbout;
 
@@ -369,6 +372,7 @@ namespace OpenSSHServerManager
             if (--_busyDepth > 0) return;
             _tabs.Enabled = true; UseWaitCursor = false; _busy.Visible = false; _cancelButton.Visible = false;
             if (_timerWasRunning && !IsDisposed) _timer.Start();
+            if (_themePending && !IsDisposed) { _themePending = false; BeginInvoke((Action)(() => Safe(ApplyTheme, false))); }
         }
 
         /// <summary>Runs work on the window's thread with the window marked busy (work that shows dialogs or fills controls).</summary>
@@ -492,7 +496,7 @@ namespace OpenSSHServerManager
             actions.Controls.Add(Btn("Event Viewer", (s, e) => Proc.OpenExternal("eventvwr.exe", "/c:\"" + EventLogs.LogName + "\""), 120));
             actions.Controls.Add(Btn("Add my public key", (s, e) => Safe(QuickAddMyKey), 150));
             actions.Controls.Add(Btn("Generate missing host keys", (s, e) => Safe(GenerateHostKeys), 200));
-            actions.Controls.Add(Btn("Connect (ssh localhost)", (s, e) => Proc.OpenExternal(Ssh.Exe("ssh.exe"), "-p " + (_cfg == null ? 22 : _cfg.EffectivePort) + " localhost"), 170));
+            actions.Controls.Add(Btn("Connect (ssh localhost)", (s, e) => Proc.OpenUnelevated(Ssh.Exe("ssh.exe"), "-p " + (_cfg == null ? 22 : _cfg.EffectivePort) + " localhost"), 170));
             actions.Controls.Add(Btn("Setup wizard...", (s, e) => Safe(RunWizard), 130));
             _tips.SetToolTip(_btnRestart, "Stops and starts sshd, which then reads sshd_config again. Connected sessions stay connected: each runs in its own sshd-session.exe process.");
             _tips.SetToolTip(actions.Controls[3], "Runs sshd -t against the live sshd_config and reports syntax errors.");
@@ -999,25 +1003,54 @@ namespace OpenSSHServerManager
             var pwshWanted = PwshWanted();
             if (pwshWanted != pwshCurrent) cand.SetSubsystem("powershell", pwshWanted);
             var backup = SaveConfig(cand, changed.Count == 0 ? "Save the settings of the Settings tab." : "Save " + string.Join(", ", changed.Select(f => f.Label)) + ".", restart ? "Save and restart" : "Save");
+            // The window adopts the saved file first, so that nothing below can leave it with the old file's state.
+            UseConfig(cand, false, true);
             // The registry value is written only when it changed (HKLM\SOFTWARE\OpenSSH\DefaultShell applies to new sessions at once).
             bool optionChanged = _txtShellOption.Text.Trim() != (DefaultShell.GetOption() ?? "").Trim();
-            if (shellChanged || optionChanged) DefaultShell.Set(shell, _txtShellOption.Text);
-            UseConfig(cand, false, true);
+            if (shellChanged || optionChanged) { try { DefaultShell.Set(shell, _txtShellOption.Text); } catch (Exception ex) { Log.Error("sshd_config was saved, but the default shell could not be set", ex, true); } }
             ReportOverridden(changed);
-            var port = _cfg.EffectivePort;
-            var fw = Bg("Reading the firewall rule...", () => Firewall.Get());
-            if (fw != null && !Firewall.Covers(fw.Ports, port) && !Program.Unattended)
+            var firewallBack = OpenFirewallForPort(_cfg.EffectivePort);
+            if (restart)
             {
-                // A single-port rule follows sshd to the new port; a multi-port rule keeps its list and gains the port.
-                bool single = Firewall.IsSinglePort(fw.Ports);
-                var question = single
-                    ? "The firewall rule allows port " + fw.Ports + " but sshd will listen on " + port + ".\n\nUpdate the firewall rule to port " + port + "?"
-                    : "The firewall rule allows ports " + fw.Ports + " but not " + port + ", the port sshd will listen on.\n\nAdd port " + port + " to the rule?";
-                if (MessageBox.Show(this, question, Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-                { Firewall.Apply(fw.Enabled, fw.Profiles, single ? port.ToString() : fw.Ports + "," + port); LoadFirewall(); }
+                if (RestartWithRollback(backup, firewallBack == null ? null : firewallBack.Undo) && firewallBack != null) firewallBack.Keep();
             }
-            if (restart) RestartWithRollback(backup);
-            else Status("Saved. Restart sshd to apply (default shell applies immediately).");
+            else Status("Saved. Restart sshd to apply (default shell applies immediately)." + (firewallBack != null ? " The firewall allows the old and the new port until then." : ""));
+        }
+
+        /// <summary>A change to the firewall rule that goes with a change of sshd's port: undone with the settings, or finished when they are kept.</summary>
+        private sealed class FirewallChange { public Action Undo; public Action Keep; }
+
+        /// <summary>
+        /// When the firewall rule does not admit the port sshd will listen on, asks to add it. The rule keeps its old ports
+        /// meanwhile, so sshd stays reachable whether the new settings are kept or not. Returns how to undo the change (a
+        /// restart that is rolled back) and how to finish it (the new settings are kept: a rule that had a single port then
+        /// drops the old one when sshd no longer uses it), or null when nothing changed.
+        /// </summary>
+        private FirewallChange OpenFirewallForPort(int port)
+        {
+            if (Program.Unattended) return null;
+            var fw = Bg("Reading the firewall rule...", () => Firewall.Get());
+            if (fw == null || Firewall.Covers(fw.Ports, port)) return null;
+            bool single = Firewall.IsSinglePort(fw.Ports);
+            var question = "The firewall rule allows port" + (single ? " " : "s ") + fw.Ports + " but not " + port + ", the port sshd will listen on.\n\nAdd port " + port + " to the rule?" +
+                           (single ? " Port " + fw.Ports + " stays open until the new settings are kept after the restart, so you can still connect if they are not." : "");
+            if (MessageBox.Show(this, question, Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return null;
+            var before = fw;
+            Firewall.Apply(fw.Enabled, fw.Profiles, fw.Ports + "," + port); LoadFirewall();
+            Log.Info("Firewall rule: port " + port + " added to " + before.Ports);
+            return new FirewallChange
+            {
+                Undo = () => { Firewall.Apply(before.Enabled, before.Profiles, before.Ports); Log.Info("Firewall rule: ports back to " + before.Ports); },
+                Keep = () =>
+                {
+                    if (!single) return;
+                    int old; int.TryParse(before.Ports, out old);
+                    if (_cfg.GetAll("Port").Any(p => p.Value.Trim() == before.Ports) || _cfg.GetAll("ListenAddress").Any(la => SshdConfig.ListenPort(la.Value) == old)) return;
+                    Firewall.Apply(before.Enabled, before.Profiles, port.ToString()); LoadFirewall();
+                    Status("New settings kept; the firewall rule now allows port " + port + " only (port " + before.Ports + " closed)");
+                    Log.Info("Firewall rule: old port " + before.Ports + " closed, " + port + " kept");
+                },
+            };
         }
 
         // ---------------- saving sshd_config, restarting, going back ----------------
@@ -1092,10 +1125,7 @@ namespace OpenSSHServerManager
         /// </summary>
         private static ServerCheck CheckServer(SshdConfig cfg)
         {
-            var ports = new List<int>();
-            foreach (var p in cfg.GetAll("Port")) { int n; if (int.TryParse(p.Value, out n) && n > 0 && n < 65536 && !ports.Contains(n)) ports.Add(n); }
-            foreach (var la in cfg.GetAll("ListenAddress")) { int n = SshdConfig.ListenPort(la.Value); if (n > 0 && !ports.Contains(n)) ports.Add(n); }
-            if (ports.Count == 0) ports.Add(22);
+            var ports = ExpectedPorts(cfg);
             var lines = new List<string>(); bool problems = false; var listening = new List<string>();
             var until = DateTime.UtcNow.AddSeconds(5);
             foreach (var port in ports)
@@ -1130,6 +1160,27 @@ namespace OpenSSHServerManager
             return new ServerCheck { Text = string.Join("\n", lines), Problems = problems, Summary = listening.Count > 0 ? "sshd restarted; listening on " + string.Join(", ", listening) : "sshd restarted, but nothing is listening on port " + string.Join(", ", ports) };
         }
 
+        /// <summary>
+        /// The ports sshd listens on with a configuration, as servconf.c decides: a ListenAddress with a port uses that port,
+        /// one without uses every Port (22 when there is none); without ListenAddress, every Port is used. A Port that no
+        /// ListenAddress needs is not listened on, so it is not expected either.
+        /// </summary>
+        internal static List<int> ExpectedPorts(SshdConfig cfg)
+        {
+            var portLines = new List<int>();
+            foreach (var p in cfg.GetAll("Port")) { int n; if (int.TryParse(p.Value, out n) && n > 0 && n < 65536 && !portLines.Contains(n)) portLines.Add(n); }
+            if (portLines.Count == 0) portLines.Add(22);
+            var addresses = cfg.GetAll("ListenAddress");
+            if (addresses.Count == 0) return portLines;
+            var ports = new List<int>();
+            foreach (var la in addresses)
+            {
+                int n = SshdConfig.ListenPort(la.Value);
+                foreach (var p in n > 0 ? new List<int> { n } : portLines) if (!ports.Contains(p)) ports.Add(p);
+            }
+            return ports;
+        }
+
         /// <summary>Puts a backup back in place of sshd_config (the current file is kept as another backup first). Returns that backup.</summary>
         private static string RestoreFile(string backup)
         {
@@ -1149,7 +1200,7 @@ namespace OpenSSHServerManager
         /// access) and, unless switched off, you are asked to keep the new settings; without an answer in time, or with
         /// "Restore", the previous file goes back. True when sshd runs the new configuration.
         /// </summary>
-        private bool RestartWithRollback(string backup)
+        private bool RestartWithRollback(string backup, Action undo = null)
         {
             _expectedStateChange = DateTime.UtcNow;
             var failure = Bg("Restarting sshd...", () => { try { Services.Restart("sshd"); return (Exception)null; } catch (Exception ex) { return ex; } });
@@ -1161,10 +1212,11 @@ namespace OpenSSHServerManager
                 Bg("sshd did not start: restoring the previous configuration...", () =>
                 {
                     kept = RestoreFile(backup);
+                    if (undo != null) { try { undo(); } catch (Exception ex) { Log.Error("Undoing the change that went with the new settings", ex, false); } }
                     try { Services.Start("sshd"); } catch (Exception ex) { again = ex; }
                 });
                 _expectedStateChange = DateTime.UtcNow;
-                UseConfig(SshdConfig.Load()); RefreshDashboard();
+                UseConfig(SshdConfig.Load()); RefreshDashboard(); if (undo != null) LoadFirewall();
                 Status(again == null ? "sshd did not start with the new configuration; the previous one was restored and sshd runs" : "sshd did not start, not even with the previous configuration");
                 if (!Program.Unattended)
                     MessageBox.Show(this, "sshd did not start with the new configuration:\n" + failure.Message + "\n\n" +
@@ -1186,10 +1238,11 @@ namespace OpenSSHServerManager
             Bg("Restoring the previous settings...", () =>
             {
                 replaced = RestoreFile(backup);
+                if (undo != null) { try { undo(); } catch (Exception ex) { Log.Error("Undoing the change that went with the new settings", ex, false); } }
                 try { Services.Restart("sshd"); } catch (Exception ex) { startError = ex; }
             });
             _expectedStateChange = DateTime.UtcNow;
-            UseConfig(SshdConfig.Load()); RefreshDashboard();
+            UseConfig(SshdConfig.Load()); RefreshDashboard(); if (undo != null) LoadFirewall();
             Log.Info("The previous settings were restored after the restart (" + (answer == DialogResult.Abort ? "no answer or Restore" : answer.ToString()) + ")");
             Status(startError == null ? "The previous settings were restored and sshd restarted" : "The previous settings were restored, but sshd did not start: " + startError.Message);
             MessageBox.Show(this, (startError == null ? "The previous settings were restored and sshd restarted with them." : "The previous settings were restored, but sshd did not start: " + startError.Message) +
@@ -1871,7 +1924,8 @@ namespace OpenSSHServerManager
             }
             string pass = _kgNoPass.Checked ? null : _kgPass1.Text;
             KeyGenResult res = null;
-            try { Bg("Generating " + type.Label + " key...", () => res = KeyGen.GenerateReplacing(type, path, _kgComment.Text.Trim(), pass, now)); }
+            var comment = _kgComment.Text.Trim(); // read here: the work below runs on another thread
+            try { Bg("Generating " + type.Label + " key...", () => res = KeyGen.GenerateReplacing(type, path, comment, pass, now)); }
             finally { _kgPass1.Text = ""; _kgPass2.Text = ""; pass = null; }
             _kgPublic.Text = res.PublicKey;
             var text = "Created " + res.PrivatePath + " (private key" + (res.Encrypted ? ", protected by the passphrase" : ", NO passphrase") + ") and " + Path.GetFileName(res.PublicPath) +
@@ -1981,7 +2035,7 @@ namespace OpenSSHServerManager
             cb.Controls.Add(Btn("Add...", (s, e) => Safe(AddClientHost), 90));
             cb.Controls.Add(Btn("Edit...", (s, e) => Safe(EditClientHost), 90));
             cb.Controls.Add(Btn("Remove", (s, e) => Safe(RemoveClientHost), 90));
-            cb.Controls.Add(Btn("Connect", (s, e) => Safe(() => { if (_lvClientHosts.SelectedItems.Count > 0) { var h = (ClientHost)_lvClientHosts.SelectedItems[0].Tag; if (!h.IsMatch && h.Pattern.IndexOfAny(new[] { '*', '?', '!', ' ' }) < 0) Proc.OpenExternal(Ssh.Exe("ssh.exe"), Proc.Quote(h.Pattern)); else Status("Choose a host with a single name (no wildcards)"); } }), 100));
+            cb.Controls.Add(Btn("Connect", (s, e) => Safe(() => { if (_lvClientHosts.SelectedItems.Count > 0) { var h = (ClientHost)_lvClientHosts.SelectedItems[0].Tag; if (!h.IsMatch && Regex.IsMatch(h.Pattern, @"^[A-Za-z0-9._@%+:\[\]][A-Za-z0-9._@%+:\[\]\-]*$")) Proc.OpenUnelevated(Ssh.Exe("ssh.exe"), "-- " + h.Pattern); else Status("Choose a host with a single plain name (no wildcards, spaces or leading -)"); } }), 100));
             cb.Controls.Add(Btn("Open in Notepad", (s, e) => Proc.OpenExternal("notepad.exe", "\"" + SshClient.ConfigPath + "\""), 140));
             cfgRoot.Controls.Add(cb, 0, 1);
             cfgBox.Controls.Add(cfgRoot);
@@ -2432,12 +2486,25 @@ namespace OpenSSHServerManager
             _trayMenu.Items.Add("Logs", null, (s, e) => { ShowFromTray(); _tabs.SelectedTab = _pgLogs; });
             _trayMenu.Items.Add(new ToolStripSeparator());
             _trayMenu.Items.Add("Exit", null, (s, e) => { ShowFromTray(); Close(); });
+            // While an operation runs or a dialog is open, the menu only opens the window: its actions would start a second
+            // operation inside the first one.
+            _trayMenu.Opening += (s, e) =>
+            {
+                bool idle = _busyDepth == 0 && !Application.OpenForms.Cast<Form>().Any(f => f.Modal);
+                for (int i = 1; i < _trayMenu.Items.Count; i++) _trayMenu.Items[i].Enabled = idle;
+            };
             _tray = new NotifyIcon { Icon = Ui.AppIcon ?? SystemIcons.Application, Text = Program.AppName, ContextMenuStrip = _trayMenu, Visible = true };
             _tray.DoubleClick += (s, e) => ShowFromTray();
             _tray.BalloonTipClicked += (s, e) => ShowFromTray();
-            Resize += (s, e) => { if (WindowState == FormWindowState.Minimized && Prefs.MinimizeToTray && _tray != null) { Hide(); Notify(Program.AppName, "Still running here; double-click the icon to open the window.", ToolTipIcon.Info, false); } };
+            if (!_minimizeHooked)
+            {
+                _minimizeHooked = true;
+                Resize += (s, e) => { if (WindowState == FormWindowState.Minimized && Prefs.MinimizeToTray && _tray != null) { Hide(); Notify(Program.AppName, "Still running here; double-click the icon to open the window.", ToolTipIcon.Info, false); } };
+            }
             StartFailureWatcher();
         }
+
+        private bool _minimizeHooked;
 
         private void ShowFromTray()
         {
@@ -2506,6 +2573,7 @@ namespace OpenSSHServerManager
         {
             try { if (_failureWatcher != null) { _failureWatcher.Enabled = false; _failureWatcher.Dispose(); _failureWatcher = null; } } catch { }
             try { if (_tray != null) { _tray.Visible = false; _tray.Dispose(); _tray = null; } } catch { }
+            try { if (_trayMenu != null) { _trayMenu.Dispose(); _trayMenu = null; } } catch { }
         }
 
         // ---------------- Setup wizard ----------------
@@ -2579,13 +2647,21 @@ namespace OpenSSHServerManager
                 backup = SaveConfig(cand, "Setup wizard: " + string.Join(" ", changes), "Apply");
                 UseConfig(cand);
             }
+            Action undo = null, keep = null;
             if (fw == null || fwProfiles != plan.Profiles || !Firewall.Covers(fw.Ports, plan.Port) || fw.Enabled != plan.FirewallEnabled)
             {
-                var ports = fw == null || Firewall.IsSinglePort(fw.Ports) ? plan.Port.ToString() : (Firewall.Covers(fw.Ports, plan.Port) ? fw.Ports : fw.Ports + "," + plan.Port);
-                Firewall.Apply(plan.FirewallEnabled, plan.Profiles, ports);
+                // A new port is added to the rule; a rule that had one port drops the old one only when the new settings
+                // are kept, so the server stays reachable while you decide, and the rule comes back with the old file.
+                var before = fw;
+                var pending = fw == null ? plan.Port.ToString() : (Firewall.Covers(fw.Ports, plan.Port) ? fw.Ports : fw.Ports + "," + plan.Port);
+                Firewall.Apply(plan.FirewallEnabled, plan.Profiles, pending);
                 LoadFirewall();
+                undo = () => { if (before == null) Firewall.Remove(); else Firewall.Apply(before.Enabled, before.Profiles, before.Ports); };
+                if (fw != null && Firewall.IsSinglePort(fw.Ports) && pending != plan.Port.ToString())
+                    keep = () => { Firewall.Apply(plan.FirewallEnabled, plan.Profiles, plan.Port.ToString()); LoadFirewall(); };
             }
-            if (backup != null) RestartWithRollback(backup);
+            if (backup != null) { if (RestartWithRollback(backup, undo) && keep != null) keep(); }
+            else if (keep != null) keep();
             RefreshDashboard();
             Status("Setup wizard applied");
         }

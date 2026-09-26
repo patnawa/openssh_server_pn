@@ -191,8 +191,18 @@ namespace OpenSSHServerManager
         public static void SetBlockedAddresses(IList<string> addresses, string ports)
         {
             dynamic policy = Policy();
-            try { policy.Rules.Remove(BlockRuleName); } catch { }
-            if (addresses == null || addresses.Count == 0) return;
+            dynamic existing = null;
+            try { existing = policy.Rules.Item(BlockRuleName); } catch (COMException) { }
+            if (addresses == null || addresses.Count == 0) { if (existing != null) policy.Rules.Remove(BlockRuleName); return; }
+            if (existing != null)
+            {
+                // Changed in place: removing and adding again would leave a moment with nothing blocked, and every address
+                // unblocked if the new rule could not be added.
+                existing.RemoteAddresses = string.Join(",", addresses);
+                existing.LocalPorts = ports;
+                existing.Enabled = true;
+                return;
+            }
             dynamic rule = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule"));
             rule.Name = BlockRuleName;
             rule.Description = "Addresses blocked from SSH by OpenSSH Server Manager (Logs tab, Failed logins by address).";
@@ -264,7 +274,10 @@ namespace OpenSSHServerManager
         }
 
         private static readonly Regex FailurePattern = new Regex(
-            @"(?:^|: )(?:Failed \S+ for (?:invalid user )?(?<user>.*?)|Invalid user (?<user>.*?)|(?:Connection closed by|Disconnected from) (?:authenticating|invalid) user (?<user>.*?)|Timeout before authentication for|maximum authentication attempts exceeded for (?:invalid user )?(?<user>.*?)) (?:from )?(?<addr>[0-9A-Fa-f.:]+) port \d+",
+            // The address is taken from the END of the message: a user name may contain spaces, so "ssh -l 'x from 10.1.2.3
+            // port 22' server" makes sshd log "Invalid user x from 10.1.2.3 port 22 from <real address> port <n>". The user
+            // groups are greedy and the address must be followed only by the port, "ssh2" and "[preauth]".
+            @"(?:^|: )(?:(?:Failed \S+ for (?:invalid user )?(?<user>.*)|Invalid user (?<user>.*)|maximum authentication attempts exceeded for (?:invalid user )?(?<user>.*)) from|(?:Connection closed by|Disconnected from) (?:authenticating|invalid) user (?<user>.*)|Timeout before authentication for) (?<addr>[0-9A-Fa-f.:]+) port \d+(?: ssh2)?(?: \[preauth\])?\s*$",
             RegexOptions.IgnoreCase);
 
         /// <summary>
