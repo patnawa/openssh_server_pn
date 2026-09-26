@@ -11,7 +11,9 @@ you have set up keys; the manager's setup wizard switches them off for administr
 |---|---|
 | `src/` | The server and client source: OpenSSH 10.5p1 with the Windows port, the vendored-library manifest (LibreSSL 4.3.2, libfido2 1.17.0) and the WiX installer. The repository history starts on 26 September 2026; the earlier history, with upstream OpenSSH's, is kept outside the repository for merging new OpenSSH releases ([BUILDING.md](docs/BUILDING.md#2-layout)) |
 | `tools/OpenSSH-Server-Manager/` | [OpenSSH Server Manager](tools/OpenSSH-Server-Manager/README.md), the management console (C# source, build script, the built executable) |
-| `docs/` | Installation, compatibility, building, changelog, feature audit and roadmap |
+| `docs/` | Installation, compatibility, building, releasing, changelog, feature audit and roadmap |
+| `.github/`, `tools/release/` | CI (build, unit and install tests of the packages, the management console), release tooling (SBOM, upstream version check) |
+| `packaging/` | winget manifests and Intune / Configuration Manager deployment notes |
 
 This project is independent: it is not affiliated with Microsoft or the OpenBSD OpenSSH project.
 
@@ -159,6 +161,8 @@ The full record, including what could not be tested here, is in [docs/CHANGELOG.
 | [docs/INSTALL.md](docs/INSTALL.md) | Install, upgrade, keys, configuration, hardening, uninstall, troubleshooting |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Windows version and architecture matrix, evidence, limitations |
 | [docs/BUILDING.md](docs/BUILDING.md) | Build and package from `src/` for x64, x86 and ARM64; updating OpenSSH and the libraries |
+| [docs/RELEASING.md](docs/RELEASING.md) | How a release is made: tag, CI build and tests, draft release, SBOM, attestations, optional signing |
+| [packaging/intune/README.md](packaging/intune/README.md) | Deploying with Intune or Configuration Manager: commands, detection rule, return codes |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Every build: changes and verification |
 | [docs/COMPARISON-BITVISE.md](docs/COMPARISON-BITVISE.md) | Feature audit against Bitvise SSH Server and other commercial servers |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Planned improvements |

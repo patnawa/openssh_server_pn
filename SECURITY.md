@@ -35,6 +35,13 @@ carries a `SHA256SUMS.txt`. Verify a download
 with `Get-FileHash <file> -Algorithm SHA256` before installing, and treat any mismatch as a
 tampered file.
 
+Releases built by the CI workflow (the builds after 10.5.1.0, see
+[docs/RELEASING.md](docs/RELEASING.md)) also carry a CycloneDX SBOM and signed provenance
+attestations, which show that a file was built by this repository's workflow from a given
+commit: `gh attestation verify <file> --repo patnawa/openssh_server_pn`. They are
+Authenticode-signed only when a signing service is configured; the release notes say which.
+10.5.1.0 and the manager 1.5.0 release have hashes only.
+
 ## Security design of the packages
 
 - **Installer.** The pre-install and firewall steps run as LocalSystem. Their script is embedded

@@ -46,6 +46,13 @@ Pull requests are reviewed on a best-effort basis. Small, focused changes are me
 
 ## Releasing a build (maintainers)
 
+Since the workflow `.github/workflows/openssh.yml` exists, a tag `v<version>` builds, tests and
+packages everything and creates a draft release with `SHA256SUMS.txt`, an SBOM and attestations;
+[docs/RELEASING.md](docs/RELEASING.md) describes it. Pull requests that change `src/`, the
+workflows or the release tools run the build and the tests too; use the pull request template.
+The manual steps below remain the way to build without CI, and the record of how 10.5.1.0 was
+made.
+
 1. For a new OpenSSH release, merge it into `src/` as described in `docs/BUILDING.md`, section 2,
    and run the unit tests.
 2. Set the file version in `src/contrib/win32/openssh/version.rc`, then build x64, x86 and ARM64
