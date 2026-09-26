@@ -6,10 +6,14 @@ every change to the packaging, and how the result was verified. Published as Git
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
-## Installer and CI after 10.5.1.0 (not released yet)
+## 10.5.2.0 (2026-09-26)
 
-Changes to the packaging and the release process in the branch `improvements`; they go into the
-next build. The OpenSSH source and libraries are unchanged.
+The build that repairs the ARM64 package, with the installer changes and the CI below and
+OpenSSH Server Manager 1.6.0. OpenSSH 10.5p1, libfido2 1.17.0, libcbor 0.14.0 and zlib 1.3.2 are
+unchanged; LibreSSL stays 4.3.2 with the ARM64 workaround. Built, tested and packaged by the CI
+from the tag `v10.5.2.0` (`.github/workflows/openssh.yml`), which also creates the draft release
+with `SHA256SUMS.txt`, the SBOM and the attestations; the hashes of the published files are in the
+README and in the release.
 
 Installer:
 
@@ -106,12 +110,12 @@ CI and releases:
   160 tests passed, and the 46 failures were its file assertions, which Pester 4 reads as
   collection checks; it installs 3.4.6 now.
 
-## OpenSSH Server Manager 1.6.0 (not released yet)
+## OpenSSH Server Manager 1.6.0 (2026-09-26)
 
 A safety pass over every save of `sshd_config`, and the window a daily administrator asked for:
 a setup wizard, dark mode, a client tab, failed logins by address with a firewall block list,
-fixes per hardening check, and an icon in the notification area. Built from the branch
-`improvements`; not published yet.
+fixes per hardening check, and an icon in the notification area. Published with the release
+`v10.5.2.0` and in a release of its own, `manager-v1.6.0`, by the CI.
 
 | File | Size | SHA-256 |
 |---|---|---|
