@@ -20,7 +20,7 @@ re-check it whenever the toolchain or the Windows SDK changes.
 | Windows 7 SP1, Windows Server 2008 R2 | EOL | yes | yes | no | fallback |
 | Windows Vista, Server 2008, XP, 2003 | not supported | no | no | no | MSI launch condition blocks the install |
 
-* ARM64: not with the 10.5.1.0 package, whose `sshd` cannot start (see the run-time tests below); the builds after it carry the fix.
+\* ARM64: not with the 10.5.1.0 package, whose `sshd` cannot start (see the run-time tests below); the builds after it carry the fix, verified on ARM64 hardware on 2026-09-26.
 
 Windows Server ships for x64 only; Windows on ARM exists for Windows 10 and 11 only. Windows
 Server Core and Nano Server: Server Core is supported. Nano Server is not tested and the
