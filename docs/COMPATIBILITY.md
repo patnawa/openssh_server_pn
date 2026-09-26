@@ -9,16 +9,18 @@ re-check it whenever the toolchain or the Windows SDK changes.
 
 | Windows | Support status | x86 | x64 | ARM64 | Interactive terminal |
 |---|---|---|---|---|---|
-| Windows 11 (all releases) | in support | yes | yes | yes | ConPTY (native pseudo console) |
+| Windows 11 (all releases) | in support | yes | yes | yes* | ConPTY (native pseudo console) |
 | Windows Server 2025 | in support | n/a | yes | n/a | ConPTY |
 | Windows Server 2022 | in support | n/a | yes | n/a | ConPTY |
-| Windows 10 1809 and later (LTSC 2019, LTSC 2021, IoT) | in support (LTSC) | yes | yes | yes | ConPTY |
+| Windows 10 1809 and later (LTSC 2019, LTSC 2021, IoT) | in support (LTSC) | yes | yes | yes* | ConPTY |
 | Windows Server 2019 | extended support | n/a | yes | n/a | ConPTY |
 | Windows 10 before 1809, Windows Server 2016 | extended support / EOL | yes | yes | no | `ssh-shellhost.exe` fallback |
 | Windows 8.1, Windows Server 2012 R2 | EOL | yes | yes | no | fallback |
 | Windows 8, Windows Server 2012 | EOL | yes | yes | no | fallback |
 | Windows 7 SP1, Windows Server 2008 R2 | EOL | yes | yes | no | fallback |
 | Windows Vista, Server 2008, XP, 2003 | not supported | no | no | no | MSI launch condition blocks the install |
+
+* ARM64: not with the 10.5.1.0 package, whose `sshd` cannot start (see the run-time tests below); the builds after it carry the fix.
 
 Windows Server ships for x64 only; Windows on ARM exists for Windows 10 and 11 only. Windows
 Server Core and Nano Server: Server Core is supported. Nano Server is not tested and the
@@ -56,7 +58,7 @@ friends) are not statically imported; the code resolves them at run time and fal
 |---|---|---|
 | Install x64 MSI over official 10.0.0.0, services, key login, `Restart-Service`, forced kill of `sshd.exe` | Windows 11 Pro 26200, x64 | pass |
 | x86 `ssh.exe -V`, `ssh-keygen` smoke test under WOW64 | Windows 11 Pro 26200, x64 | pass |
-| ARM64 binaries | not executed (no ARM64 hardware available) | static checks only |
+| ARM64 binaries of 10.5.1.0 (built 2026-09-25) | Windows 11 Enterprise 26200 on ARM64 (GitHub `windows-11-arm`), 2026-09-26 | **fail**: `unittest-sshbuf` and `unittest-hostkeys` crash at the first elliptic-curve operation, `unittest-kex` and `unittest-sshkey` hang, the MSI install ends with error 1920 because `sshd` never reports itself started (it generates the host keys first). Cause: the Visual Studio 2022 ARM64 optimizer emits an arithmetic instead of a logical shift in LibreSSL's `bn_ct_ne_zero()` once it is inlined, so the constant-time masks of the Montgomery multiplication are wrong and every EC, RSA and DH operation fails ([libressl/portable#1403](https://github.com/libressl/portable/issues/1403); fixed in Visual Studio 2026 v18.8.2). The overlay port now applies LibreSSL's workaround (`msvc-arm64-bn-ct-ne-zero.patch`, from their pull/1355); the next build is verified by the same job |
 | Windows Server 2016 / 2019 / 2022 / 2025 | not executed in this build cycle | static checks only |
 | Windows 7 / 8.1 / 10 before 1809 | not executed | static checks only |
 

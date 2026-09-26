@@ -45,6 +45,23 @@ Installer:
   session, exit 1 with a connection open. **Not run**: an actual install, upgrade, repair,
   rollback or `SSHD_PORT` change; the CI workflow runs these on its first run.
 
+Libraries:
+
+- **The ARM64 package of 10.5.1.0 does not work, and the cause is fixed.** The first time the
+  ARM64 binaries ran, on GitHub's `windows-11-arm` runner on 2026-09-26, `unittest-sshbuf` and
+  `unittest-hostkeys` crashed at their first elliptic-curve operation, `unittest-kex` and
+  `unittest-sshkey` hung, and the MSI ended with error 1920: `sshd` generates the host keys
+  before it reports itself started, and never did. The Visual Studio 2022 ARM64 optimizer emits
+  an arithmetic instead of a logical right shift when LibreSSL's generic `bn_ct_ne_zero()` is
+  inlined, so the constant-time masks of the Montgomery multiplication are wrong and every EC,
+  RSA and DH operation fails ([libressl/portable#1403](https://github.com/libressl/portable/issues/1403);
+  Microsoft fixed the compiler in Visual Studio 2026 v18.8.2). The overlay port now applies
+  LibreSSL's own workaround, `msvc-arm64-bn-ct-ne-zero.patch` from their pull/1355:
+  `bn_ct_ne_zero()` through the `_CountLeadingZeros64` intrinsic on MSVC ARM64. No LibreSSL
+  release carries it yet (4.3.2 is the newest); drop the patch with one that does. x64 and x86
+  use assembly and 32-bit limbs there and were never affected; 10.5.1.0's x64 and x86 packages
+  passed every test on the same day.
+
 Build:
 
 - **Reproducible executables.** `Directory.Build.targets` next to the Visual Studio projects adds

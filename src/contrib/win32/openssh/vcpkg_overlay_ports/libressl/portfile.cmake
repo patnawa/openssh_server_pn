@@ -19,6 +19,7 @@ vcpkg_extract_source_archive(
         add-version-file.patch
         modify-cmakelists.patch
         modify-crypto-cmakelists.patch
+        msvc-arm64-bn-ct-ne-zero.patch
 )
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS

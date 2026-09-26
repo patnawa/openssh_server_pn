@@ -1,0 +1,32 @@
+Work around a code-generation bug of the MSVC ARM64 optimizer (Visual Studio 2022; fixed in
+Visual Studio 2026 v18.8.2, MSVC 19.51): the generic bn_ct_ne_zero(), once inlined, gets an
+arithmetic instead of a logical right shift, so the constant-time masks of the Montgomery
+multiplication are wrong and every EC, RSA and DH operation fails (EC_KEY_new_by_curve_name
+returns NULL, key generation never terminates). The same workaround as LibreSSL portable
+pull/1355 (patches/win32_arm64_bn_arch.h.patch), applied unconditionally: pull/1359 detects the
+bug at configure time, which a cross-compiled build cannot do and then keeps the workaround too.
+LibreSSL issue: libressl/portable#1403. Drop this patch with a LibreSSL release that carries it.
+
+diff --git a/crypto/bn/arch/aarch64/bn_arch.h b/crypto/bn/arch/aarch64/bn_arch.h
+--- a/crypto/bn/arch/aarch64/bn_arch.h
++++ b/crypto/bn/arch/aarch64/bn_arch.h
+@@ -20,4 +20,19 @@
+ #ifndef HEADER_BN_ARCH_H
+ #define HEADER_BN_ARCH_H
+
++/* See libressl/portable pull/1355: the MSVC ARM64 optimizer miscompiles the generic helper. */
++#if defined(_MSC_VER) && defined(_M_ARM64)
++
++#include <intrin.h>
++
++#define HAVE_BN_CT_NE_ZERO
++
++static inline int
++bn_ct_ne_zero(BN_ULONG w)
++{
++	return 1U ^ (_CountLeadingZeros64((unsigned __int64)w) >> 6);
++}
++
++#endif
++
+ #ifndef OPENSSL_NO_ASM
