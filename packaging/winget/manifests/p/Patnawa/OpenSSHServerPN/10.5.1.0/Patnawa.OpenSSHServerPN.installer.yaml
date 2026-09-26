@@ -1,0 +1,65 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
+# The three MSIs of the release v10.5.1.0. InstallerSha256: the hashes in the README and SHA256SUMS.txt,
+# checked against the downloaded files. ProductCode: read from each MSI's Property table (a new one for every
+# build, Product Id="*"). The UpgradeCode is left out on purpose: the packages share the upgrade codes of
+# Microsoft's OpenSSH packages (so that they replace them), and winget would match those installations too.
+
+PackageIdentifier: Patnawa.OpenSSHServerPN
+PackageVersion: 10.5.1.0
+InstallerLocale: en-US
+MinimumOSVersion: 10.0.0.0
+InstallerType: msi
+Scope: machine
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+InstallerSwitches:
+  # The MSI's install folder property is INSTALLFOLDER; winget's default for MSIs (TARGETDIR) has no effect.
+  InstallLocation: INSTALLFOLDER="<INSTALLPATH>"
+UpgradeBehavior: install
+# A per-machine MSI run silently cannot ask for elevation itself (it fails with error 1925).
+ElevationRequirement: elevationRequired
+Commands:
+- scp
+- sftp
+- ssh
+- ssh-add
+- ssh-agent
+- ssh-keygen
+- ssh-keyscan
+- sshd
+ReleaseDate: 2026-09-26
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/patnawa/openssh_server_pn/releases/download/v10.5.1.0/OpenSSH-Win64-v10.5.1.0.msi
+  InstallerSha256: 5BC5FD7CCFC27940AA2F9377F066DBE4F48421F3422E432AEB6CEEACEF2326B8
+  ProductCode: '{D8B0B4AB-3605-4CC0-BB6F-72562287F36A}'
+  AppsAndFeaturesEntries:
+  - DisplayName: OpenSSH Server PN
+    Publisher: OpenSSH Server PN
+    DisplayVersion: 10.5.1.0
+    ProductCode: '{D8B0B4AB-3605-4CC0-BB6F-72562287F36A}'
+    InstallerType: msi
+- Architecture: x86
+  InstallerUrl: https://github.com/patnawa/openssh_server_pn/releases/download/v10.5.1.0/OpenSSH-Win32-v10.5.1.0.msi
+  InstallerSha256: 4F8E1BB626238E11BC7DDBE7B18A3086924A00592CBA4AD571AAD67F8D00671F
+  ProductCode: '{2C699E59-F250-46AD-BA88-6C64EC38EC7B}'
+  AppsAndFeaturesEntries:
+  - DisplayName: OpenSSH Server PN
+    Publisher: OpenSSH Server PN
+    DisplayVersion: 10.5.1.0
+    ProductCode: '{2C699E59-F250-46AD-BA88-6C64EC38EC7B}'
+    InstallerType: msi
+- Architecture: arm64
+  InstallerUrl: https://github.com/patnawa/openssh_server_pn/releases/download/v10.5.1.0/OpenSSH-ARM64-v10.5.1.0.msi
+  InstallerSha256: A7107F66AA73B284D3454B2AB4477E19A1008CB75D29A4720B68B1F4EB98DF70
+  ProductCode: '{36A6216C-7F01-470B-9245-93F26824134D}'
+  AppsAndFeaturesEntries:
+  - DisplayName: OpenSSH Server PN
+    Publisher: OpenSSH Server PN
+    DisplayVersion: 10.5.1.0
+    ProductCode: '{36A6216C-7F01-470B-9245-93F26824134D}'
+    InstallerType: msi
+ManifestType: installer
+ManifestVersion: 1.10.0

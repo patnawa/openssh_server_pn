@@ -1,0 +1,10 @@
+# Blank issues stay available for questions and ideas; bugs go through the template, which asks for the
+# details needed to reproduce a problem with these packages.
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/patnawa/openssh_server_pn/security/advisories/new
+    about: Vulnerabilities in the installers, OpenSSH Server Manager, the build or the published files. Reported privately, not as a public issue; see SECURITY.md.
+  - name: Vulnerability in OpenSSH itself
+    url: https://www.openssh.com/report.html
+    about: Protocol or code vulnerabilities that also affect upstream OpenSSH go to the OpenSSH developers (SECURITY.md lists who handles what).

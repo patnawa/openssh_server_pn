@@ -1,0 +1,68 @@
+name: Upstream watch
+
+# Once a week: compares the latest releases of OpenSSH portable, LibreSSL, libfido2, libcbor and zlib with the
+# versions in this repository (tools/release/Get-UpstreamVersions.ps1, which also runs locally) and opens an
+# issue for each newer release, unless an open issue with the same title exists. Microsoft's Win32-OpenSSH
+# releases are listed in the run summary for information.
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'   # Mondays 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write   # open an issue for a new upstream release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare the upstream versions
+        run: |
+          $json = Join-Path $env:RUNNER_TEMP 'upstream.json'
+          $rows = ./tools/release/Get-UpstreamVersions.ps1 -OutFile $json
+          $rows | Format-Table Component, Current, Latest, UpdateAvailable, Error -AutoSize | Out-String -Width 200 | Write-Host
+          $summary = @('### Upstream versions', '', '| Component | This repository | Latest upstream | Update | Release notes |', '|---|---|---|---|---|')
+          foreach ($r in $rows) {
+            $state = if ($r.Error) { "error: $($r.Error)" } elseif ($null -eq $r.UpdateAvailable) { 'info' } elseif ($r.UpdateAvailable) { '**newer**' } else { 'current' }
+            $summary += "| $($r.Component) | $($r.Current) | $($r.Latest) | $state | $($r.ReleaseNotes) |"
+            if ($r.Error) { Write-Host "::warning title=Upstream check failed::$($r.Component): $($r.Error)" }
+          }
+          $summary + '' | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+      - name: Open issues for new releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $rows = Get-Content (Join-Path $env:RUNNER_TEMP 'upstream.json') -Raw | ConvertFrom-Json
+          $open = @(gh issue list --repo $env:GITHUB_REPOSITORY --state open --limit 1000 --json title | ConvertFrom-Json | ForEach-Object title)
+          if ($LASTEXITCODE) { Write-Host '::error::gh issue list failed'; exit 1 }
+          foreach ($r in @($rows | Where-Object { $_.UpdateAvailable -eq $true })) {
+            $title = "Upstream release: $($r.Component) $($r.Latest)"
+            if ($open -contains $title) { Write-Host "An open issue exists already: $title"; continue }
+            $body = @(
+              "$($r.Component) $($r.Latest) is available (tag ``$($r.Tag)``); this repository has $($r.Current).", '',
+              "- Release notes: $($r.ReleaseNotes)",
+              "- Found in: $($r.Source)",
+              "- How to update: $($r.Note)", '',
+              'Before a release with it: build all three architectures, run the unit and install tests (CI does both), and record the results in docs/CHANGELOG.md.', '',
+              "_Opened by the Upstream watch workflow ($env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID)._"
+            ) -join "`n"
+            $bodyFile = Join-Path $env:RUNNER_TEMP ('issue-' + [guid]::NewGuid().ToString('N') + '.md')
+            [IO.File]::WriteAllText($bodyFile, $body)
+            gh issue create --repo $env:GITHUB_REPOSITORY --title $title --body-file $bodyFile
+            if ($LASTEXITCODE) { Write-Host "::error::could not open the issue '$title'"; exit 1 }
+            Write-Host "Opened: $title"
+          }
