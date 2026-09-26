@@ -64,7 +64,11 @@ Libraries:
   `bn_ct_ne_zero()` through the `_CountLeadingZeros64` intrinsic on MSVC ARM64. No LibreSSL
   release carries it yet (4.3.2 is the newest); drop the patch with one that does. x64 and x86
   use assembly and 32-bit limbs there and were never affected; 10.5.1.0's x64 and x86 packages
-  passed every test on the same day.
+  passed every test on the same day. The crypto probes on the unpatched ARM64 build, in a native
+  ARM64 process: `BN_mul` and `BN_mod_exp` correct, `RAND_bytes` fine, the ed25519 key (OpenSSH's
+  own arithmetic) and `sshd -t` fine; P-256 `EC_KEY_new_by_curve_name` NULL with "point is not on
+  curve", a P-384 key generated but failing `EC_KEY_check_key`, P-521 fine, ECDSA generation
+  failed, RSA generation still running after 180 s.
 
 Build:
 
