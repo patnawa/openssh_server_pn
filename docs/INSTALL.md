@@ -119,11 +119,16 @@ Every step is written to the `msiexec` log (`/l*v`); the lines start with `prein
 **Downgrade.** Installing a package older than the installed one stops with exit code 1603 and
 the message *A newer version of OpenSSH from this package series is already installed*. Nothing
 is changed. This also applies across architectures, for example an older Win32 package over a
-newer Win64 install. To roll back deliberately:
+newer Win64 install. To roll back deliberately to an older package that has this check
+(10.5.1.0 and later):
 
 ```powershell
-msiexec /i .\OpenSSH-Win64-v10.5.0.0.msi ALLOWDOWNGRADE=1 /qn /norestart
+msiexec /i .\OpenSSH-Win64-v<older-version>.msi ALLOWDOWNGRADE=1 /qn /norestart
 ```
+
+Packages before 10.5.1.0 do not know `ALLOWDOWNGRADE`; to go back to one of them, uninstall
+first ([section 7](#7-uninstall)). 10.5.1.0 is the first release published here, so there is
+no older published package yet.
 
 **Adding or removing a feature later** (`ADDLOCAL=`, `REMOVE=`) goes through the same package.
 Adding a feature replaces no file, so the cleanup is skipped and open sessions stay connected.
@@ -145,7 +150,9 @@ folder are not removed; delete them by hand. Running `uninstall-sshd.ps1` first 
 needed.
 
 **Silent installs must run elevated.** `msiexec /qn` started from a non-elevated prompt cannot
-ask for elevation and fails with error 1730 as soon as an installed package has to be removed.
+ask for elevation. A fresh install fails with exit code 1603 and error 1925 (*You do not have
+sufficient privileges to complete this installation for all users of the machine*); as soon as
+an installed package has to be removed, it fails with error 1730. Nothing is left changed.
 This is standard Windows Installer behaviour (the official packages behave the same);
 double-clicking the MSI or running `msiexec` from an elevated prompt works.
 
@@ -315,6 +322,7 @@ you want a clean slate.
 | Install stops with exit 1603 and *A newer version of OpenSSH from this package series is already installed* | You are installing an older package. Add `ALLOWDOWNGRADE=1` or install a newer one. |
 | A `preinstall: warning:` line in the MSI log | The install succeeded; one cleanup step could not be done, and the line says which and what to run. The usual case is DISM being busy with another servicing operation, which leaves the in-box OpenSSH Server files in place. |
 | OpenSSH Server Manager shows *Service binary* WARN, or `sc qc sshd` names `System32\OpenSSH` | Windows servicing pointed the service back at the in-box binary. Run `msiexec /fa <package.msi>` to repair, and remove the in-box capability so it does not happen again. |
+| Error 1925 *You do not have sufficient privileges to complete this installation for all users of the machine* (exit code 1603) | Silent install from a non-elevated prompt. Run `msiexec` elevated. |
 | Error 1730 *You must be an Administrator to remove this application* | Silent install from a non-elevated prompt. Run `msiexec` elevated. |
 | Restart pending after an upgrade | Expected when the upgrade ran from inside an SSH session, because the old copies of the files that session held are deleted at the restart. Also expected when Windows could only finish removing the in-box server at the restart. Everything else is already in place. |
 

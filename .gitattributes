@@ -1,0 +1,2 @@
+# The management console's config is published with a SHA-256: keep its bytes (CRLF) exactly as committed.
+tools/OpenSSH-Server-Manager/bin/*.config -text

@@ -58,8 +58,10 @@ Write-Host "Compiler: $csc"
 & $csc @args
 if ($LASTEXITCODE -ne 0) { throw "Compilation failed with exit code $LASTEXITCODE" }
 
-# Run on any 4.x runtime; enable the newest runtime version installed.
-@"
+# Run on any 4.x runtime; enable the newest runtime version installed. Written byte for byte the same everywhere
+# (CRLF, UTF-8 without BOM), whatever the line endings of this script and whichever PowerShell runs it: the file is
+# published with a SHA-256.
+$config = @"
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <startup useLegacyV2RuntimeActivationPolicy="false">
@@ -69,7 +71,8 @@ if ($LASTEXITCODE -ne 0) { throw "Compilation failed with exit code $LASTEXITCOD
     <AppContextSwitchOverrides value="Switch.System.Windows.Forms.DoNotSupportSelectAllShortcutInMultilineTextBox=false" />
   </runtime>
 </configuration>
-"@ | Set-Content -Path "$out.config" -Encoding utf8
+"@
+[IO.File]::WriteAllText("$out.config", (($config -replace "`r?`n", "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding $false))
 
 $fi = Get-Item $out
 Write-Host "Built $($fi.FullName) ($($fi.Length) bytes)"

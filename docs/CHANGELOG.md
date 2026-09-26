@@ -1,7 +1,10 @@
 # Changelog
 
-All builds published by this project, newest first. Each entry lists the source, the library
-versions, every change to the packaging, and how the result was verified.
+All builds of this project, newest first. Each entry lists the source, the library versions,
+every change to the packaging, and how the result was verified. Published as GitHub releases:
+[v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0) (with Manager
+1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
+the builds before them were not published.
 
 ## OpenSSH Server Manager 1.5.0 (2026-09-26)
 
@@ -18,7 +21,9 @@ The size grew with the icon, which the executable carries twice: as its Windows 
 resource the window loads with all ten sizes.
 
 Published in the releases [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0) and
-[v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0), each with `SHA256SUMS.txt`.
+[v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0), each with `SHA256SUMS.txt`. After publishing, the `.exe.config` in v10.5.1.0 was replaced by the one in manager-v1.5.0:
+they differed only in line endings (SHA-256 `38607418...98451` in both now, and in `bin`), and
+both `SHA256SUMS.txt` files got LF line endings, so that `sha256sum -c` reads them.
 
 Fixed:
 
@@ -514,7 +519,9 @@ Verification against the installed 10.5.1.0 x64 package:
 
 ## 10.5.0.0 (2026-09-25)
 
-**Source.** `openssh-portable/` in this repository (`src/` since 10.5.1.0), branch `merge-v10.5P1-20260925`: the
+**Source.** `openssh-portable/` (`src/` since 10.5.1.0), branch `merge-v10.5P1-20260925` of the
+repository history before 26 September 2026, now kept in the history bundle
+([BUILDING.md](BUILDING.md#2-layout)): the
 maintainers' V_10_3_P1 merge ([PowerShell/openssh-portable PR #877](https://github.com/PowerShell/openssh-portable/pull/877),
 head `a3d1079`, CI green) followed by our merges of upstream OpenSSH `V_10_4_P1` (2026-07-06)
 and `V_10_5_P1` (2026-08-11), done tag by tag with the maintainers' merge rules
@@ -540,7 +547,7 @@ composite post-quantum signature key type (enabled in this build). Client side: 
 multiplexing command, `ssh-keygen` FIDO flag editing, and many fixes.
 
 **Conflict resolutions and Windows follow-ups** (all in `openssh-portable/`, commits after
-`a3d1079`):
+`a3d1079`, in the history bundle):
 
 | Change | Reason |
 |---|---|

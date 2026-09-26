@@ -1,7 +1,8 @@
 # Building OpenSSH Server PN from source
 
-This guide describes the procedure that was used to build and package versions 10.2.0.0 to
-10.5.1.0 on 2026-09-25, for x64, x86 and ARM64, from the `src/` folder of this repository. The
+This guide describes the procedure that was used to build and package version 10.5.1.0 on
+2026-09-25, for x64, x86 and ARM64, from the `src/` folder of this repository. Versions 10.2.0.0
+to 10.5.0.0 were built with the same steps from the earlier `openssh-portable/` folder. The
 source follows the layout of the Windows port of OpenSSH, which manages its crypto and
 compression libraries through a [vcpkg](https://github.com/microsoft/vcpkg) manifest.
 The older wiki pages that download prebuilt LibreSSL and zlib archives describe a previous layout

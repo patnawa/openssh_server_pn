@@ -55,11 +55,10 @@ Pull requests are reviewed on a best-effort basis. Small, focused changes are me
    `--authtest`. Record the
    results in the changelog.
 4. Generate `SHA256SUMS.txt` (one line per file: the lower-case hash, two spaces, the file
-   name), add the changelog entry, update the README tables and `docs/COMPATIBILITY.md`.
+   name; LF line endings, so that `sha256sum -c` reads it too), add the changelog entry, update the README tables and `docs/COMPATIBILITY.md`.
 5. Attach the MSIs, `OpenSSHServerManager.exe` with its `.exe.config`, and `SHA256SUMS.txt` to a
    GitHub release tagged `v<version>`, and note that the packages are unsigned.
 6. A release of the management console alone: push a tag `manager-v<version>` on a commit whose
    `bin\OpenSSHServerManager.exe` has that version. The workflow `.github/workflows/manager.yml`
    builds and tests it, then publishes the committed executable, its `.exe.config` and
-   `SHA256SUMS.txt`. Push it before the product release, so that the product release stays the
-   latest one.
+   `SHA256SUMS.txt`. It is not marked as the latest release: the product release keeps that.
