@@ -424,7 +424,7 @@ jobs:
         run: ./.github/scripts/Test-CryptoProbes.ps1 -BinPath (Join-Path $env:RUNNER_TEMP 'bin') -Label $env:ARCH
 
   install-test:
-    name: Install ${{ matrix.arch }} on ${{ matrix.os }}
+    name: Install ${{ matrix.arch }} on ${{ matrix.os }}${{ matrix.powershell && format(' with PowerShell {0}', matrix.powershell) || '' }}
     needs: [version, build]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -441,11 +441,20 @@ jobs:
           - os: windows-11-arm
             arch: ARM64
             msi: OpenSSH-ARM64
+          # Windows 7 and Windows Server 2008 R2 run the installer's steps on Windows PowerShell 2.0. This runner has
+          # that engine (feature PowerShell-V2); the step "Run the installer's steps on Windows PowerShell 2.0" makes
+          # both packages start it, so every scenario below runs them on 2.0.
+          - os: windows-2022
+            arch: x64
+            msi: OpenSSH-Win64
+            powershell: '2.0'
     env:
       VERSION: ${{ needs.version.outputs.version }}
       UPGRADE_VERSION: ${{ needs.version.outputs.upgrade_version }}
       MSI: ${{ matrix.msi }}-v${{ needs.version.outputs.version }}.msi
       UPGRADE_MSI: ${{ matrix.msi }}-v${{ needs.version.outputs.upgrade_version }}-upgradetest.msi
+      # The PowerShell version the pre-install step must report in the MSI logs (Test-MsiLog); empty: not checked.
+      EXPECT_POWERSHELL: ${{ matrix.powershell }}
       # ---- ADJUST ---------------------------------------------------------------------------------------------
       # Installer features implemented in parallel with this workflow: firewall settings kept across upgrade and
       # repair, the SSHD_PORT=<n> property, and ACTIVE_SESSIONS=close|abort. enforce = a failed check fails the
@@ -474,6 +483,19 @@ jobs:
         with:
           name: upgradetest-msi-${{ matrix.arch }}
           path: ${{ runner.temp }}/msi
+
+      # Adds -Version 2 to every powershell.exe command line of both packages (Set-MsiPowerShellArguments). Without
+      # -InputFormat None on those command lines, the first scenario would hang: PowerShell 2.0 waits for the end of
+      # the standard input that WixQuietExec keeps open (Invoke-Msiexec stops such an installation after 20 minutes).
+      - name: Run the installer's steps on Windows PowerShell 2.0
+        if: ${{ matrix.powershell == '2.0' }}
+        run: |
+          Import-Module ./.github/scripts/OpenSSHCI.psm1
+          $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          # PowerShell 2.0 starts its output with a byte order mark
+          $v = (& $ps -Version 2 -NoProfile -NonInteractive -InputFormat None -Command '[string]$PSVersionTable.PSVersion' 2>&1 | Out-String).Replace([string][char]0xFEFF, '').Trim()
+          if ($v -ne '2.0') { throw "The Windows PowerShell 2.0 engine does not run on this runner: $v" }
+          foreach ($f in $env:MSI, $env:UPGRADE_MSI) { Set-MsiPowerShellArguments -Path (Join-Path $env:RUNNER_TEMP "msi/$f") -Insert '-Version 2' | Out-Null }
 
       - name: Record the machine
         run: |
@@ -578,7 +600,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: install-logs-${{ matrix.os }}-${{ matrix.arch }}
+          name: install-logs-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.powershell && format('-powershell{0}', matrix.powershell) || '' }}
           path: ${{ runner.temp }}/logs/
           if-no-files-found: ignore
           retention-days: 14

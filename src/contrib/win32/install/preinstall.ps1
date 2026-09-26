@@ -4,8 +4,10 @@
 # parts (phases "pre" and "sessions") and one without the "#region pre" parts (the firewall and port
 # phases). Comment lines, blank lines and indentation are left out of both. Every line written here
 # lands in the msiexec log, prefixed with "preinstall:". Written for Windows PowerShell 2.0
-# (Windows 7) and later: no PowerShell 3+ syntax or cmdlets (tests\preinstall.Tests.ps1 checks for
-# the usual ones).
+# (Windows 7, Windows Server 2008 R2) and later: no PowerShell 3+ syntax or cmdlets
+# (tests\preinstall.Tests.ps1 checks for the usual ones; the CI runs every installer scenario with
+# the steps on the 2.0 engine). product.wxs starts powershell.exe with -InputFormat None, without
+# which PowerShell 2.0 waits for the end of the standard input that WixQuietExec keeps open.
 #
 # Phase "pre" (the default; deferred, LocalSystem, right after RemoveExistingProducts): after an
 # installed package has been removed (install, upgrade), or at the start of an uninstall, before the
@@ -82,8 +84,9 @@ $touchServer = (-not $featureRemoval) -or ($removedFeatures -contains 'Server')
 $touchClient = (-not $featureRemoval) -or ($removedFeatures -contains 'Client')
 # ssh-agent, scp and ssh-keygen belong to both features (component group Shared).
 $touchShared = (-not $featureRemoval) -or ($touchServer -and $touchClient)
-# 32-bit PowerShell reaches the native System32 through Sysnative. WixQuietExec runs in a 32-bit
-# custom action host, so this script runs in 32-bit PowerShell on 64-bit Windows.
+# 32-bit PowerShell reaches the native System32 through Sysnative. The x86 package starts the
+# 32-bit PowerShell (WixQuietExec), also on 64-bit Windows; the x64 and ARM64 packages start the
+# native one (WixQuietExec64).
 $sysNative = Join-Path $env:SystemRoot 'System32'
 if ($env:PROCESSOR_ARCHITEW6432) { $sysNative = Join-Path $env:SystemRoot 'Sysnative' }
 $folder = $InstallFolder.TrimEnd('\')
@@ -611,7 +614,7 @@ if ($Phase -eq 'sessions') {
 
 # ---- phase "pre" ----
 if ($Phase -ne 'pre') { Log ("warning: unknown phase '" + $Phase + "'; nothing done"); exit 0 }
-Log ("mode=" + $(if ($uninstall) { 'uninstall' } elseif ($featureRemoval) { 'feature removal (REMOVE=' + $Remove + ')' } else { 'install' }) + " folder='" + $folder + "' KEEP_INBOX_OPENSSH='" + $KeepInbox + "' user=" + [Security.Principal.WindowsIdentity]::GetCurrent().Name)
+Log ("mode=" + $(if ($uninstall) { 'uninstall' } elseif ($featureRemoval) { 'feature removal (REMOVE=' + $Remove + ')' } else { 'install' }) + " folder='" + $folder + "' KEEP_INBOX_OPENSSH='" + $KeepInbox + "' user=" + [Security.Principal.WindowsIdentity]::GetCurrent().Name + " PowerShell " + $PSVersionTable.PSVersion)
 
 $serverDirs = @(Get-ServerDirs)
 Log ("server folders handled: " + ($serverDirs -join '; '))

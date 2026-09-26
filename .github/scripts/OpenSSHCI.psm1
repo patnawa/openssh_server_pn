@@ -133,6 +133,64 @@ function New-FailingMsi {
     $full
 }
 
+function Set-MsiPowerShellArguments {
+    <#
+      Adds arguments to every powershell.exe command line of an MSI (the Target of the custom actions that set them),
+      in place, with a new package code; returns the names of the changed actions. "-Version 2" makes the package run
+      its steps on the Windows PowerShell 2.0 engine, as on Windows 7 and Windows Server 2008 R2 (the runner needs
+      the feature PowerShell-V2). CustomAction.Target holds at most 255 characters.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Insert
+    )
+    $full = (Resolve-Path -LiteralPath $Path).Path
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($full, 1))   # 1 = transact
+    $changed = @()
+    try {
+        $rows = @()
+        $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @('SELECT `Action`, `Target` FROM `CustomAction`'))
+        $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+        while ($true) {
+            $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+            if (-not $record) { break }
+            $rows += , @($record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 1), $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 2))
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($record)
+        }
+        $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($view)
+        foreach ($row in $rows) {
+            $action = [string]$row[0]
+            $target = [string]$row[1]
+            if ($target -notmatch 'powershell\.exe" ') { continue }
+            $new = $target.Replace('powershell.exe" ', 'powershell.exe" ' + $Insert + ' ')
+            if ($new.Length -gt 255) { throw "${action}: $($new.Length) characters with '$Insert'; CustomAction.Target holds 255" }
+            $record = $installer.GetType().InvokeMember('CreateRecord', 'InvokeMethod', $null, $installer, @(2))
+            [void]$record.GetType().InvokeMember('StringData', 'SetProperty', $null, $record, @(1, $new))
+            [void]$record.GetType().InvokeMember('StringData', 'SetProperty', $null, $record, @(2, $action))
+            $update = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @('UPDATE `CustomAction` SET `Target` = ? WHERE `Action` = ?'))
+            $update.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $update, @($record)) | Out-Null
+            $update.GetType().InvokeMember('Close', 'InvokeMethod', $null, $update, $null) | Out-Null
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($update)
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($record)
+            $changed += $action
+        }
+        if ($changed.Count -eq 0) { throw "no powershell.exe command line in $full" }
+        $summary = $db.GetType().InvokeMember('SummaryInformation', 'GetProperty', $null, $db, @(1))
+        [void]$summary.GetType().InvokeMember('Property', 'SetProperty', $null, $summary, @(9, ('{' + [guid]::NewGuid().ToString().ToUpperInvariant() + '}')))
+        [void]$summary.GetType().InvokeMember('Persist', 'InvokeMethod', $null, $summary, $null)
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($summary)
+        $db.GetType().InvokeMember('Commit', 'InvokeMethod', $null, $db, $null) | Out-Null
+    } finally {
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($db)
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($installer)
+        [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+    }
+    Write-Host ("{0}: '{1}' added to {2}" -f (Split-Path $full -Leaf), $Insert, ($changed -join ', '))
+    $changed
+}
+
 function Get-MsiTableRows {
     <# The rows of one MSI table (read-only), as objects with the given columns. #>
     param(
@@ -171,18 +229,36 @@ function Invoke-Msiexec {
       Runs msiexec silently with a verbose log and returns its exit code. -Arguments are the action and
       properties, e.g. '/i', '"C:\x.msi"', 'ALLOWDOWNGRADE=1'. Exit codes outside -AllowedExitCodes throw.
       1618 (another installation is in progress) is retried for up to five minutes.
+      An installation still running after -TimeoutMinutes has hung in a custom action: the PowerShell processes are
+      listed and then ended until msiexec finishes (as docs/INSTALL.md tells an administrator to do), and it throws.
     #>
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$LogPath,
-        [int[]]$AllowedExitCodes = @(0)
+        [int[]]$AllowedExitCodes = @(0),
+        [int]$TimeoutMinutes = 20
     )
     $line = (@($Arguments) + @('/qn', '/norestart', '/l*v', ('"' + $LogPath + '"'))) -join ' '
     $deadline = (Get-Date).AddMinutes(5)
     while ($true) {
         Write-Host "msiexec $line"
         $watch = [Diagnostics.Stopwatch]::StartNew()
-        $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList $line -Wait -PassThru
+        $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList $line -PassThru
+        $null = $p.Handle   # keeps the process handle, so that ExitCode can be read after the process has ended
+        if (-not $p.WaitForExit($TimeoutMinutes * 60000)) {
+            Write-Annotation error "msiexec $($Arguments[0]) still running after $TimeoutMinutes minutes" 'Installation hung'
+            foreach ($ps in @(Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'")) {
+                $cl = [string]$ps.CommandLine
+                Write-Host ("  powershell.exe PID {0}, parent {1}, started {2:HH:mm:ss}: {3}" -f $ps.ProcessId, $ps.ParentProcessId, $ps.CreationDate, $cl.Substring(0, [Math]::Min(200, $cl.Length)))
+            }
+            $stop = (Get-Date).AddMinutes(10)
+            while (-not $p.HasExited -and (Get-Date) -lt $stop) {
+                Get-Process -Name powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 10
+            }
+            $state = if ($p.HasExited) { "ended with $($p.ExitCode) after the PowerShell processes were stopped" } else { 'still running' }
+            throw "msiexec did not finish within $TimeoutMinutes minutes ($state); log $LogPath"
+        }
         $code = $p.ExitCode
         Write-Host "msiexec exit code $code after $([math]::Round($watch.Elapsed.TotalSeconds)) s; log $LogPath"
         if ($code -ne 1618 -or (Get-Date) -gt $deadline) { break }
@@ -371,12 +447,25 @@ function Test-OpenSSHInstallation {
 }
 
 function Test-MsiLog {
-    <# Lists the pre-install script's lines from an MSI log; warnings become annotations. #>
+    <#
+      Lists the pre-install script's lines from an MSI log; warnings become annotations. With -RequirePreinstall the
+      step must have run, and when the environment variable EXPECT_POWERSHELL is set (the job that runs the custom
+      actions on Windows PowerShell 2.0), on that PowerShell version (its "mode=" line names the version).
+    #>
     param([Parameter(Mandatory = $true)][string]$LogPath, [switch]$RequirePreinstall)
     $lines = @(Select-String -LiteralPath $LogPath -Pattern 'preinstall: ' | ForEach-Object { $_.Line.Substring($_.Line.IndexOf('preinstall: ')) } | Select-Object -Unique)
     $lines | ForEach-Object { Write-Host $_ }
     foreach ($w in $lines | Where-Object { $_ -like 'preinstall: warning*' }) { Write-Annotation warning $w 'Installer warning' }
-    if ($RequirePreinstall) { Test-Check 'MSI log has the pre-install step' ($lines.Count -gt 0) "$($lines.Count) line(s)" | Out-Null }
+    if ($RequirePreinstall) {
+        Test-Check 'MSI log has the pre-install step' ($lines.Count -gt 0) "$($lines.Count) line(s)" | Out-Null
+        if ($env:EXPECT_POWERSHELL) {
+            # WixQuietExec logs the step's output as it reads it from the pipe, so one line of the script can be split
+            # over two log entries ("... PowerShell 2." and "0"): search the entries joined together.
+            $joined = (@(Select-String -LiteralPath $LogPath -Pattern '^WixQuietExec(?:64)?:  (.*)$' | ForEach-Object { $_.Matches[0].Groups[1].Value }) -join '')
+            $versions = @([regex]::Matches($joined, 'preinstall: mode=.*? PowerShell (\d+(?:\.\d+)?)') | ForEach-Object { $_.Groups[1].Value })
+            Test-Check "The pre-install step ran on PowerShell $env:EXPECT_POWERSHELL" ($versions.Count -gt 0 -and @($versions | Where-Object { $_ -notlike "$env:EXPECT_POWERSHELL*" }).Count -eq 0) ($versions -join ', ') | Out-Null
+        }
+    }
 }
 
 function Invoke-ManagerTest {
@@ -461,7 +550,7 @@ function Start-TestSshSession {
     throw "The test SSH session did not start (exited: $($p.HasExited)). $detail"
 }
 
-Export-ModuleMember -Function Write-Annotation, Invoke-Native, Get-MsiInfo, New-FailingMsi, Get-MsiTableRows, Invoke-Msiexec, Get-InstalledOpenSSHProduct,
+Export-ModuleMember -Function Write-Annotation, Invoke-Native, Get-MsiInfo, New-FailingMsi, Set-MsiPowerShellArguments, Get-MsiTableRows, Invoke-Msiexec, Get-InstalledOpenSSHProduct,
     Get-SshBanner, Get-SshdListenPort, Get-SshdFirewallRule, Get-DefaultFirewallProfileMask, Reset-Checks, Test-Check,
     Complete-Checks, Get-CheckMode, Test-OpenSSHInstallation, Test-MsiLog, Invoke-ManagerTest, New-AdminTestKey,
     Start-TestSshSession, Get-OpenSSHInstallDir

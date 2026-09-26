@@ -26,6 +26,11 @@ This project is independent: it is not affiliated with Microsoft or the OpenBSD 
 | `OpenSSH-ARM64-v10.5.1.0.msi` | Windows 10 and 11 on ARM. **Do not install this one**: its `sshd` cannot start, because the Visual Studio 2022 ARM64 compiler miscompiles a helper of LibreSSL's arithmetic (found on 2026-09-26, the first time the ARM64 binaries ran; details in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md#run-time-tests)). The source carries the fix, verified on ARM64 hardware (all 767 unit tests, the manager's tests and the install tests pass); the next release replaces the package | 6.5 MB | `A7107F66AA73B284D3454B2AB4477E19A1008CB75D29A4720B68B1F4EB98DF70` |
 | `OpenSSHServerManager.exe` (1.5.0) | Management console, any Windows with .NET Framework 4.x, all architectures | 638 KB | `B4BCA5D3EE5AF2E3501D6B47B03F9BE228CD5C610CC3C75C5B56144D26D5573E` |
 
+On Windows 7 and Windows Server 2008 R2 without WMF 3.0 or later, the installer of 10.5.1.0 does
+not finish: its steps wait for ever on the Windows PowerShell 2.0 these systems ship with. To end
+such an installation, see [docs/INSTALL.md](docs/INSTALL.md#a-hung-installation). Install WMF 5.1
+first, or use the next release, which fixes this.
+
 Download them from the release [v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0), together with
 `OpenSSHServerManager.exe.config` (keep it next to the executable) and `SHA256SUMS.txt`. The
 management console also has releases of its own, such as

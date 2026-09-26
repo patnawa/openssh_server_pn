@@ -207,7 +207,14 @@ InstallValidate. After a build, run `contrib\win32\install\tests\preinstall.Test
 `contrib\win32\install\tests\package.Tests.ps1 -Msi <msi>`; neither needs elevation. That script is the pre-install step described in
 [INSTALL.md](INSTALL.md) section 3: it stops the services, ends processes that hold files, and
 removes the in-box server. It runs through `powershell.exe` and is written for Windows PowerShell
-2.0; test any change on the oldest Windows you support. One ICE check is suppressed on purpose:
+2.0; test any change on the oldest Windows you support. Every `powershell.exe` command line needs
+`-InputFormat None`: `WixQuietExec` gives the process a standard input that stays open, and
+PowerShell 2.0 (Windows 7, Windows Server 2008 R2) waits for its end, so without the switch the
+installation hangs there (the packages up to 10.5.1.0 did). The command lines are
+`CustomAction.Target` values of at most 255 characters; `package.Tests.ps1` checks both, and the
+CI runs the install scenarios once more with the steps on the PowerShell 2.0 engine
+(`Set-MsiPowerShellArguments -Insert '-Version 2'` in `.github/scripts/OpenSSHCI.psm1`). One ICE
+check is suppressed on purpose:
 ICE61, because the upgrade table covers the package's own version so that a rebuilt package
 replaces the installed one. The `CNDL1077` compiler warning is suppressed too: the script
 property holds PowerShell type names in square brackets, which are literal text.

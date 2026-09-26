@@ -10,6 +10,9 @@
 #   immediately after InstallExecute (ICE63, error 2613); the firewall step after the WiX action
 #   that creates the rule, its commit after it; the SSHD_PORT step after StartServices.
 # - CustomAction types (immediate / deferred / rollback / commit, no impersonation, return code).
+# - The powershell.exe command lines: -InputFormat None (without it Windows PowerShell 2.0 waits for the end of the
+#   standard input that WixQuietExec keeps open, and the installation hangs on Windows 7 and Server 2008 R2); every
+#   CustomAction.Target within its 255 characters.
 # - ServiceInstall: ErrorControl normal; SecureCustomProperties.
 # - LaunchCondition: SSHD_PORT and ACTIVE_SESSIONS values accepted and refused.
 param([string]$Msi = '')
@@ -102,6 +105,15 @@ foreach ($a in @('SetOpenSSHFirewallSaveKeep', 'SetOpenSSHFirewallSaveRollback',
     Check ($a + ' uses the firewall script') ($target[$a] -match '"\[FirewallCommand\] ')
 }
 Check 'the firewall step gets SSHD_PORT' ($target['SetOpenSSHFirewallProfiles'] -match "-SshdPort '\[SSHD_PORT\]'")
+
+# powershell.exe command lines
+$psActions = @($target.Keys | Where-Object { $target[$_] -match 'powershell\.exe"' } | Sort-Object)
+Check 'the eight command lines that start powershell.exe' (($psActions -join ',') -eq 'SetOpenSSHCheckSessionsCommand,SetOpenSSHFirewallCommit,SetOpenSSHFirewallProfiles,SetOpenSSHFirewallSaveFresh,SetOpenSSHFirewallSaveKeep,SetOpenSSHFirewallSaveRollback,SetOpenSSHPreInstall,SetOpenSSHSshdPort') ($psActions -join ',')
+foreach ($a in $psActions) {
+    Check ($a + ': -NoProfile -NonInteractive -InputFormat None -Command') ($target[$a] -match 'powershell\.exe" -NoProfile -NonInteractive -InputFormat None -Command "') $target[$a]
+}
+$long = @($target.Keys | Where-Object { $target[$_].Length -gt 255 } | ForEach-Object { $_ + ' (' + $target[$_].Length + ')' })
+Check 'every CustomAction.Target within 255 characters' ($long.Count -eq 0) ($long -join ', ')
 
 # services, secure properties
 foreach ($r in (Rows 'SELECT `Name`, `ErrorControl` FROM `ServiceInstall`')) {
