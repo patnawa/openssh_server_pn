@@ -3,15 +3,15 @@
 The packages are ordinary per-machine MSIs, so they deploy like any other Windows Installer package.
 This page lists the values to enter; the installer's behaviour itself is described in
 [docs/INSTALL.md](../../docs/INSTALL.md), which is the reference for everything below. The examples use
-the release 10.5.1.0; replace the version, file name and product code for another build.
+the release 10.5.2.0; replace the version, file name and product code for another build.
 
 ## Package and architecture
 
 | Devices | Package | Intune requirement (operating system architecture) |
 |---|---|---|
-| 64-bit Windows 10 and 11, Windows Server | `OpenSSH-Win64-v10.5.1.0.msi` | x64 |
-| Windows 10 and 11 on ARM | `OpenSSH-ARM64-v10.5.1.0.msi` | ARM64 |
-| 32-bit Windows 10 | `OpenSSH-Win32-v10.5.1.0.msi` | x86 |
+| 64-bit Windows 10 and 11, Windows Server | `OpenSSH-Win64-v10.5.2.0.msi` | x64 |
+| Windows 10 and 11 on ARM | `OpenSSH-ARM64-v10.5.2.0.msi` | ARM64 |
+| 32-bit Windows 10 | `OpenSSH-Win32-v10.5.2.0.msi` | x86 |
 
 Only one of the three can be installed on a device: they register the same services, and each removes
 the others. The packages are not Authenticode-signed; check the SHA-256 against `SHA256SUMS.txt` of the
@@ -26,13 +26,13 @@ rules below. The *Windows app (MSI) line-of-business* type also takes the MSI di
 arguments, but detects it only by product code.
 
 ```powershell
-IntuneWinAppUtil.exe -c .\OpenSSH-Win64 -s OpenSSH-Win64-v10.5.1.0.msi -o .\out
+IntuneWinAppUtil.exe -c .\OpenSSH-Win64 -s OpenSSH-Win64-v10.5.2.0.msi -o .\out
 ```
 
 | Setting | Value |
 |---|---|
-| Install command | `msiexec /i "OpenSSH-Win64-v10.5.1.0.msi" /qn /norestart /l*v "%ProgramData%\Microsoft\IntuneManagementExtension\Logs\OpenSSH-Server-PN-install.log"` |
-| Uninstall command | `msiexec /x {D8B0B4AB-3605-4CC0-BB6F-72562287F36A} /qn /norestart` (the product code of the package, see below) |
+| Install command | `msiexec /i "OpenSSH-Win64-v10.5.2.0.msi" /qn /norestart /l*v "%ProgramData%\Microsoft\IntuneManagementExtension\Logs\OpenSSH-Server-PN-install.log"` |
+| Uninstall command | `msiexec /x {C4C6F50F-9551-403F-9B28-E36B16383154} /qn /norestart` (the product code of the package, see below) |
 | Install behavior | System |
 | Device restart behavior | Determine behavior based on return codes |
 | Return codes | the defaults: `0` success, `1707` success, `3010` soft reboot, `1641` hard reboot, `1618` retry |
@@ -45,10 +45,10 @@ use and may ask for a restart with `3010` (docs/INSTALL.md, section 3). Removing
 can also leave a restart pending (docs/INSTALL.md, section 6). `1618` means another installation is
 running; Intune retries it.
 
-A failed install returns `1603`. The MSI log then says why; the causes specific to this package are an
-older package over a newer one without `ALLOWDOWNGRADE=1`, and a `FIREWALL_PROFILES` or
-`KEEP_INBOX_OPENSSH` value the installer does not accept (docs/INSTALL.md, sections 2 and 3). Nothing is
-changed in either case.
+A failed install returns `1603`. The MSI log then says why. The causes specific to this package are an
+older package over a newer one without `ALLOWDOWNGRADE=1`, a value of `FIREWALL_PROFILES`,
+`KEEP_INBOX_OPENSSH`, `SSHD_PORT` or `ACTIVE_SESSIONS` that the installer does not accept, and open SSH sessions
+with `ACTIVE_SESSIONS=abort` (docs/INSTALL.md, sections 2 and 3). Nothing is changed in any of these cases.
 
 ### Detection rule
 
@@ -57,24 +57,27 @@ Either of these:
 | Rule type | Value |
 |---|---|
 | MSI | Product code of the deployed package (below). Every build has its own product code, so each version needs its own app or rule. Optionally *Value: Greater than or equal to* the product version. |
-| File | Path `%ProgramFiles%\OpenSSH`, file `sshd.exe`, detection method *String (version)*, operator *Greater than or equal to*, value `10.5.1.0`; *Associated with a 32-bit app on 64-bit clients*: No. `sshd.exe` carries the package's file version (`FILEVERSION` in `version.rc`). |
+| File | Path `%ProgramFiles%\OpenSSH`, file `sshd.exe`, detection method *String (version)*, operator *Greater than or equal to*, value `10.5.2.0`; *Associated with a 32-bit app on 64-bit clients*: No. `sshd.exe` carries the package's file version (`FILEVERSION` in `version.rc`). |
 
 The file rule also sees an OpenSSH installed by another package in the same folder, for example
 Microsoft's MSI (10.0.0.0 at the time of writing, below this package's version). The product code rule
 sees only this package.
 
-Product codes of the release 10.5.1.0 (read from the MSIs):
+Product codes of the releases (read from the MSIs):
 
 | Package | ProductCode |
 |---|---|
+| `OpenSSH-Win64-v10.5.2.0.msi` | `{C4C6F50F-9551-403F-9B28-E36B16383154}` |
+| `OpenSSH-Win32-v10.5.2.0.msi` | `{DBEA3D60-9B23-4E9F-89DA-07D631FB4E9E}` |
+| `OpenSSH-ARM64-v10.5.2.0.msi` | `{87F1C4D6-7A71-4555-BA6D-F0BBEDEF2240}` |
 | `OpenSSH-Win64-v10.5.1.0.msi` | `{D8B0B4AB-3605-4CC0-BB6F-72562287F36A}` |
 | `OpenSSH-Win32-v10.5.1.0.msi` | `{2C699E59-F250-46AD-BA88-6C64EC38EC7B}` |
-| `OpenSSH-ARM64-v10.5.1.0.msi` | `{36A6216C-7F01-470B-9245-93F26824134D}` |
+| `OpenSSH-ARM64-v10.5.1.0.msi` (its `sshd` cannot start; do not deploy) | `{36A6216C-7F01-470B-9245-93F26824134D}` |
 
 To read the product code of another build (the MSI is opened read-only):
 
 ```powershell
-$msi = (Resolve-Path .\OpenSSH-Win64-v10.5.1.0.msi).Path
+$msi = (Resolve-Path .\OpenSSH-Win64-v10.5.2.0.msi).Path
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($msi, 0))
 $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @("SELECT Value FROM Property WHERE Property='ProductCode'"))
@@ -92,13 +95,14 @@ The CI build of every package also lists its product code in the run summary.
 Deploy the new version as a new app that **supersedes** the old one, without *Uninstall previous
 version*: the new MSI removes the installed package itself inside the same transaction and rolls back to
 it if the install fails (docs/INSTALL.md, section 3). The upgrade ends open SSH sessions, so schedule it
-outside working hours on servers people log in to. `%ProgramData%\ssh` (configuration, host keys, logs)
-is kept.
+outside working hours on servers people log in to, or add `ACTIVE_SESSIONS=abort`: the install then fails
+with `1603` and changes nothing while someone is connected. `%ProgramData%\ssh` (configuration, host keys,
+logs) is kept, and so are the ports, networks, enabled state and remote addresses of the firewall rule.
 
 ## Installer properties
 
 Add them to the install command, for example
-`msiexec /i "OpenSSH-Win64-v10.5.1.0.msi" ADDLOCAL=Server FIREWALL_PROFILES=domain /qn /norestart`.
+`msiexec /i "OpenSSH-Win64-v10.5.2.0.msi" ADDLOCAL=Server FIREWALL_PROFILES=domain /qn /norestart`.
 The table is taken from docs/INSTALL.md, section 2, which is authoritative for the build you deploy:
 
 | Property | Default | Effect |
@@ -110,9 +114,12 @@ The table is taken from docs/INSTALL.md, section 2, which is authoritative for t
 | `ALLOWDOWNGRADE=1` | unset | Replace an installed newer package with this one |
 | `KEEP_INBOX_OPENSSH=1` | unset | Leave the in-box Windows *OpenSSH Server* capability installed |
 | `FIREWALL_PROFILES=` | by edition | `all`, `domain,private`, `domain` or `private`. Unset: all networks on Windows Server, Domain and Private on Windows 10 and 11 |
+| `SSHD_PORT=<n>` | unset | TCP port for `sshd` and the firewall rule, 1 to 65535 |
+| `ACTIVE_SESSIONS=abort` | `close` | Fail with `1603` instead of ending open SSH sessions |
 
-In 10.5.1.0 an upgrade recreates the firewall rule with these defaults, so give `FIREWALL_PROFILES`
-again in the upgrade's install command if you use another setting.
+An upgrade keeps the firewall rule's ports and networks; `FIREWALL_PROFILES` and `SSHD_PORT` on the
+command line take precedence. (10.5.1.0 recreated the rule with the defaults, so an upgrade *to* 10.5.1.0
+needed `FIREWALL_PROFILES` again.)
 
 ## Configuration Manager
 
@@ -121,7 +128,7 @@ Manager fills in the product code for detection and the uninstall command. Then:
 
 | Setting | Value |
 |---|---|
-| Installation program | `msiexec /i "OpenSSH-Win64-v10.5.1.0.msi" /qn /norestart /l*v "%WINDIR%\Temp\OpenSSH-Server-PN-install.log"` |
+| Installation program | `msiexec /i "OpenSSH-Win64-v10.5.2.0.msi" /qn /norestart /l*v "%WINDIR%\Temp\OpenSSH-Server-PN-install.log"` |
 | Installation behavior | Install for system |
 | Logon requirement | Whether or not a user is logged on |
 | Return codes | the defaults for MSI deployment types (`0`, `1707`, `3010`, `1641`, `1618`) |

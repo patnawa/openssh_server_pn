@@ -196,14 +196,15 @@ manager 1.5.0) have no attestations; their hashes are in the changelog.
 
 ## 7. After publishing
 
-- **winget.** [`packaging/winget`](../packaging/winget) has the manifests of 10.5.1.0 under the proposed
-  identifier `Patnawa.OpenSSHServerPN` (the winget-pkgs reviewers may ask for another). For a new
-  version, copy the folder, change the version, URLs, SHA-256 and product codes, run
+- **winget.** [`packaging/winget`](../packaging/winget) has the manifests of the current release under the
+  proposed identifier `Patnawa.OpenSSHServerPN` (the winget-pkgs reviewers may ask for another). For a new
+  version, move the folder to the new version, change the version, URLs, SHA-256 and product codes, run
   `winget validate --manifest <folder>`, and submit it to
   [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) (for example with
-  `wingetcreate submit <folder>`). Not submitted yet.
+  `wingetcreate submit <folder>`). Not submitted yet. 10.5.1.0 is not to be submitted: its ARM64 package
+  does not run.
 - **Intune and Configuration Manager.** [`packaging/intune/README.md`](../packaging/intune/README.md)
-  lists the product codes of 10.5.1.0; add those of the new build.
+  lists the product codes of each release; add those of the new build and update the examples.
 - **Upstream watch.** Close the issues of `upstream-watch.yml` that the release resolved.
 
 ## 8. Still manual

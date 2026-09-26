@@ -2,7 +2,7 @@
 
 This page records which Windows versions and architectures the packages built by this repository run
 on, what that claim is based on, and where the limits are. It applies to builds 10.2.0.0 through
-10.5.1.0 (2026-09-25), which share the toolchain, the Windows SDK and the minimum Windows target;
+10.5.2.0 (2026-09-26), which share the toolchain, the Windows SDK and the minimum Windows target;
 re-check it whenever the toolchain or the Windows SDK changes.
 
 ## Matrix
@@ -20,9 +20,9 @@ re-check it whenever the toolchain or the Windows SDK changes.
 | Windows 7 SP1, Windows Server 2008 R2 | EOL | yes† | yes† | no | fallback |
 | Windows Vista, Server 2008, XP, 2003 | not supported | no | no | no | MSI launch condition blocks the install |
 
-\* ARM64: not with the 10.5.1.0 package, whose `sshd` cannot start (see the run-time tests below); the builds after it carry the fix, verified on ARM64 hardware on 2026-09-26.
+\* ARM64: not with the 10.5.1.0 package, whose `sshd` cannot start (see the run-time tests below); 10.5.2.0 carries the fix, verified on ARM64 hardware on 2026-09-26.
 
-† Windows 7 and Windows Server 2008 R2 with the Windows PowerShell 2.0 they ship with (no WMF 3.0 or later): the installer of 10.5.1.0 and earlier hangs at its first PowerShell step ([INSTALL.md, *A hung installation*](INSTALL.md#a-hung-installation), reported on Windows Server 2008 R2 on 2026-09-26). The builds after it start PowerShell with `-InputFormat None`, and the CI runs every install scenario with the installer's steps on the PowerShell 2.0 engine (see *Known limitations* below).
+† Windows 7 and Windows Server 2008 R2 with the Windows PowerShell 2.0 they ship with (no WMF 3.0 or later): the installer of 10.5.1.0 and earlier hangs at its first PowerShell step ([INSTALL.md, *A hung installation*](INSTALL.md#a-hung-installation), reported on Windows Server 2008 R2 on 2026-09-26). 10.5.2.0 and later start PowerShell with `-InputFormat None`, and the CI runs every install scenario with the installer's steps on the PowerShell 2.0 engine (see *Known limitations* below).
 
 Windows Server ships for x64 only; Windows on ARM exists for Windows 10 and 11 only. Windows
 Server Core and Nano Server: Server Core is supported. Nano Server is not tested and the
@@ -91,7 +91,7 @@ Contributions of test results on other platforms are welcome; see
   2008 R2 ship with, and use the WMI and Task Scheduler services, both on by default. Windows
   Installer starts them with a standard input that stays open, and PowerShell 2.0 waits for its
   end: the packages up to 10.5.1.0 hang there at their first step (INSTALL.md, section 8,
-  *A hung installation*). The packages after 10.5.1.0 start PowerShell with `-InputFormat None`,
+  *A hung installation*). Since 10.5.2.0 the packages start PowerShell with `-InputFormat None`,
   which PowerShell 2.0 needs, and the CI runs every install scenario with the steps on the
   PowerShell 2.0 engine (Windows Server 2022 with the feature *Windows PowerShell 2.0 Engine*).
   PowerShell 3.0 and later are not affected.
