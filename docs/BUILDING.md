@@ -152,6 +152,15 @@ there and fails without it); 767 tests in all. `unittest-win32compat` needs admi
 (or Developer Mode) for its symbolic-link test; the other seven binaries pass without them. The
 CI workflow runs them for x64, x86 and ARM64.
 
+Reproducible binaries: `contrib\win32\openssh\Directory.Build.targets` (MSBuild imports it after
+every project in that folder) adds `/Brepro` to the compiler and the linker and
+`/PDBALTPATH:%_PDB%` to the linker, so the objects, the executables and the PDBs carry no time
+stamps and no build-folder path, and the same source, compiler and build folder give the same
+bytes. Checked on 2026-09-26: two clean builds of `ssh-keygen.exe` (x64, MSVC 14.44, SDK
+10.0.26100) minutes apart were byte-identical. The vcpkg libraries (`libcrypto.dll` among them)
+are built by vcpkg with their own flags and are not covered; a release therefore reproduces
+executable by executable, not yet as a whole package.
+
 ## 5. Package the MSI
 
 `contrib\win32\install\openssh.wixproj` binds its payload from `bin\<Platform>\Release`. Copy
