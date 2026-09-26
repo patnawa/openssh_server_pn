@@ -1,35 +1,56 @@
 ---
-name: Package or documentation issue
-about: Problems with the MSI packages, build procedure or documentation in this fork
+name: Bug report
+about: Something does not work in these packages - the installer, OpenSSH (ssh, sshd, sftp, keys), OpenSSH Server Manager, the build or the documentation
 title: ''
 labels: ''
 assignees: ''
 ---
 
 <!--
-Bugs in OpenSSH behaviour itself (authentication, sftp, terminal handling, ...) should be
-reported upstream with the official package so they can be reproduced there:
-https://github.com/PowerShell/Win32-OpenSSH/issues
-Security issues: see SECURITY.md, do not report them here.
+Report OpenSSH behaviour here too (authentication, sftp, terminal, forwarding, ...): these packages run
+OpenSSH 10.5p1 with this project's changes, which Microsoft's Win32-OpenSSH project does not ship and
+cannot reproduce. If the official Microsoft package behaves the same way, say so below; the fix may
+then belong upstream as well, and we will forward it.
+
+Security vulnerabilities: do not report them here. Use the private report (Security tab, "Report a
+vulnerability"), see SECURITY.md.
 -->
 
 **Package**
-File name and SHA-256 (`Get-FileHash <file> -Algorithm SHA256`):
+File name, version and architecture (x64 / x86 / ARM64), and its SHA-256:
+`Get-FileHash .\OpenSSH-Win64-v<version>.msi -Algorithm SHA256`
 
-**Windows version**
-Edition, version and build, and architecture (x86 / x64 / ARM64):
-`(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion') | Select-Object ProductName, DisplayVersion, CurrentBuild`
+**Installed version**
+Output of `ssh -V` and `(Get-Item "$env:ProgramFiles\OpenSSH\sshd.exe").VersionInfo.FileVersion`:
 
-**Installed OpenSSH version**
-`((Get-Item (Get-Command sshd).Source).VersionInfo.FileVersion)` and `ssh -V`
+```
+```
 
-**What is failing**
-Exact command or step, and what happened. Attach the `msiexec` log (`/l*v`) for installer
-problems, and relevant events from *Applications and Services Logs / OpenSSH / Operational* for
-service problems.
+**Windows**
+Edition, version, build and architecture:
+`Get-CimInstance Win32_OperatingSystem | Format-List Caption, Version, BuildNumber, OSArchitecture`
 
-**Expected**
+```
+```
 
-**Actual**
+Domain member or workgroup, and Server Core or not (for servers):
 
-**Verification output** (optional, from docs/INSTALL.md section 4)
+**What happened**
+The exact command or step, what you expected, and what happened instead, with the full error text.
+
+**Install log** (installer problems)
+Run the step that fails with a log, e.g. `msiexec /i <package.msi> /qn /norestart /l*v "$env:TEMP\openssh-install.log"`
+from an elevated prompt, then attach `openssh-install.log`, or at least its `preinstall:` lines and the lines
+around `Return value 3`:
+`Select-String -Path "$env:TEMP\openssh-install.log" -Pattern 'preinstall:|Return value 3'`
+
+**Server log** (service or login problems)
+Events from *Applications and Services Logs / OpenSSH / Operational*, or `sshd -ddd` output, with
+passwords, keys and host names removed.
+
+**OpenSSHServerManager.exe --check** (optional)
+
+```
+```
+
+**Same with the official Microsoft package?** yes / no / not tried

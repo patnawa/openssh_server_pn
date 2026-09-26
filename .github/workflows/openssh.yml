@@ -1,0 +1,740 @@
+name: OpenSSH
+
+# Builds the server and client (src/) for x64, x86 and ARM64 and packages the MSIs, runs the unit tests,
+# installs the packages on Windows Server 2022 and 2025 (x64) and Windows 11 on ARM (ARM64), and runs the
+# upstream Pester end-to-end tests (not gating yet). A tag v<version>, where <version> is the FILEVERSION in
+# src/contrib/win32/openssh/version.rc, also creates a DRAFT GitHub release with the MSIs, the management
+# console, SHA256SUMS.txt, a CycloneDX SBOM and signed provenance attestations; a person reviews and
+# publishes it. docs/RELEASING.md describes the process.
+#
+# Third-party actions are pinned to full commit SHAs (Dependabot keeps them current, .github/dependabot.yml).
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'src/**'
+      - '.github/workflows/openssh.yml'
+      - '.github/scripts/**'
+      - 'tools/release/**'
+  pull_request:
+    paths:
+      - 'src/**'
+      - '.github/workflows/openssh.yml'
+      - '.github/scripts/**'
+      - 'tools/release/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  # WiX Toolset 3.14.1, the binaries archive of the official release (github.com/wixtoolset/wix3, tag wix3141rtm).
+  # The SHA-256 was computed from that asset on 2026-09-26, matched the copy used for the 10.5.1.0 build
+  # (downloaded 2026-09-25), and matches the pins in other projects (tauri-apps/tauri, WireGuard/wireguard-windows).
+  WIX_URL: https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip
+  WIX_SHA256: 6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31
+  VCPKG_DISABLE_METRICS: '1'
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      upgrade_version: ${{ steps.v.outputs.upgrade_version }}
+      vcpkg_baseline: ${{ steps.v.outputs.vcpkg_baseline }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the versions
+        id: v
+        run: |
+          $rc = Get-Content -Raw src/contrib/win32/openssh/version.rc
+          $m = [regex]::Match($rc, '(?m)^\s*FILEVERSION\s+(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)')
+          if (-not $m.Success) { Write-Host '::error::FILEVERSION not found in version.rc'; exit 1 }
+          $f = 1..4 | ForEach-Object { [int]$m.Groups[$_].Value }
+          $version = $f -join '.'
+          # Windows Installer compares only the first three fields: the upgrade-test package raises the third.
+          $upgrade = @($f[0], $f[1], ($f[2] + 1), $f[3]) -join '.'
+          $baseline = (Get-Content -Raw src/contrib/win32/openssh/vcpkg.json | ConvertFrom-Json).'builtin-baseline'
+          if ($baseline -notmatch '^[0-9a-f]{40}$') { Write-Host "::error::builtin-baseline '$baseline' is not a commit SHA"; exit 1 }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            Write-Host "::error::Tag $env:GITHUB_REF_NAME does not match FILEVERSION $version in version.rc (expected v$version)"
+            exit 1
+          }
+          "version=$version", "upgrade_version=$upgrade", "vcpkg_baseline=$baseline" | Add-Content -Path $env:GITHUB_OUTPUT
+          Write-Host "version $version, upgrade test $upgrade, vcpkg baseline $baseline"
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: version
+    runs-on: windows-2022
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            folder: x64
+            msi: OpenSSH-Win64
+            upgrade-msi: true
+          - arch: x86
+            folder: Win32
+            msi: OpenSSH-Win32
+            upgrade-msi: false
+          - arch: ARM64
+            folder: ARM64
+            msi: OpenSSH-ARM64
+            upgrade-msi: true
+    env:
+      ARCH: ${{ matrix.arch }}
+      BIN_FOLDER: ${{ matrix.folder }}
+      MSI_NAME: ${{ matrix.msi }}
+      VERSION: ${{ needs.version.outputs.version }}
+      UPGRADE_VERSION: ${{ needs.version.outputs.upgrade_version }}
+      VCPKG_BASELINE: ${{ needs.version.outputs.vcpkg_baseline }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare paths
+        id: paths
+        run: |
+          $cache = Join-Path $env:RUNNER_TEMP 'vcpkg-binary-cache'
+          $out = Join-Path $env:RUNNER_TEMP 'out'
+          New-Item -ItemType Directory -Force -Path $cache, $out | Out-Null
+          @(
+            "VCPKG_ROOT=$(Join-Path $env:RUNNER_TEMP 'vcpkg')"
+            "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite"
+            "WIX_DIR=$(Join-Path $env:RUNNER_TEMP 'wix314')\"
+            "OUT_DIR=$out"
+          ) | Add-Content -Path $env:GITHUB_ENV
+          "cache=$cache", "image=$env:ImageOS-$env:ImageVersion" | Add-Content -Path $env:GITHUB_OUTPUT
+
+      # Binary cache of the vcpkg dependencies, for branch and pull-request builds only. vcpkg keys every package by
+      # the hash of its port, triplet, compiler and dependencies, so a stale entry is never used. Tag (release)
+      # builds compile the dependencies from the pinned source archives instead of using a cache written by
+      # another run.
+      - name: Restore the vcpkg binary cache
+        if: github.ref_type != 'tag'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.paths.outputs.cache }}
+          key: vcpkg-${{ matrix.arch }}-${{ steps.paths.outputs.image }}-${{ hashFiles('src/contrib/win32/openssh/vcpkg.json', 'src/contrib/win32/openssh/vcpkg_triplets/**', 'src/contrib/win32/openssh/vcpkg_overlay_ports/**') }}
+          restore-keys: |
+            vcpkg-${{ matrix.arch }}-${{ steps.paths.outputs.image }}-
+            vcpkg-${{ matrix.arch }}-
+
+      # A full clone: the manifest pins builtin-baseline and version overrides, which vcpkg resolves from the
+      # registry's git history (a shallow clone cannot). Checked out at the baseline, so the vcpkg tool version is
+      # the one of that commit as well.
+      - name: Clone vcpkg at the manifest baseline
+        run: |
+          git clone --quiet https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git -C $env:VCPKG_ROOT -c advice.detachedHead=false checkout $env:VCPKG_BASELINE
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & (Join-Path $env:VCPKG_ROOT 'bootstrap-vcpkg.bat') -disableMetrics
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $vcpkg = Join-Path $env:VCPKG_ROOT 'vcpkg.exe'
+          # The .vcxproj files use vcpkg's MSBuild integration; this points it at this clone, not the image's C:\vcpkg.
+          & $vcpkg integrate install
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $vcpkg version
+          git -C $env:VCPKG_ROOT log -1 --format='vcpkg registry at %H (%cs)'
+
+      - name: Download WiX Toolset 3.14.1 (pinned SHA-256)
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'wix314-binaries.zip'
+          Invoke-WebRequest -Uri $env:WIX_URL -OutFile $zip
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:WIX_SHA256) {
+            Write-Host "::error::wix314-binaries.zip has SHA-256 $hash, expected $env:WIX_SHA256"
+            exit 1
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath $env:WIX_DIR
+          Write-Host "WiX $((Get-Item (Join-Path $env:WIX_DIR 'candle.exe')).VersionInfo.FileVersion) in $env:WIX_DIR, SHA-256 verified"
+
+      # The helper scripts return a result object instead of an exit code, and were written for an interactive
+      # shell: run them with ErrorActionPreference Continue and check the result.
+      - name: Build the vcpkg dependencies (LibreSSL, libfido2, libcbor, zlib)
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $result = $null
+          & ./src/.github/tools/Install-VcpkgDependencies.ps1 -Architecture $env:ARCH | ForEach-Object {
+            if ($_ -is [hashtable] -and $_.ContainsKey('Success')) { $result = $_ } else { $_ }
+          }
+          if (-not $result -or -not $result.Success) {
+            Write-Host "::error::vcpkg dependencies for $env:ARCH failed: $(if ($result) { $result.Errors -join '; ' })"
+            exit 1
+          }
+          exit 0   # the result object decides, not the exit code of the last native command
+
+      - name: Build OpenSSH
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $result = $null
+          & ./src/.github/tools/Start-OpenSSHBuild.ps1 -Configuration Release -Architecture $env:ARCH -AllowArchMismatch | ForEach-Object {
+            if ($_ -is [hashtable] -and $_.ContainsKey('Success')) { $result = $_ } else { $_ }
+          }
+          $log = "src/contrib/win32/openssh/OpenSSHRelease$env:ARCH.log"
+          if (Test-Path $log) { Select-String -Path $log -Pattern '\d+ Warning\(s\)|\d+ Error\(s\)|Time Elapsed' | Select-Object -Last 3 | ForEach-Object { $_.Line.Trim() } }
+          if (-not $result -or -not $result.Success) {
+            if (Test-Path $log) { Select-String -Path $log -Pattern ': (fatal )?error ' | Select-Object -First 40 | ForEach-Object { Write-Host $_.Line } }
+            Write-Host "::error::OpenSSH build for $env:ARCH failed: $(if ($result) { $result.Message })"
+            exit 1
+          }
+          Get-ChildItem "src/bin/$env:BIN_FOLDER/Release" -Filter *.exe | Format-Table Name, Length, @{ n = 'FileVersion'; e = { $_.VersionInfo.FileVersion } }
+          exit 0   # the result object decides, not the exit code of the last native command
+
+      - name: Upload the build logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-logs-${{ matrix.arch }}
+          path: |
+            src/contrib/win32/openssh/OpenSSHRelease*.log
+            ${{ runner.temp }}/vcpkg/buildtrees/*/*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # libcrypto.dll goes next to the binaries before they are signed (the MSI binds its payload from there).
+      - name: Stage libcrypto.dll
+        run: |
+          $triplet = "$($env:ARCH.ToLowerInvariant())-custom"
+          Copy-Item "src/contrib/win32/openssh/vcpkg_installed/$triplet/$triplet/bin/libcrypto.*" "src/bin/$env:BIN_FOLDER/Release" -Force
+          (Get-Item "src/bin/$env:BIN_FOLDER/Release/libcrypto.dll").VersionInfo | Format-List FileVersion, ProductName
+
+      # ---- Optional Authenticode signing (docs/RELEASING.md). Runs for tags only, and only when the repository
+      # ---- variable SIGNING_METHOD is set: trusted-signing (Azure Artifact Signing) or pfx (certificate file).
+      - name: Sign the binaries (Azure Artifact Signing)
+        if: vars.SIGNING_METHOD == 'trusted-signing' && github.ref_type == 'tag'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\src\bin\${{ matrix.folder }}\Release
+          files-folder-filter: exe,dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: OpenSSH Server PN
+          description-url: https://github.com/${{ github.repository }}
+          cache-dependencies: false
+
+      - name: Sign the binaries (certificate file)
+        if: vars.SIGNING_METHOD == 'pfx' && github.ref_type == 'tag'
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
+          SIGNING_TRUSTED_ROOT_BASE64: ${{ vars.SIGNING_TRUSTED_ROOT_BASE64 }}
+        run: |
+          $files = Get-ChildItem "src/bin/$env:BIN_FOLDER/Release/*" -Include *.exe, *.dll | ForEach-Object FullName
+          ./.github/scripts/Invoke-Signtool.ps1 -Path $files
+
+      - name: Package the MSI
+        env:
+          UPGRADE_MSI_BUILD: ${{ matrix.upgrade-msi }}
+        run: |
+          $src = Join-Path $env:GITHUB_WORKSPACE 'src'
+          if ($env:ARCH -eq 'x86') {
+            # MSBuild writes x86 binaries to bin\Win32, WiX binds them from bin\x86 (docs/BUILDING.md, section 5).
+            $x86 = Join-Path $src 'bin/x86/Release'
+            Remove-Item -LiteralPath $x86 -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force -Path $x86 | Out-Null
+            Copy-Item -Path (Join-Path $src 'bin/Win32/Release/*') -Destination $x86 -Recurse -Force
+          }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -version '[17.0,18.0)' -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { Write-Host '::error::MSBuild of Visual Studio 2022 not found'; exit 1 }
+          Write-Host "MSBuild: $msbuild"
+          function Build-Msi([string]$ProductVersion, [string]$Destination) {
+            # /t:Rebuild: WiX tracks only file inputs, so an incremental build would keep the previous ProductVersion.
+            & $msbuild (Join-Path $src 'contrib/win32/install/openssh.wixproj') /t:Rebuild /p:Configuration=Release "/p:Platform=$env:ARCH" "/p:ProductVersion=$ProductVersion" "/p:WixToolPath=$env:WIX_DIR" /nologo /verbosity:minimal
+            if ($LASTEXITCODE) { Write-Host "::error::MSBuild failed for ProductVersion $ProductVersion"; exit 1 }
+            Copy-Item (Join-Path $src "contrib/win32/install/bin/$env:ARCH/Release/openssh.msi") $Destination
+          }
+          Build-Msi $env:VERSION (Join-Path $env:OUT_DIR "$env:MSI_NAME-v$env:VERSION.msi")
+          if ($env:UPGRADE_MSI_BUILD -eq 'true') {
+            # Same payload, ProductVersion with the third field + 1: the upgrade test installs it over the release MSI.
+            $upgradeDir = Join-Path $env:RUNNER_TEMP 'upgrade'
+            New-Item -ItemType Directory -Force -Path $upgradeDir | Out-Null
+            Build-Msi $env:UPGRADE_VERSION (Join-Path $upgradeDir "$env:MSI_NAME-v$env:UPGRADE_VERSION-upgradetest.msi")
+          }
+
+      - name: Sign the MSI (Azure Artifact Signing)
+        if: vars.SIGNING_METHOD == 'trusted-signing' && github.ref_type == 'tag'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files: ${{ env.OUT_DIR }}\${{ matrix.msi }}-v${{ env.VERSION }}.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: OpenSSH Server PN ${{ env.VERSION }}
+          description-url: https://github.com/${{ github.repository }}
+          cache-dependencies: false
+
+      - name: Sign the MSI (certificate file)
+        if: vars.SIGNING_METHOD == 'pfx' && github.ref_type == 'tag'
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
+          SIGNING_TRUSTED_ROOT_BASE64: ${{ vars.SIGNING_TRUSTED_ROOT_BASE64 }}
+        run: ./.github/scripts/Invoke-Signtool.ps1 -Path (Join-Path $env:OUT_DIR "$env:MSI_NAME-v$env:VERSION.msi") -Description "OpenSSH Server PN $env:VERSION"
+
+      - name: Check the package
+        env:
+          SIGNING_METHOD: ${{ vars.SIGNING_METHOD }}
+        run: |
+          Import-Module ./.github/scripts/OpenSSHCI.psm1
+          $msi = Join-Path $env:OUT_DIR "$env:MSI_NAME-v$env:VERSION.msi"
+          $info = Get-MsiInfo $msi
+          $info | Format-List
+          if ($info.ProductVersion -ne $env:VERSION -or $info.ProductName -ne 'OpenSSH Server PN') {
+            Write-Host "::error::$($info.File): ProductVersion $($info.ProductVersion), ProductName $($info.ProductName)"
+            exit 1
+          }
+          $signature = Get-AuthenticodeSignature -LiteralPath $msi
+          Write-Host "Authenticode: $($signature.Status) $($signature.SignerCertificate.Subject)"
+          if ($env:SIGNING_METHOD -and $env:GITHUB_REF_TYPE -eq 'tag' -and $signature.Status -ne 'Valid') {
+            Write-Host "::error::the MSI should be signed but its signature is $($signature.Status)"
+            exit 1
+          }
+          @(
+            "### $($info.File)", '',
+            '| Property | Value |', '|---|---|',
+            "| ProductVersion | $($info.ProductVersion) |", "| ProductCode | ``$($info.ProductCode)`` |",
+            "| UpgradeCode | ``$($info.UpgradeCode)`` |", "| SHA-256 | ``$($info.Sha256)`` |",
+            "| Authenticode | $($signature.Status) |", ''
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+      # The installer's own tests that need no installation (src/contrib/win32/install/tests), when present: the
+      # pre-install script's functions, and the built package's tables and launch conditions. Windows PowerShell,
+      # like the script they test; the exit code is the number of failed checks.
+      - name: Installer tests without installing
+        if: hashFiles('src/contrib/win32/install/tests/*.Tests.ps1') != ''
+        run: |
+          $tests = 'src/contrib/win32/install/tests'
+          $failed = 0
+          if (Test-Path "$tests/preinstall.Tests.ps1") {
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$tests/preinstall.Tests.ps1"
+            Write-Host "preinstall.Tests.ps1: $LASTEXITCODE failed"; $failed += $LASTEXITCODE
+          }
+          if (Test-Path "$tests/package.Tests.ps1") {
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$tests/package.Tests.ps1" -Msi (Join-Path $env:OUT_DIR "$env:MSI_NAME-v$env:VERSION.msi")
+            Write-Host "package.Tests.ps1: $LASTEXITCODE failed"; $failed += $LASTEXITCODE
+          }
+          if ($failed) { Write-Host "::error::$failed installer check(s) failed"; exit 1 }
+          exit 0
+
+      - name: Upload the MSI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: msi-${{ matrix.arch }}
+          path: ${{ env.OUT_DIR }}/${{ matrix.msi }}-v${{ env.VERSION }}.msi
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Upload the upgrade-test MSI
+        if: matrix.upgrade-msi
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: upgradetest-msi-${{ matrix.arch }}
+          path: ${{ runner.temp }}/upgrade/*.msi
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload the binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bin-${{ matrix.arch }}
+          path: src/bin/${{ matrix.folder }}/Release/
+          if-no-files-found: error
+          retention-days: 7
+
+  unit-tests:
+    name: Unit tests ${{ matrix.arch }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            os: windows-2022
+          - arch: x86
+            os: windows-2022
+          - arch: ARM64
+            os: windows-11-arm
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Download the binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bin-${{ matrix.arch }}
+          path: ${{ runner.temp }}/bin
+
+      # unittest-*.exe from their own folders, with the test data the build copied there; the runner is elevated,
+      # which unittest-win32compat needs for its symbolic link test.
+      - name: Run the unit tests
+        run: ./.github/scripts/Invoke-UnitTests.ps1 -BinPath (Join-Path $env:RUNNER_TEMP 'bin') -Label $env:ARCH
+
+  install-test:
+    name: Install ${{ matrix.arch }} on ${{ matrix.os }}
+    needs: [version, build]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            arch: x64
+            msi: OpenSSH-Win64
+          - os: windows-2025
+            arch: x64
+            msi: OpenSSH-Win64
+          - os: windows-11-arm
+            arch: ARM64
+            msi: OpenSSH-ARM64
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      UPGRADE_VERSION: ${{ needs.version.outputs.upgrade_version }}
+      MSI: ${{ matrix.msi }}-v${{ needs.version.outputs.version }}.msi
+      UPGRADE_MSI: ${{ matrix.msi }}-v${{ needs.version.outputs.upgrade_version }}-upgradetest.msi
+      # ---- ADJUST ---------------------------------------------------------------------------------------------
+      # Installer features implemented in parallel with this workflow: firewall settings kept across upgrade and
+      # repair, the SSHD_PORT=<n> property, and ACTIVE_SESSIONS=close|abort. enforce = a failed check fails the
+      # job, report = warning only, skip = not checked. Expected values: top of .github/scripts/Test-Installer.ps1.
+      FIREWALL_PRESERVATION_CHECK: enforce
+      SSHD_PORT_CHECK: enforce
+      ACTIVE_SESSIONS_CHECK: enforce
+      # ---------------------------------------------------------------------------------------------------------
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            tools/OpenSSH-Server-Manager
+
+      - name: Download the MSI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: msi-${{ matrix.arch }}
+          path: ${{ runner.temp }}/msi
+
+      - name: Download the upgrade-test MSI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: upgradetest-msi-${{ matrix.arch }}
+          path: ${{ runner.temp }}/msi
+
+      - name: Record the machine
+        run: |
+          "MSI_DIR=$(Join-Path $env:RUNNER_TEMP 'msi')", "LOG_DIR=$(Join-Path $env:RUNNER_TEMP 'logs')" | Add-Content -Path $env:GITHUB_ENV
+          $ErrorActionPreference = 'Continue'   # information only; nothing here may stop the job
+          Get-CimInstance Win32_OperatingSystem | Format-List Caption, Version, BuildNumber, ProductType, OSArchitecture
+          Get-Service sshd, ssh-agent -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType, BinaryPathName
+          try { Get-WindowsCapability -Online -Name 'OpenSSH*' | Format-Table Name, State } catch { Write-Host "Get-WindowsCapability: $($_.Exception.Message)" }
+          Get-NetFirewallProfile | Format-Table Name, Enabled, DefaultInboundAction
+
+      - name: Install
+        id: install
+        run: ./.github/scripts/Test-Installer.ps1 -Scenario Install
+
+      - name: Build OpenSSH Server Manager
+        id: manager
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          & ./tools/OpenSSH-Server-Manager/build.ps1 -OutDir (Join-Path $env:RUNNER_TEMP 'manager')
+          "MANAGER=$(Join-Path $env:RUNNER_TEMP 'manager/OpenSSHServerManager.exe')" | Add-Content -Path $env:GITHUB_ENV
+
+      # A GUI-subsystem program: Invoke-ManagerTest waits for it and prints the report file it writes.
+      - name: Manager --check
+        if: ${{ !cancelled() && steps.manager.outcome == 'success' }}
+        run: |
+          Import-Module ./.github/scripts/OpenSSHCI.psm1
+          if ((Invoke-ManagerTest -Exe $env:MANAGER -Mode '--check' -ReportDir $env:LOG_DIR) -ne 0) { exit 1 }
+
+      - name: Manager --selftest
+        if: ${{ !cancelled() && steps.manager.outcome == 'success' }}
+        run: |
+          Import-Module ./.github/scripts/OpenSSHCI.psm1
+          if ((Invoke-ManagerTest -Exe $env:MANAGER -Mode '--selftest' -ReportDir $env:LOG_DIR) -ne 0) { exit 1 }
+
+      - name: Manager --keytest
+        if: ${{ !cancelled() && steps.manager.outcome == 'success' }}
+        run: |
+          Import-Module ./.github/scripts/OpenSSHCI.psm1
+          if ((Invoke-ManagerTest -Exe $env:MANAGER -Mode '--keytest' -ReportDir $env:LOG_DIR) -ne 0) { exit 1 }
+
+      - name: Manager --authtest
+        if: ${{ !cancelled() && steps.manager.outcome == 'success' }}
+        run: |
+          Import-Module ./.github/scripts/OpenSSHCI.psm1
+          if ((Invoke-ManagerTest -Exe $env:MANAGER -Mode '--authtest' -ReportDir $env:LOG_DIR) -ne 0) { exit 1 }
+
+      - name: Upgrade keeps the firewall settings (ADJUST)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: ./.github/scripts/Test-Installer.ps1 -Scenario Upgrade
+
+      - name: Repair keeps the firewall settings (ADJUST)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: ./.github/scripts/Test-Installer.ps1 -Scenario Repair
+
+      - name: Downgrade, ALLOWDOWNGRADE and SSHD_PORT (ADJUST)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: ./.github/scripts/Test-Installer.ps1 -Scenario Downgrade
+
+      - name: Upgrade with an open session, ACTIVE_SESSIONS (ADJUST)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: ./.github/scripts/Test-Installer.ps1 -Scenario Sessions
+
+      - name: Uninstall
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: ./.github/scripts/Test-Installer.ps1 -Scenario Uninstall
+
+      - name: Upload the logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: install-logs-${{ matrix.os }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The maintainers' Pester end-to-end suite (src/regress/pesterTests, tag CI) through their test helper
+  # (src/contrib/win32/openssh/OpenSSHTestHelper.psm1). Not gating yet: it has never run for this fork, it was
+  # written for the upstream test machines (test accounts with a fixed password, WinRM, port forwarding,
+  # AppVerifier), and its results have to be triaged before a failure can block a merge. Remove
+  # continue-on-error once it passes reliably.
+  e2e:
+    name: Pester E2E x64 (not gating)
+    needs: [version, build]
+    runs-on: windows-2022
+    timeout-minutes: 90
+    continue-on-error: true
+    env:
+      MSI: OpenSSH-Win64-v${{ needs.version.outputs.version }}.msi
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bin-x64
+          path: src/bin/x64/Release
+
+      - name: Download the MSI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: msi-x64
+          path: ${{ runner.temp }}/msi
+
+      # The tests start their own sshd service (port 47002) from the build output, and use the ssh-agent
+      # service and the OpenSSH event manifest, which the package installs.
+      - name: Install the package
+        run: |
+          Import-Module ./.github/scripts/OpenSSHCI.psm1
+          # The test helper writes its logs and results to C:\OpenSSHTests; the MSI log goes there too (one upload).
+          New-Item -ItemType Directory -Force -Path 'C:\OpenSSHTests' | Out-Null
+          Invoke-Msiexec -Arguments '/i', ('"' + (Join-Path $env:RUNNER_TEMP "msi/$env:MSI") + '"') -LogPath 'C:\OpenSSHTests\ci-msi-install.log' -AllowedExitCodes 0, 3010 | Out-Null
+
+      # The tests need Pester 3 or 4 (the helper imports Pester -MaximumVersion 4.9.9).
+      - name: Install Pester 4.9.0
+        run: |
+          Install-PSResource -Name Pester -Version 4.9.0 -Scope AllUsers -TrustRepository -Reinstall
+          Get-Module Pester -ListAvailable | Format-Table Name, Version, ModuleBase
+
+      - name: Run the Pester E2E tests
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Import-Module ./src/contrib/win32/openssh/OpenSSHTestHelper.psm1 -Force
+          Set-OpenSSHTestEnvironment -OpenSSHBinPath (Resolve-Path 'src/bin/x64/Release').Path -Confirm:$false
+          $result = Invoke-OpenSSHE2ETest | Where-Object { $_ -and $_.PSObject.Properties['FailedCount'] } | Select-Object -Last 1
+          if (-not $result) { Write-Host '::error::Pester returned no result'; exit 1 }
+          $line = "Pester E2E: $($result.PassedCount) passed, $($result.FailedCount) failed, $($result.SkippedCount) skipped, $($result.PendingCount) pending"
+          Write-Host $line
+          @('### Pester E2E (x64, not gating)', '', $line, '') | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          foreach ($t in @($result.TestResult | Where-Object { -not $_.Passed -and $_.Result -eq 'Failed' })) {
+            Write-Host "::warning title=E2E failed::$($t.Describe) / $($t.Name): $(($t.FailureMessage -replace "`r?`n", ' '))"
+          }
+          if ($result.FailedCount -gt 0) { exit 1 }
+
+      - name: Upload the test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-results-x64
+          path: C:\OpenSSHTests\
+          if-no-files-found: ignore
+          retention-days: 14
+
+  package:
+    name: Release files
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the MSIs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: msi-*
+          merge-multiple: true
+          path: dist
+
+      # The management console is published as committed (its SHA-256 is documented in the README); manager.yml
+      # checks that it matches its source version and whether a fresh build reproduces it.
+      - name: SBOM and SHA256SUMS.txt
+        run: |
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          Copy-Item tools/OpenSSH-Server-Manager/bin/OpenSSHServerManager.exe, tools/OpenSSH-Server-Manager/bin/OpenSSHServerManager.exe.config -Destination $dist
+          $files = "OpenSSH-Win64-v$env:VERSION.msi", "OpenSSH-Win32-v$env:VERSION.msi", "OpenSSH-ARM64-v$env:VERSION.msi", 'OpenSSHServerManager.exe', 'OpenSSHServerManager.exe.config'
+          foreach ($f in $files) { if (-not (Test-Path -LiteralPath (Join-Path $dist $f))) { Write-Host "::error::$f is missing"; exit 1 } }
+          $sbom = "OpenSSH-Server-PN-v$env:VERSION.cdx.json"
+          $env:SOURCE_DATE_EPOCH = (git log -1 --format=%ct).Trim()
+          ./tools/release/New-Sbom.ps1 -File ($files | ForEach-Object { Join-Path $dist $_ }) -OutFile (Join-Path $dist $sbom)
+          # One line per file: lower-case hash, two spaces, name; LF line endings, so that sha256sum -c reads it.
+          $sums = ($files + $sbom) | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath (Join-Path $dist $_) -Algorithm SHA256).Hash.ToLowerInvariant(), $_ }
+          [IO.File]::WriteAllText((Join-Path $dist 'SHA256SUMS.txt'), ($sums -join "`n") + "`n")
+          Get-Content (Join-Path $dist 'SHA256SUMS.txt')
+          @('### Release files', '', '```', $sums, '```', '') | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+      - name: Check the sums as a user would
+        shell: bash
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS.txt
+
+      - name: Upload the release files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-files
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Draft release
+    if: github.ref_type == 'tag'
+    needs: [version, package, unit-tests, install-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write       # create the draft release
+      id-token: write       # Sigstore signing certificate for the attestations
+      attestations: write   # store the attestations
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ github.ref_name }}
+      SIGNED: ${{ vars.SIGNING_METHOD != '' }}
+    steps:
+      - name: Download the release files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-files
+          path: dist
+
+      - name: Check the sums
+        shell: bash
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS.txt
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.msi
+            dist/OpenSSHServerManager.exe
+            dist/OpenSSHServerManager.exe.config
+            dist/*.cdx.json
+            dist/SHA256SUMS.txt
+
+      - name: Attest the SBOM of the MSIs
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*.msi
+          sbom-path: dist/OpenSSH-Server-PN-v${{ env.VERSION }}.cdx.json
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = $env:GITHUB_REPOSITORY
+          $sums = Get-Content dist/SHA256SUMS.txt
+          $signing = if ($env:SIGNED -eq 'true') { 'The MSIs and the binaries in them are Authenticode-signed.' } else { 'The files are **unsigned**: compare the SHA-256 before installing.' }
+          $notes = @(
+            "OpenSSH Server PN $env:VERSION. Changes and test results: [docs/CHANGELOG.md](https://github.com/$repo/blob/$env:TAG/docs/CHANGELOG.md).", '',
+            '| File | SHA-256 |', '|---|---|'
+          ) + ($sums | ForEach-Object { $h, $n = $_ -split '  ', 2; "| ``$n`` | ``$h`` |" }) + @(
+            '', $signing, '',
+            'Verify a download:', '',
+            '```powershell',
+            "(Get-FileHash .\OpenSSH-Win64-v$env:VERSION.msi -Algorithm SHA256).Hash   # compare with SHA256SUMS.txt",
+            "gh attestation verify .\OpenSSH-Win64-v$env:VERSION.msi --repo $repo   # built by this repository's workflow",
+            '```', '',
+            '`OpenSSH-Server-PN-v' + $env:VERSION + '.cdx.json` is the CycloneDX SBOM (OpenSSH, LibreSSL, libfido2, libcbor, zlib and these files).',
+            '', '_Draft created by the OpenSSH workflow. Review the notes and the files, then publish._'
+          )
+          $notesFile = Join-Path $env:RUNNER_TEMP 'notes.md'
+          [IO.File]::WriteAllText($notesFile, ($notes -join "`n") + "`n")
+          $files = Get-ChildItem dist -File | ForEach-Object FullName
+          $existing = gh release view $env:TAG --repo $repo --json isDraft 2>$null | ConvertFrom-Json
+          if ($existing) {
+            if (-not $existing.isDraft) { Write-Host "::error::Release $env:TAG is already published; not changing it."; exit 1 }
+            gh release upload $env:TAG @files --repo $repo --clobber
+            gh release edit $env:TAG --repo $repo --notes-file $notesFile
+          } else {
+            gh release create $env:TAG @files --repo $repo --draft --verify-tag --title "OpenSSH Server PN $env:VERSION" --notes-file $notesFile
+          }
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "Draft release $env:TAG: https://github.com/$repo/releases (review and publish it by hand)" | Add-Content -Path $env:GITHUB_STEP_SUMMARY

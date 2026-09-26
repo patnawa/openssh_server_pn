@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.10.0.schema.json
+# Version manifest of OpenSSH Server PN 10.5.1.0 for winget (docs/RELEASING.md). The PackageIdentifier
+# Patnawa.OpenSSHServerPN is this project's proposal; the winget-pkgs reviewers may ask for another one.
+
+PackageIdentifier: Patnawa.OpenSSHServerPN
+PackageVersion: 10.5.1.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.10.0

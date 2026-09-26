@@ -1,9 +1,13 @@
 name: OpenSSH Server Manager
 
 # Builds the manager from source and runs its unit tests (--unittest: no sshd, no service, no
-# administrator rights needed), on the fresh build and on the executable committed in bin/.
+# administrator rights needed), on the fresh build and on the executable committed in bin/, and reports
+# whether the fresh build reproduces the committed executable byte for byte.
 # A tag manager-vX.Y.Z publishes the committed executable, its .exe.config and SHA256SUMS.txt as a GitHub
-# release, not marked Latest (the product release v<version> keeps that).
+# release, not marked Latest (the product release v<version> keeps that), with a signed provenance
+# attestation for each file.
+#
+# Third-party actions are pinned to full commit SHAs (Dependabot keeps them current, .github/dependabot.yml).
 
 on:
   push:
@@ -24,15 +28,46 @@ defaults:
 jobs:
   test:
     runs-on: windows-latest
+    timeout-minutes: 20
     env:
       TOOL: tools/OpenSSH-Server-Manager
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Build
         # The call operator: PowerShell does not expand $env:TOOL in a bare command name.
         run: |
           & "./$env:TOOL/build.ps1" -OutDir "$env:RUNNER_TEMP/build"
+
+      # The committed executable is what gets published (its SHA-256 is documented in the README). build.ps1
+      # compiles deterministically with Roslyn, so the same source and compiler give the same bytes. A difference
+      # is reported, not failed: it is expected when the source changed and bin/ was not rebuilt yet, or when the
+      # runner's compiler differs from the one the executable was built with.
+      - name: Reproducibility (fresh build against the committed executable)
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          # The compiler build.ps1 picks: Roslyn csc of the newest Visual Studio (it refuses to build without one).
+          $vs = if (Test-Path $vswhere) { & $vswhere -products * -latest -property installationPath } else { $null }
+          $vsVersion = if ($vs) { & $vswhere -products * -latest -property catalog_productDisplayVersion } else { $null }
+          $csc = if ($vs) { Join-Path $vs 'MSBuild\Current\Bin\Roslyn\csc.exe' } else { $null }
+          $compiler = if ($csc -and (Test-Path $csc)) { "Roslyn csc $((& $csc -version) -join ' ') from Visual Studio $vsVersion" } else { 'no Roslyn compiler found' }
+          Write-Host "Compiler: $compiler"
+          $rows = @(); $different = @()
+          foreach ($name in 'OpenSSHServerManager.exe', 'OpenSSHServerManager.exe.config') {
+            $fresh = (Get-FileHash "$env:RUNNER_TEMP/build/$name" -Algorithm SHA256).Hash
+            $committed = (Get-FileHash "$env:TOOL/bin/$name" -Algorithm SHA256).Hash
+            Write-Host "$name`n  fresh build  $fresh`n  committed    $committed"
+            $rows += "| $name | ``$fresh`` | ``$committed`` | $(if ($fresh -eq $committed) { 'same' } else { 'DIFFERENT' }) |"
+            if ($fresh -ne $committed) { $different += $name }
+          }
+          if ($different.Count -eq 0) {
+            Write-Host "::notice title=Reproducible build::The fresh build is byte for byte the committed bin/OpenSSHServerManager.exe and .exe.config ($compiler)."
+          } else {
+            Write-Host "::warning title=Build not reproduced::$($different -join ' and ') of the fresh build differ from bin/ ($compiler). Expected when the source changed without a rebuild of bin/, or with another compiler version."
+          }
+          @('### Reproducibility', '', "Compiler: $compiler", '', '| File | Fresh build | Committed | |', '|---|---|---|---|') + $rows + '' | Add-Content -Path $env:GITHUB_STEP_SUMMARY
 
       - name: Unit tests (fresh build and committed executable)
         run: |
@@ -58,10 +93,35 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/manager-v')
     needs: test
     runs-on: windows-latest
+    timeout-minutes: 15
     permissions:
-      contents: write
+      contents: write       # create the release
+      id-token: write       # Sigstore signing certificate for the attestation
+      attestations: write   # store the attestation
+    env:
+      TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checksums
+        run: |
+          $bin = 'tools/OpenSSH-Server-Manager/bin'
+          $sums = "$bin/OpenSSHServerManager.exe", "$bin/OpenSSHServerManager.exe.config" | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), (Split-Path $_ -Leaf) }
+          # LF line endings: sha256sum -c of older coreutils reads a CR as part of the file name.
+          [IO.File]::WriteAllText("$PWD/SHA256SUMS.txt", ($sums -join "`n") + "`n")
+          Get-Content SHA256SUMS.txt
+
+      # Provenance for the published files: they come from this repository at this commit, through this workflow.
+      # Verify with: gh attestation verify OpenSSHServerManager.exe --repo <owner>/<repo>
+      - name: Attest provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            tools/OpenSSH-Server-Manager/bin/OpenSSHServerManager.exe
+            tools/OpenSSH-Server-Manager/bin/OpenSSHServerManager.exe.config
+            SHA256SUMS.txt
 
       - name: Publish the committed executable
         env:
@@ -69,9 +129,5 @@ jobs:
         run: |
           $bin = 'tools/OpenSSH-Server-Manager/bin'
           $files = "$bin/OpenSSHServerManager.exe", "$bin/OpenSSHServerManager.exe.config"
-          $sums = $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), (Split-Path $_ -Leaf) }
-          # LF line endings: sha256sum -c of older coreutils reads a CR as part of the file name.
-          [IO.File]::WriteAllText("$PWD/SHA256SUMS.txt", ($sums -join "`n") + "`n")
-          Get-Content SHA256SUMS.txt
-          $version = '${{ github.ref_name }}'.Substring('manager-v'.Length)
-          gh release create '${{ github.ref_name }}' @files SHA256SUMS.txt --latest=false --title "OpenSSH Server Manager $version" --notes "See docs/CHANGELOG.md for the changes and the test results. Verify the download against SHA256SUMS.txt."
+          $version = $env:TAG.Substring('manager-v'.Length)
+          gh release create $env:TAG @files SHA256SUMS.txt --latest=false --title "OpenSSH Server Manager $version" --notes "See docs/CHANGELOG.md for the changes and the test results. Verify the download against SHA256SUMS.txt, and its origin with: gh attestation verify OpenSSHServerManager.exe --repo $env:GITHUB_REPOSITORY"

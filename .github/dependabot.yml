@@ -1,0 +1,18 @@
+# Keeps the actions in .github/workflows current. They are pinned to full commit SHAs with the version in a
+# comment; Dependabot updates both. Only the workflows in the root .github folder run (src/.github holds
+# the upstream workflows, which GitHub never reads).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Wait a week before proposing a new release, so a compromised or broken release is likely caught first.
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ['*']
+    commit-message:
+      prefix: CI

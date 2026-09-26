@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+
+PackageIdentifier: Patnawa.OpenSSHServerPN
+PackageVersion: 10.5.1.0
+PackageLocale: en-US
+Publisher: OpenSSH Server PN
+PublisherUrl: https://github.com/patnawa/openssh_server_pn
+PublisherSupportUrl: https://github.com/patnawa/openssh_server_pn/issues
+PackageName: OpenSSH Server PN
+PackageUrl: https://github.com/patnawa/openssh_server_pn
+License: BSD-style (OpenSSH licence)
+LicenseUrl: https://github.com/patnawa/openssh_server_pn/blob/v10.5.1.0/src/LICENCE
+Copyright: OpenSSH by the OpenBSD project and contributors; Windows port Copyright (c) Microsoft Corporation
+CopyrightUrl: https://github.com/patnawa/openssh_server_pn/blob/v10.5.1.0/src/LICENCE
+ShortDescription: OpenSSH 10.5p1 server and client for Windows, with an installer that replaces earlier OpenSSH installations.
+Description: |-
+  OpenSSH Server PN packages OpenSSH 10.5p1 with the Windows port of OpenSSH, LibreSSL 4.3.2 and libfido2 1.17.0
+  for Windows x64, x86 and ARM64. The installer removes an installed package of the same series (including
+  Microsoft's OpenSSH packages) and the in-box Windows OpenSSH Server, stops the services and ends leftover
+  OpenSSH processes so that an upgrade needs no restart, and opens TCP 22 on all networks on Windows Server and
+  on Domain and Private networks on Windows 10 and 11. The packages are not Authenticode-signed; compare the
+  SHA-256 in SHA256SUMS.txt of the release. This project is not affiliated with Microsoft or the OpenBSD project.
+Moniker: openssh-server-pn
+Tags:
+- openssh
+- scp
+- server
+- sftp
+- ssh
+- sshd
+ReleaseNotesUrl: https://github.com/patnawa/openssh_server_pn/blob/v10.5.1.0/docs/CHANGELOG.md
+Documentations:
+- DocumentLabel: Installation
+  DocumentUrl: https://github.com/patnawa/openssh_server_pn/blob/v10.5.1.0/docs/INSTALL.md
+- DocumentLabel: Compatibility
+  DocumentUrl: https://github.com/patnawa/openssh_server_pn/blob/v10.5.1.0/docs/COMPATIBILITY.md
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0
