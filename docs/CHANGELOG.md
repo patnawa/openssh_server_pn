@@ -158,7 +158,11 @@ CI and releases:
   collection checks; it installs 3.4.6 now. With 3.4.6 it reached the certificate tests and
   waited there for a key passphrase until the job timeout, in all three runs. The tests set
   `SSH_ASKPASS` only when `$IsWindows` is true, and Windows PowerShell does not define it. The
-  workflow now sets it (pull request #3).
+  workflow now sets it (pull request #3, after the release). In that pull request's CI the suite
+  ran to the end for the first time, in 12 minutes: 143 passed, 16 failed, 1 skipped. The failures
+  still have to be triaged: the SFTP connection tests (2), `scp` of directories with symbolic
+  links (3), command lines with double quotes or piped input through `ssh` and the default shells
+  (8), and `Include` with absolute paths in `sshd_config` (3).
 
 ## OpenSSH Server Manager 1.6.0 (2026-09-26)
 
