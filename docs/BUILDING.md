@@ -172,7 +172,19 @@ keeps the old `.wixobj` and produces a package with the previous version and pro
 
 `openssh.wixproj` embeds `contrib\win32\install\preinstall.ps1` into the package: a target
 before `Compile` writes `obj\<Platform>\Release\preinstall.wxi` with the script as base64, and
-`product.wxs` includes it. That script is the pre-install step described in
+`product.wxs` includes it. Since the builds after 10.5.1.0 the task `EmbedInstallerScript` (an
+inline MSBuild task, MSBuild 16 or later) makes two scripts from the file: `PreInstallScript`
+without `#region firewall` and `FirewallScript` without `#region pre`. Comment lines, blank lines
+and indentation are removed and lines end with LF, so the package bytes do not depend on the
+line endings of the checkout. The build fails if either script's base64 exceeds 31,000
+characters, because `powershell.exe` gets it on a command line limited to 32,767. The sequence
+is InstallInitialize, OpenSSHFirewallSaveRollback, OpenSSHFirewallSave, **InstallExecute,
+RemoveExistingProducts** (a deferred action directly before RemoveExistingProducts is refused
+with error 2613, ICE63), OpenSSHPreInstall; OpenSSHFirewallProfiles and OpenSSHFirewallCommit
+follow the WiX firewall action (`WixSchedFirewallExceptionsInstall_A64` in the ARM64 package);
+OpenSSHSshdPort runs after StartServices; OpenSSHCheckSessions (immediate) runs before
+InstallValidate. After a build, run `contrib\win32\install\tests\preinstall.Tests.ps1` and
+`contrib\win32\install\tests\package.Tests.ps1 -Msi <msi>`; neither needs elevation. That script is the pre-install step described in
 [INSTALL.md](INSTALL.md) section 3: it stops the services, ends processes that hold files, and
 removes the in-box server. It runs through `powershell.exe` and is written for Windows PowerShell
 2.0; test any change on the oldest Windows you support. One ICE check is suppressed on purpose:
@@ -195,10 +207,13 @@ Source changes to the upstream packaging, for WiX 3.14 and for server deployment
   property. `RemoveExistingProducts` stays right after `InstallInitialize`, as Windows Installer
   requires. The `OpenSSHPreInstall` custom action runs the embedded script directly after it:
   `WixQuietExec`, deferred, no impersonation, `Return="ignore"`, condition
-  `NOT Installed OR REMOVE OR REINSTALL`. It uses 64-bit PowerShell (`System64Folder`) in the
-  x64 and ARM64 packages and 32-bit PowerShell (`SystemFolder`) in the x86 package. Public
-  properties `ALLOWDOWNGRADE`, `KEEP_INBOX_OPENSSH` and `FIREWALL_PROFILES` are secure custom
-  properties.
+  `NOT Installed OR REMOVE OR REINSTALL`. It names 64-bit PowerShell (`System64Folder`) in the
+  x64 and ARM64 packages and 32-bit PowerShell (`SystemFolder`) in the x86 package. In fact
+  `WixQuietExec` comes from the x86 `WixCA` binary in every package, so on 64-bit Windows the
+  path is redirected to `SysWOW64` and the script runs in 32-bit PowerShell; it reaches native
+  tools through `Sysnative`. Public properties `ALLOWDOWNGRADE`, `KEEP_INBOX_OPENSSH` and
+  `FIREWALL_PROFILES` (and, after 10.5.1.0, `SSHD_PORT` and `ACTIVE_SESSIONS`) are secure custom
+  properties. After 10.5.1.0, `RemoveExistingProducts` follows `InstallExecute` (see above).
 - `product.wxs` (10.5.1.0): a second deferred action, `OpenSSHFirewallProfiles`, runs the same
   script right after the WiX firewall action (`After="WixSchedFirewallExceptionsInstall"`, condition
   `&Server = 3`) and sets the rule's network profiles. By default that is all profiles on Windows
@@ -249,14 +264,14 @@ Run from an elevated PowerShell after installing the MSI. The sequence below is 
 
 ```powershell
 # 1. Versions and services
-ssh -V                                     # OpenSSH_for_Windows_10.2p1 ..., LibreSSL 4.3.2
+ssh -V                                     # OpenSSH_for_Windows_10.5p1 OpenSSH-Server-PN, LibreSSL 4.3.2
 Get-Service sshd, ssh-agent                # Running / Automatic
 sc.exe qfailure sshd                       # RESTART x3, reset period 86400
 
 # 2. Listener, banner and firewall
 Get-NetTCPConnection -LocalPort 22 -State Listen
 $c = New-Object Net.Sockets.TcpClient('127.0.0.1', 22); $b = New-Object byte[] 128
-$n = $c.GetStream().Read($b, 0, 128); [Text.Encoding]::ASCII.GetString($b, 0, $n); $c.Close()   # SSH-2.0-OpenSSH_for_Windows_10.2
+$n = $c.GetStream().Read($b, 0, 128); [Text.Encoding]::ASCII.GetString($b, 0, $n); $c.Close()   # SSH-2.0-OpenSSH_for_Windows_10.5 OpenSSH-Server-PN
 Get-NetFirewallRule -DisplayName 'OpenSSH SSH Server Preview (sshd)' | Select-Object Enabled, Profile
 
 # 3. Key login as an administrator (temporary key, removed afterwards)

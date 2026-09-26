@@ -6,6 +6,129 @@ every change to the packaging, and how the result was verified. Published as Git
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
+## OpenSSH Server Manager 1.6.0 (not released yet)
+
+A safety pass over every save of `sshd_config`, and the window a daily administrator asked for:
+a setup wizard, dark mode, a client tab, failed logins by address with a firewall block list,
+fixes per hardening check, and an icon in the notification area. Built from the branch
+`improvements`; not published yet.
+
+| File | Size | SHA-256 |
+|---|---|---|
+| `OpenSSHServerManager.exe` | 808,960 bytes | `73B34152E137AA23920F7D2DD993B37B1A113DAF7D10788CFD1532FA9D69BB2A` |
+
+Rebuilt from a fresh CRLF checkout with the same compiler, the executable has the same SHA-256.
+
+Fixed:
+
+- **A restart that locked you out was kept.** *Save and restart* rolled back only when `sshd`
+  did not start. A configuration that passes `sshd -t` and starts can still refuse everyone new:
+  a typo in `AllowUsers`, a `ListenAddress` this computer does not have, a port the firewall
+  blocks. After a restart the server is now checked (every configured port listens and answers
+  with an SSH banner, the firewall rule admits the ports, the `AllowUsers`/`DenyUsers`/
+  `AllowGroups`/`DenyGroups` of your own account), and you are asked to keep the new settings.
+  Without an answer within 60 seconds, or with *Restore*, the previous file comes back and `sshd`
+  restarts. When `sshd` does not start, the previous file now comes back without a question (it
+  asked before, and *No* left `sshd` stopped).
+- **Editing a list removed the lines it did not show.** `sshd` adds up every `AllowUsers`,
+  `AllowGroups`, `DenyUsers` and `DenyGroups` line (`servconf.c`: "appends to list"). The field
+  showed the first line and a save commented out the others, which changed who may log in. The
+  fields now show every line together and a save writes them as one line.
+- **Editing Port or ListenAddress removed the other ports and addresses.** The hint said the other
+  lines stay; the save commented them out, so `sshd` stopped listening there. Only the first line
+  is edited now.
+- **`ListenAddress ::1` meant port 1.** The port was read from the text after the last colon, so
+  a bare IPv6 address without a `Port` line gave port 1 to the dashboard, the firewall suggestion
+  and the checks. Only `[address]:port` and `host:port` carry a port now.
+- **A comment after a value blocked saving.** `MaxAuthTries 4 # policy` was read with its comment,
+  so the field showed `4 # policy`, and every save of the Settings tab failed its number check.
+  Comments after a value are now separated the way `sshd` does it (a `#` at the start of an
+  argument, outside quotes) and stay on the line when the value changes. Only changed fields are
+  checked.
+- **Prose was taken for a commented example.** Setting `Port` could replace a comment such as
+  `# Port forwarding is used by ...`; only `#Port 22` (no space after the `#`, as in
+  `sshd_config_default`) counts as an example now.
+- **Included files.** A new setting is written before the first `Include`, so it wins over an
+  included file (`sshd` takes the first value). The Settings tab says when the file includes
+  others, and after a save it reports every changed value that `sshd -T` does not show.
+- **Changes made meanwhile were overwritten.** A save wrote over `sshd_config` even when another
+  program or Notepad had changed it since the window read it. The SHA-256 of the file as read is
+  compared first; a changed file is written only after a question, and it is kept as a backup.
+- **Backups.** Two saves within one second shared a backup name, so the first backup was lost;
+  the second now gets `-2`. The newest 50 backups are kept. The live file is written next to
+  `sshd_config` and swapped in with `ReplaceFile`, which keeps its permissions, so a crash or a
+  full disk never leaves half a file.
+- **The owner of authorized_keys.** `sshd` refuses a key file whose owner is not the account,
+  SYSTEM or Administrators. A file written by an administrator whose objects are owned by the
+  account (not the Administrators group) was refused; every write now sets such an owner to
+  Administrators.
+- **The window froze.** Starting and stopping the service (up to 40 seconds each), `sshd -t` and
+  `sshd -T`, the SYSTEM check (up to 60 seconds), reading events and the hardening checks ran on
+  the window's thread, which then showed "Not Responding". They run in the background now, with
+  a progress bar; reading events can be cancelled. Fingerprints of authorized keys are worked out
+  once per key instead of by one `ssh-keygen` per key on every reload.
+- **The default shell was written at every save.** A save of the Settings tab wrote the default shell
+  to the registry every time; it is written only when it changed.
+- **The inbox C# 5 compiler could not build the source**, although `build.ps1` fell back to it
+  (the source uses exception filters of C# 6). The script now requires the Roslyn compiler, and
+  warnings stop the build.
+
+New:
+
+- **Preview before every save**: the lines added and removed, with their context; *Save* or
+  *Cancel*. It can be switched off.
+- **Access check before every save**: a warning when the account running the manager would be
+  refused by `DenyUsers`, `AllowUsers`, `DenyGroups` or `AllowGroups`, decided in the order of
+  `allowed_user` in `auth.c`, with group names resolved like `win32_groupaccess.c`.
+- **Backups**: a list of the backups with what restoring each one would change; restore or
+  delete.
+- **Setup wizard**: port and network profiles, your key, key-only login for administrators or
+  everyone (offered only once a key is authorized for you), the recommended settings, and
+  `AllowGroups`; applied in one save and one restart with the keep-or-restore question.
+- **Client tab**: `known_hosts` with fingerprints (remove entries; add a server's keys from
+  `ssh-keyscan` after comparing fingerprints), the `Host` blocks of `.ssh\config` (add, edit,
+  remove, connect; other lines of a block are kept), and the keys in `ssh-agent` (add with the
+  passphrase through `SSH_ASKPASS`, remove, start the agent).
+- **Logs tab**: a period (last hour, 24 hours, 7 or 30 days, all), multi-select, *Copy selected*,
+  *Export* (CSV, HTML, text), event details with Enter, and *Failed logins by address*: failed and
+  abandoned logins by client address with their count, time span and the account names tried,
+  and a firewall block rule for `sshd`'s ports kept by hand (block, unblock; this computer's own
+  addresses are refused, an address with an open SSH connection warns first).
+- **Hardening tab**: *Fix selected* (settings in one save and one restart; service, host keys, key
+  file permissions and public-network exposure after a question; login methods and login
+  restrictions open their tab) and *Export report*.
+- **Notification area**: an icon with the service state and a menu; notifications when `sshd`
+  stops without the manager stopping it, and when failed logins cross a threshold (10 within 5
+  minutes by default).
+- **Dark mode and high contrast**: like Windows, light or dark (About tab); dark title bars, lists,
+  tabs, status bar and dialogs; high contrast always uses the system colours.
+- **Keyboard**: Ctrl+S saves the tab shown, F5 refreshes it, Ctrl+1 to Ctrl+9 open the tabs,
+  Ctrl+F, F3 and Shift+F3 find in the text tab, Enter opens and Delete removes the selected item
+  of a list. Lists sort by a click on a column header (not the lists whose order matters).
+- **Sessions**: several sessions can be selected and disconnected at once.
+- **Firewall tab**: asks before the rule is switched off or would no longer allow `sshd`'s port.
+- **Restart** on the Dashboard asks first, like Stop.
+- **Preferences** on the About tab, stored in `HKCU\Software\OpenSSH Server Manager`.
+- `--screenshot` also renders the new dialogs and the wizard pages, and takes `--theme dark|light`;
+  `build.ps1 -Csc` builds with another Roslyn compiler.
+
+Verification (Windows 11 Pro 26200, not elevated: no administrator rights were available in this
+session):
+
+- `--unittest`: all 41 tests passed (20 before), on the fresh build and on the committed executable.
+- `--selftest`: 80 of 83 passed. The three failures read the live host keys (`sshd -t` and
+  `sshd -T` on the live configuration: "no hostkeys available") and the security of the services,
+  which needs administrator rights; they passed elevated with 1.5.0 and the code under them did
+  not change. The new window tests pass: a Settings save that keeps the second `Port` line and
+  writes the two `AllowUsers` lines as one, a save refused because the file changed meanwhile
+  (with a host key of its own, so `sshd -t` runs without administrator rights), the preview's
+  added and removed lines, and the dark and light palettes; text still fits at 100% and 150%,
+  and every new input has a name for screen readers.
+- `--screenshot` in light and dark: every tab, the dialogs and the wizard pages were looked at.
+- Not run in this session (they need administrator rights): `--selftest` elevated, `--keytest`,
+  `--authtest`, and the manual paths that restart the live service (keep or restore, the failed
+  start). Run them elevated before a release.
+
 ## OpenSSH Server Manager 1.5.0 (2026-09-26)
 
 A review of the window: three bugs fixed, and the window now keeps unsaved changes, checks fields
