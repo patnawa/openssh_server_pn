@@ -1,0 +1,73 @@
+name: OpenSSH Server Manager
+
+# Builds the manager from source and runs its unit tests (--unittest: no sshd, no service, no
+# administrator rights needed), on the fresh build and on the executable committed in bin/.
+# A tag manager-vX.Y.Z publishes the committed executable with its SHA-256 as a GitHub release.
+
+on:
+  push:
+    branches: [main]
+    paths: ['tools/OpenSSH-Server-Manager/**', '.github/workflows/manager.yml']
+    tags: ['manager-v*']
+  pull_request:
+    paths: ['tools/OpenSSH-Server-Manager/**', '.github/workflows/manager.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  test:
+    runs-on: windows-latest
+    env:
+      TOOL: tools/OpenSSH-Server-Manager
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: ./$env:TOOL/build.ps1 -OutDir "$env:RUNNER_TEMP/build"
+
+      - name: Unit tests (fresh build and committed executable)
+        run: |
+          $failed = $false
+          foreach ($exe in "$env:RUNNER_TEMP/build/OpenSSHServerManager.exe", "$env:TOOL/bin/OpenSSHServerManager.exe") {
+            if (-not (Test-Path $exe)) { Write-Host "::error::$exe is missing"; $failed = $true; continue }
+            $report = Join-Path $env:RUNNER_TEMP ("unittest-" + [guid]::NewGuid().ToString('N') + ".txt")
+            # A GUI-subsystem program: wait for it and read the report it writes.
+            $p = Start-Process -FilePath (Resolve-Path $exe) -ArgumentList '--unittest', $report -Wait -PassThru
+            Write-Host "== $exe"; Get-Content $report
+            if ($p.ExitCode -ne 0) { Write-Host "::error::unit tests failed for $exe"; $failed = $true }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Committed executable matches the source version
+        run: |
+          $want = (Select-String -Path "$env:TOOL/Program.cs" -Pattern 'AppVersion = "([^"]+)"').Matches[0].Groups[1].Value
+          $have = (Get-Item "$env:TOOL/bin/OpenSSHServerManager.exe").VersionInfo.ProductVersion
+          Write-Host "source $want, bin/OpenSSHServerManager.exe $have"
+          if ($have -ne $want) { Write-Host "::error::bin/OpenSSHServerManager.exe is version $have but the source is $want; rebuild it with build.ps1 and commit it"; exit 1 }
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/manager-v')
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish the committed executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $bin = 'tools/OpenSSH-Server-Manager/bin'
+          $files = "$bin/OpenSSHServerManager.exe", "$bin/OpenSSHServerManager.exe.config"
+          $sums = $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), (Split-Path $_ -Leaf) }
+          $sums | Set-Content -Path SHA256SUMS.txt -Encoding ascii
+          Get-Content SHA256SUMS.txt
+          $version = '${{ github.ref_name }}'.Substring('manager-v'.Length)
+          gh release create '${{ github.ref_name }}' @files SHA256SUMS.txt --title "OpenSSH Server Manager $version" --notes "See docs/CHANGELOG.md for the changes and the test results. Verify the download against SHA256SUMS.txt."

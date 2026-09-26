@@ -1,0 +1,27 @@
+{
+  "dependencies": [
+    "zlib",
+    "libressl",
+    "libfido2",
+    "libcbor"
+  ],
+  "overrides": [
+    {
+      "name": "zlib",
+      "version": "1.3.2"
+    },
+    {
+      "name": "libressl",
+      "version": "4.3.2"
+    },
+    {
+      "name": "libfido2",
+      "version": "1.17.0"
+    },
+    {
+      "name": "libcbor",
+      "version": "0.14.0"
+    }
+  ],
+  "builtin-baseline": "10541e317a660f4165ba4ac2851ab54a8d4577b1"
+}

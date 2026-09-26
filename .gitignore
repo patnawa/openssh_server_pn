@@ -1,0 +1,5 @@
+tools/OpenSSH-Server-Manager/obj/
+*.msi
+*.log
+vcpkg/
+tools/wix314/

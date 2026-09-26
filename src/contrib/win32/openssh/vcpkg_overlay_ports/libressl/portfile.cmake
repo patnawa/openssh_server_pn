@@ -1,0 +1,87 @@
+if(EXISTS "${CURRENT_INSTALLED_DIR}/include/openssl/ssl.h")
+    message(FATAL_ERROR "Can't build libressl if openssl is installed. Please remove openssl, and try install libressl again if you need it.")
+endif()
+
+vcpkg_download_distfile(
+    LIBRESSL_SOURCE_ARCHIVE
+    URLS "https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/${PORT}-${VERSION}.tar.gz"
+         "https://github.com/libressl/portable/releases/download/v${VERSION}/${PORT}-${VERSION}.tar.gz"
+    FILENAME "${PORT}-${VERSION}.tar.gz"
+    SHA512 de80606d7f003afbbab766baf7f2a3cc3a515e88f14652535411052d293eacd06bac28667284c81ecac0382aad3a2c8cac49b687d9e3a09e45c19cd6aea41994
+)
+
+vcpkg_extract_source_archive(
+    SOURCE_PATH
+    ARCHIVE "${LIBRESSL_SOURCE_ARCHIVE}"
+    PATCHES
+        pkgconfig.diff
+        add-resource-header-file.patch
+        add-version-file.patch
+        modify-cmakelists.patch
+        modify-crypto-cmakelists.patch
+)
+
+vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
+    FEATURES
+        "tools" LIBRESSL_APPS
+)
+
+if(VCPKG_TARGET_ARCHITECTURE STREQUAL "arm")
+    vcpkg_cmake_configure(
+        SOURCE_PATH "${SOURCE_PATH}"
+        WINDOWS_USE_MSBUILD
+        OPTIONS
+            ${FEATURE_OPTIONS}
+            -DLIBRESSL_INSTALL_CMAKEDIR=share/${PORT}
+            -DLIBRESSL_TESTS=OFF
+            -DBUILD_SHARED_LIBS=ON
+            -DCMAKE_SYSTEM_VERSION="10.0.22621.0"
+        OPTIONS_DEBUG
+            -DLIBRESSL_APPS=OFF
+    )
+else()
+    vcpkg_cmake_configure(
+        SOURCE_PATH "${SOURCE_PATH}"
+        WINDOWS_USE_MSBUILD
+        OPTIONS
+            ${FEATURE_OPTIONS}
+            -DLIBRESSL_INSTALL_CMAKEDIR=share/${PORT}
+            -DLIBRESSL_TESTS=OFF
+            -DBUILD_SHARED_LIBS=ON
+        OPTIONS_DEBUG
+            -DLIBRESSL_APPS=OFF
+    )
+endif()
+
+vcpkg_cmake_install()
+vcpkg_copy_pdbs()
+vcpkg_fixup_pkgconfig()
+vcpkg_cmake_config_fixup()
+
+# libressl as openssl replacement
+configure_file("${CURRENT_PORT_DIR}/vcpkg-cmake-wrapper.cmake.in" "${CURRENT_PACKAGES_DIR}/share/openssl/vcpkg-cmake-wrapper.cmake" @ONLY)
+
+if("tools" IN_LIST FEATURES)
+    vcpkg_copy_tools(TOOL_NAMES ocspcheck openssl DESTINATION "${CURRENT_PACKAGES_DIR}/tools/openssl" AUTO_CLEAN)
+endif()
+
+file(REMOVE_RECURSE
+    "${CURRENT_PACKAGES_DIR}/etc/ssl/certs"
+    "${CURRENT_PACKAGES_DIR}/debug/etc/ssl/certs"
+    "${CURRENT_PACKAGES_DIR}/debug/include"
+    "${CURRENT_PACKAGES_DIR}/debug/share"
+    "${CURRENT_PACKAGES_DIR}/share/man"
+)
+
+file(GLOB SSL_ARTIFACTS "${CURRENT_PACKAGES_DIR}/bin/ssl*")
+file(GLOB TLS_ARTIFACTS "${CURRENT_PACKAGES_DIR}/bin/tls*")
+
+file(REMOVE ${SSL_ARTIFACTS})
+file(REMOVE ${TLS_ARTIFACTS})
+
+file (REMOVE
+    "${CURRENT_PACKAGES_DIR}/lib/ssl.lib"
+    "${CURRENT_PACKAGES_DIR}/lib/tls.lib"
+)
+
+vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/COPYING")

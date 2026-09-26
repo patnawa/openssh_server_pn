@@ -1,0 +1,4 @@
+# Made by render.py; only app.ico (built into the executable) and app-256.png are kept.
+icon-*.png
+preview.png
+__pycache__/

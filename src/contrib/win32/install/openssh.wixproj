@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
+        <Platform Condition="'$(Platform)' == ''">x64</Platform>
+        <!-- This ensures there is a default version if it is not defined as part of the release process with the actual product version -->
+        <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.0</ProductVersion>
+        <OutputName>openssh</OutputName>
+        <OutputType>package</OutputType>
+        <OutputPath>bin\$(Platform)\$(Configuration)\</OutputPath>
+        <IntermediateOutputPath>obj\$(Platform)\$(Configuration)\</IntermediateOutputPath>
+        <!-- preinstall.wxi is generated into the intermediate folder by EncodePreInstallScript below -->
+        <IncludeSearchPaths>$([System.IO.Path]::Combine($(MSBuildProjectDirectory), $(IntermediateOutputPath)))</IncludeSearchPaths>
+        <!-- ICE61 warns that the Upgrade table covers the package's own version; that is intended (a rebuilt package
+             replaces the installed one). -->
+        <SuppressIces>ICE61</SuppressIces>
+        <!-- CNDL1077: the PreInstallCommand property holds PowerShell type names in square brackets; they are literal text, not property references -->
+        <SuppressSpecificWarnings>1077</SuppressSpecificWarnings>
+        <DefineConstants>
+            $(DefineConstants);
+            ProductVersion=$(ProductVersion);
+        </DefineConstants>
+        <DefineSolutionProperties>false</DefineSolutionProperties>
+        <!-- Assumes WixToolPath is an input provided at runtime -->
+        <!-- If building x86/x64 MSI and have Wix 3.11 installed, can also try the below line instead -->
+        <!-- WixTargetsPath Condition="'$(WixTargetsPath)' == ''">$(MSBuildExtensionsPath)\Microsoft\WiX\v3.x\Wix.targets</WixTargetsPath -->
+        <WixTargetsPath>$(WixToolPath)Wix.targets</WixTargetsPath>
+        <WixTasksPath>$(WixToolPath)wixtasks.dll</WixTasksPath>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+        <DefineConstants>
+            $(DefineConstants);
+            Debug;
+        </DefineConstants>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <BindInputPaths Include="..\..\..\bin\$(Platform)\$(Configuration)" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Include="product.wxs" />
+        <Compile Include="client.wxs" />
+        <Compile Include="server.wxs" />
+        <Compile Include="shared.wxs" />
+        <!-- Content is part of the Compile inputs, so a change to the script rebuilds the package -->
+        <Content Include="preinstall.ps1" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <WixExtension Include="WixFirewallExtension" />
+        <WixExtension Include="WixUIExtension" />
+        <WixExtension Include="WixUtilExtension" />
+    </ItemGroup>
+
+    <Import Project="$(WixTargetsPath)" />
+
+    <!-- Embeds preinstall.ps1 into the package: writes $(IntermediateOutputPath)preinstall.wxi with
+         PreInstallScript = base64 of the script (UTF-8, no BOM). product.wxs passes it to powershell.exe. -->
+    <Target Name="EncodePreInstallScript" BeforeTargets="Compile">
+        <MakeDir Directories="$(IncludeSearchPaths)" />
+        <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;$t = [IO.File]::ReadAllText('$(MSBuildProjectDirectory)\preinstall.ps1'); $b = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t)); [IO.File]::WriteAllText('$(IncludeSearchPaths)preinstall.wxi', '&lt;Include&gt;&lt;?define PreInstallScript=' + [char]34 + $b + [char]34 + '?&gt;&lt;/Include&gt;' + [Environment]::NewLine)&quot;" />
+    </Target>
+</Project>
