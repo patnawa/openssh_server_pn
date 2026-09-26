@@ -26,6 +26,10 @@ Installer:
 - **`ACTIVE_SESSIONS=abort`** stops the installation before anything changes (exit code 1603)
   while SSH sessions are open; `close`, the default, ends them as before.
 - **Error control Normal** for `sshd` and `ssh-agent` (it was Critical).
+- **Native PowerShell for the custom actions** of the x64 and ARM64 packages (`WixQuietExec64`).
+  `WixCA` is an x86 binary, and `WixQuietExec` started the 32-bit PowerShell of `SysWOW64`; on
+  GitHub's Windows 11 ARM64 runner that emulated PowerShell took about 75 seconds to start, so
+  the four steps of an install cost five minutes and a rollback several more.
 - **ARM64**: the package scheduled the x86 WiX firewall actions a second time, so the rule was
   created and removed twice; it uses the ARM64 action now.
 - The script is embedded as two smaller scripts without comments and with LF line ends, so both
