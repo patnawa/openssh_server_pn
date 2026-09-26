@@ -26,10 +26,12 @@ jobs:
     env:
       TOOL: tools/OpenSSH-Server-Manager
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build
-        run: ./$env:TOOL/build.ps1 -OutDir "$env:RUNNER_TEMP/build"
+        # The call operator: PowerShell does not expand $env:TOOL in a bare command name.
+        run: |
+          & "./$env:TOOL/build.ps1" -OutDir "$env:RUNNER_TEMP/build"
 
       - name: Unit tests (fresh build and committed executable)
         run: |
@@ -58,7 +60,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Publish the committed executable
         env:
