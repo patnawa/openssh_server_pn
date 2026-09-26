@@ -314,7 +314,7 @@ the same as in 10.5.0.0. Published on 26 September 2026 in the release [v10.5.1.
 with OpenSSH Server Manager 1.5.0; `src/` is unchanged since these packages were built.
 
 - **Source in the project.** The server source moved from `openssh-portable/` to `src/` and is
-  built from there. Its history, including the upstream history, is kept for future merges.
+  built from there. Its history, including the upstream history, was kept for future merges; since 26 September 2026 it is kept outside the repository ([BUILDING.md](BUILDING.md#2-layout)).
 - **Identity.** The product and manufacturer are *OpenSSH Server PN*, with support links in
   *Apps & features*. The binaries' file properties show the project, and the banner comment is
   `OpenSSH-Server-PN`. The file version is 10.5.1.0. The upgrade codes are unchanged, so earlier
