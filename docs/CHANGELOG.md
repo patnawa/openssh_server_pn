@@ -111,6 +111,12 @@ package (`OpenSSH-Win64-v10.5.1.0.msi`, the hash listed under 10.5.1.0 below):
   `administrators_authorized_keys` was absent, as before; the services, the local accounts and
   the number of firewall rules were unchanged.
 - **`--screenshot`:** all tabs, the About tab with the icon, and the rule dialog, at 100% and 150%.
+- **CI on GitHub** (`.github/workflows/manager.yml`, its first runs): the first run stopped at the
+  build step, because PowerShell does not expand `$env:TOOL` in a bare command name; fixed with
+  the call operator. It then passed: all 20 unit tests on the runner's build and on the committed
+  executable, and the version check. The runner's compiler (Visual Studio 18) built the same
+  bytes as the one here (Visual Studio 2022 Build Tools): SHA-256 `B4BCA5D3...D5573E` on both, so
+  the committed executable can be checked against the source.
 
 Not tested here:
 
