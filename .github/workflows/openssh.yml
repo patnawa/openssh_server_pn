@@ -660,10 +660,16 @@ jobs:
           }
           Get-Module Pester -ListAvailable | Format-Table Name, Version, ModuleBase
 
+      # A step timeout below the job's, so that a hung test still leaves time to upload the logs.
       - name: Run the Pester E2E tests
         shell: powershell
+        timeout-minutes: 60
         run: |
           $ErrorActionPreference = 'Continue'
+          # The tests check $IsWindows, which only PowerShell 6 and later define. Without it Add-PasswordSetting
+          # (src/regress/pesterTests/CommonUtils.psm1) sets no SSH_ASKPASS, and the first login with a key that has
+          # a passphrase waits for the passphrase on the console until the job times out ("ssh with certificate").
+          Set-Variable -Name IsWindows -Value $true -Scope Global
           Import-Module ./src/contrib/win32/openssh/OpenSSHTestHelper.psm1 -Force
           Set-OpenSSHTestEnvironment -OpenSSHBinPath (Resolve-Path 'src/bin/x64/Release').Path -NoAppVerifier -Confirm:$false
           $result = Invoke-OpenSSHE2ETest | Where-Object { $_ -and $_.PSObject.Properties['FailedCount'] } | Select-Object -Last 1
