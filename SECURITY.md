@@ -29,8 +29,9 @@ replaced with the newest one, or with an official Microsoft release.
 
 ## Integrity of the packages
 
-The MSI files are not Authenticode-signed. Every build's SHA-256 hashes are published in the
-README, in `docs/CHANGELOG.md` and in `SHA256SUMS.txt` alongside the packages. Verify a download
+The MSI files are not Authenticode-signed. The SHA-256 hashes of every build are in
+`docs/CHANGELOG.md`, those of the current build also in the README, and every published release
+carries a `SHA256SUMS.txt`. Verify a download
 with `Get-FileHash <file> -Algorithm SHA256` before installing, and treat any mismatch as a
 tampered file.
 

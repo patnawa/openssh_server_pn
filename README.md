@@ -121,7 +121,8 @@ known limitations.
 
 ## Verification of this build
 
-- The OpenSSH sources pass all 767 unit tests.
+- The OpenSSH sources passed all 767 unit tests in the 10.5.0.0 build. 10.5.1.0 changed the
+  identity strings, the version resource and the build tooling; the unit tests were not run again.
 - The installer was tested on Windows 11 Pro: upgrade with open sessions, same-version
   replacement, blocked and allowed downgrade, switching architecture, install from inside an SSH
   session, adding and removing features, repair, uninstall, firewall profiles and rejected
