@@ -17,6 +17,34 @@ README and in the release.
 
 Installer:
 
+- **The installation no longer hangs on Windows 7 and Windows Server 2008 R2.** Reported on
+  2026-09-26 on Windows Server 2008 R2 with Microsoft's OpenSSH 10.0.0.0 installed: the
+  installation stopped without an error. Once `msiexec.exe` had been ended in Task Manager, the
+  next attempt failed with *another installation is already in progress*. The installer runs its
+  steps through WiX's `WixQuietExec`, which gives `powershell.exe` a pipe as standard input and
+  keeps it open until the process has ended. Windows PowerShell 2.0, the version these systems
+  ship with, reads a redirected standard input to its end before it exits, so the first step
+  never ended, while the installation went on waiting in the Windows Installer service.
+  PowerShell 3.0 and later read standard input only for a command that uses `$input`, which is
+  why Windows 8 and later, and Windows 7 with WMF 3.0 or later, were not affected. Every
+  `powershell.exe` command line now has `-InputFormat None`. The firewall step no longer passes
+  `REMOVE` and `KEEP_INBOX_OPENSSH`, which it does not use, so that its command line still fits
+  the 255 characters of `CustomAction.Target`. The pre-install step logs the PowerShell version
+  on its `mode=` line. `tests\package.Tests.ps1` checks the switch on every command line and the
+  length of every target. The CI runs every install scenario a fourth time, on Windows Server 2022
+  with both packages starting the PowerShell 2.0 engine (`-Version 2`), and ends and fails any
+  `msiexec` that runs longer than 20 minutes. docs/INSTALL.md, section 8, says how to end a hung
+  installation. Verified on GitHub's `windows-2022` runner, which has the PowerShell 2.0 engine
+  (feature PowerShell-V2), on 2026-09-26. `powershell.exe` 2.0, 64-bit and 32-bit, with a
+  standard input pipe held open, hung until it was killed after 30 s. With `-InputFormat None` it
+  exited in 0.2 s. 5.1 exited in either case, unless the command used `$input`. The x64 package
+  of the first `v10.5.2.0` tag run, with `-Version 2` added to its command lines, hung at its
+  first step with a PowerShell 2.0 process running as SYSTEM, and a second `msiexec` meanwhile
+  returned 1618, as reported. Ending `powershell.exe` four times let it finish with exit code 0 and
+  nothing missing, because each step had done its work before it started waiting. Its uninstall
+  hung once in the same way. The same package with `-InputFormat None` on PowerShell 2.0
+  installed in 6 s and uninstalled in 1 s. It also installed over Microsoft's
+  `OpenSSH-Win64-v10.0.0.0.msi` in 6 s and kept the Private network of Microsoft's rule.
 - **The firewall rule keeps its settings on upgrade.** 10.5.1.0 removed the rule with the old
   package and created it again with port 22 and the default networks, so a server moved to port
   2222 lost remote access after an unattended upgrade. The rule's ports, networks, enabled state

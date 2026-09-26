@@ -338,6 +338,30 @@ you want a clean slate.
 | Error 1925 *You do not have sufficient privileges to complete this installation for all users of the machine* (exit code 1603) | Silent install from a non-elevated prompt. Run `msiexec` elevated. |
 | Error 1730 *You must be an Administrator to remove this application* | Silent install from a non-elevated prompt. Run `msiexec` elevated. |
 | Restart pending after an upgrade | Expected when the upgrade ran from inside an SSH session, because the old copies of the files that session held are deleted at the restart. Also expected when Windows could only finish removing the in-box server at the restart. Everything else is already in place. |
+| The installation does not finish, with no error, on Windows 7 or Windows Server 2008 R2 | Packages up to 10.5.1.0 only. Their installer steps run on Windows PowerShell 2.0, which these systems ship with, and PowerShell 2.0 waits for input that never comes. End the installation as described below, then install a later package: they start PowerShell with `-InputFormat None`. Installing WMF 5.1 (PowerShell 5.1) also avoids it. |
+| *Another installation is already in progress* (error 1500, exit code 1618) | An installation is still running in the Windows Installer service, also after `msiexec.exe` was ended in Task Manager. Wait for it to finish, or end a hung one as described below. |
+
+### A hung installation
+
+Ending `msiexec.exe` in Task Manager closes only the installer window. The installation goes on
+in the Windows Installer service, and a hung step is a `powershell.exe` process running as
+SYSTEM. In an elevated command prompt:
+
+```
+tasklist /v /fi "imagename eq powershell.exe"
+taskkill /f /im powershell.exe
+```
+
+The installer ignores the exit code of its PowerShell steps, so the installation continues when
+the process has ended. A PowerShell 2.0 step has done its work before it starts waiting, so
+nothing is lost. A package that hangs this way stops again at its next PowerShell step: repeat
+the `taskkill` every few seconds until `tasklist /fi "imagename eq msiexec.exe"` shows at most one
+`msiexec.exe`, the idle Windows Installer service. The installation has then either finished or
+been rolled back to the previous package; `Get-Service sshd` or *Programs and Features* shows
+which. `taskkill /im powershell.exe` also ends every other Windows PowerShell window, so close
+your own first. When no `powershell.exe` is running while the installation hangs, the cause is
+something else. In that case, install with a log (`msiexec /i <package>.msi /l*v install.log`) and
+open an issue with the log attached.
 
 More: the upstream [Troubleshooting Steps](https://github.com/PowerShell/Win32-OpenSSH/wiki/Troubleshooting-Steps)
 wiki page applies to these packages as well.

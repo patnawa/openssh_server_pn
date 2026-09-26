@@ -12,12 +12,12 @@ manual build in [BUILDING.md](BUILDING.md) stays the reference for building on y
 
 | Workflow | Runs on | Does |
 |---|---|---|
-| [`openssh.yml`](../.github/workflows/openssh.yml) | pull requests and pushes to `main` that change `src/`, the workflow, `.github/scripts/` or `tools/release/`; tags `v*`; manually | Builds x64, x86 and ARM64 on `windows-2022`, packages the MSIs and runs the installer tests that need no installation (`src/contrib/win32/install/tests`, when present) on each; runs the unit tests (x64 and x86 on `windows-2022`, ARM64 on `windows-11-arm`) followed by the crypto probes (`.github/scripts/Test-CryptoProbes.ps1`: `libcrypto` arithmetic, curves and random numbers, each `ssh-keygen` key type and `sshd -t`, one process per probe with a timeout, so a broken library is told apart from a broken test); installs the x64 MSI on `windows-2022` and `windows-2025` and the ARM64 MSI on `windows-11-arm` and tests it (below); runs the Pester end-to-end tests (not gating); assembles the release files (SBOM, `SHA256SUMS.txt`). For a tag: attestations and a **draft** release |
+| [`openssh.yml`](../.github/workflows/openssh.yml) | pull requests and pushes to `main` that change `src/`, the workflow, `.github/scripts/` or `tools/release/`; tags `v*`; manually | Builds x64, x86 and ARM64 on `windows-2022`, packages the MSIs and runs the installer tests that need no installation (`src/contrib/win32/install/tests`, when present) on each; runs the unit tests (x64 and x86 on `windows-2022`, ARM64 on `windows-11-arm`) followed by the crypto probes (`.github/scripts/Test-CryptoProbes.ps1`: `libcrypto` arithmetic, curves and random numbers, each `ssh-keygen` key type and `sshd -t`, one process per probe with a timeout, so a broken library is told apart from a broken test); installs the x64 MSI on `windows-2022` and `windows-2025` and the ARM64 MSI on `windows-11-arm` and tests it (below), and the x64 MSI once more on `windows-2022` with the installer's steps on the Windows PowerShell 2.0 engine of Windows 7 and Server 2008 R2 (both packages get `-Version 2` on their `powershell.exe` command lines; the pre-install step must report PowerShell 2.0 in the MSI log); runs the Pester end-to-end tests (not gating); assembles the release files (SBOM, `SHA256SUMS.txt`). For a tag: attestations and a **draft** release |
 | [`manager.yml`](../.github/workflows/manager.yml) | changes to `tools/OpenSSH-Server-Manager/`; tags `manager-v*` | Builds OpenSSH Server Manager, runs `--unittest` on the fresh build and the committed executable, reports whether the fresh build reproduces the committed one. For a tag: publishes the committed executable with an attestation |
 | [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | Mondays; manually | Opens an issue for each new release of OpenSSH, LibreSSL, libfido2, libcbor or zlib |
 | Dependabot ([`dependabot.yml`](../.github/dependabot.yml)) | weekly | Pull requests that update the pinned actions |
 
-The install test on each of the three machines, in this order:
+The install test on each of the four machines, in this order (every `msiexec` that runs longer than 20 minutes is ended and fails the step: a hung custom action):
 
 | Step | Checks |
 |---|---|
@@ -107,7 +107,7 @@ Also check:
 
 What CI does not cover and still has to be done by hand, as before: a restart of a machine with the new
 package (services come back), Windows versions other than Server 2022, Server 2025 and Windows 11 on ARM
-(Windows 10, Server 2016 and 2019, the older systems in COMPATIBILITY.md), the x86 package on 32-bit
+(Windows 10, Server 2016 and 2019, the older systems in COMPATIBILITY.md; of Windows 7 and Server 2008 R2, the CI covers only their PowerShell 2.0 engine, on Windows Server 2022), the x86 package on 32-bit
 Windows, an upgrade started from inside an SSH session, and a Kerberos login. Record in the changelog
 what ran where.
 
