@@ -20,11 +20,14 @@ This project is independent: it is not affiliated with Microsoft or the OpenBSD 
 | `OpenSSH-Win64-v10.5.1.0.msi` | Windows x64: every Windows Server edition, 64-bit Windows 10 and 11 | 6.6 MB | `5BC5FD7CCFC27940AA2F9377F066DBE4F48421F3422E432AEB6CEEACEF2326B8` |
 | `OpenSSH-Win32-v10.5.1.0.msi` | Windows x86: 32-bit Windows client editions | 5.8 MB | `4F8E1BB626238E11BC7DDBE7B18A3086924A00592CBA4AD571AAD67F8D00671F` |
 | `OpenSSH-ARM64-v10.5.1.0.msi` | Windows 10 and 11 on ARM | 6.5 MB | `A7107F66AA73B284D3454B2AB4477E19A1008CB75D29A4720B68B1F4EB98DF70` |
-| `OpenSSHServerManager.exe` (1.3.0) | Management console, any Windows with .NET Framework 4.x, all architectures | 238 KB | `C73796D9CC81CA411B18DB4017CA3BAD44B34DA7ED7B9DED18626A73EFBEF6F2` |
+| `OpenSSHServerManager.exe` (1.5.0) | Management console, any Windows with .NET Framework 4.x, all architectures | 638 KB | `B4BCA5D3EE5AF2E3501D6B47B03F9BE228CD5C610CC3C75C5B56144D26D5573E` |
 
-Packages are attached to this repository's [Releases](https://github.com/patnawa/openssh_server_pn/releases)
-page when published. They are **unsigned**: always compare the SHA-256 hash before installing
-(`Get-FileHash .\OpenSSH-Win64-v10.5.1.0.msi`). Anyone can rebuild them with
+Download them from the release [v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0), together with
+`OpenSSHServerManager.exe.config` (keep it next to the executable) and `SHA256SUMS.txt`. The
+management console also has releases of its own, such as
+[manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0). The files are **unsigned**: always compare
+the SHA-256 hash before installing (`Get-FileHash .\OpenSSH-Win64-v10.5.1.0.msi`, or the check in
+[docs/INSTALL.md](docs/INSTALL.md#1-choose-a-package)). Anyone can rebuild them with
 [docs/BUILDING.md](docs/BUILDING.md). Installed, the product appears as *OpenSSH Server PN* in
 *Apps & features*, and the server identifies itself as `SSH-2.0-OpenSSH_for_Windows_10.5 OpenSSH-Server-PN`.
 

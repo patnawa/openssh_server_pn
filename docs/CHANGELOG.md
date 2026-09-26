@@ -17,6 +17,9 @@ controls for screen readers. The program has its own icon. Tested against the in
 The size grew with the icon, which the executable carries twice: as its Windows icon, and as a
 resource the window loads with all ten sizes.
 
+Published in the releases [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0) and
+[v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0), each with `SHA256SUMS.txt`.
+
 Fixed:
 
 - **A refused save reached the file through another tab.** The Settings tab wrote its fields into
@@ -307,7 +310,8 @@ Not tested here:
 ## 10.5.1.0 (2026-09-25)
 
 The first build of **OpenSSH Server PN** as its own product. OpenSSH 10.5p1 and the libraries are
-the same as in 10.5.0.0.
+the same as in 10.5.0.0. Published on 26 September 2026 in the release [v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0),
+with OpenSSH Server Manager 1.5.0; `src/` is unchanged since these packages were built.
 
 - **Source in the project.** The server source moved from `openssh-portable/` to `src/` and is
   built from there. Its history, including the upstream history, is kept for future merges.

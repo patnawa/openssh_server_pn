@@ -15,10 +15,21 @@ Requirements: Windows 7 SP1 / Windows Server 2008 R2 or later, and local adminis
 for the installation. No Visual C++ redistributable or .NET runtime is needed; the binaries
 statically link the C runtime. See [COMPATIBILITY.md](COMPATIBILITY.md) for the full matrix.
 
-Verify the download first. The hash must match the value in the README or in `SHA256SUMS.txt`:
+Download the package and `SHA256SUMS.txt` from the latest release on the
+[Releases](https://github.com/patnawa/openssh_server_pn/releases) page, for example:
 
 ```powershell
-Get-FileHash .\OpenSSH-Win64-v10.5.1.0.msi -Algorithm SHA256
+$base = 'https://github.com/patnawa/openssh_server_pn/releases/download/v10.5.1.0'
+Invoke-WebRequest "$base/OpenSSH-Win64-v10.5.1.0.msi" -OutFile .\OpenSSH-Win64-v10.5.1.0.msi
+Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile .\SHA256SUMS.txt
+```
+
+The packages are unsigned, so verify the download first. The hash must match the line in
+`SHA256SUMS.txt` (and the value in the README):
+
+```powershell
+$line = Select-String -Path .\SHA256SUMS.txt -Pattern 'OpenSSH-Win64-v10.5.1.0.msi' -SimpleMatch
+(Get-FileHash .\OpenSSH-Win64-v10.5.1.0.msi -Algorithm SHA256).Hash -eq $line.Line.Split(' ')[0]   # must print True
 ```
 
 ## 2. Install
