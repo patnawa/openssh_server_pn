@@ -11,6 +11,9 @@
     | Upgrade   | sets the firewall rule to port 2222 and Private only, installs the upgrade-test MSI    |
     |           | (third version field + 1), checks that the rule kept both                              |
     | Repair    | msiexec /fa of the installed package; the rule still has port 2222 and Private         |
+    | Rollback  | a copy of the release MSI that fails after StartServices (New-FailingMsi) is installed  |
+    |           | with ALLOWDOWNGRADE=1: msiexec returns 1603, the previous package is back with its      |
+    |           | services and files, the rule has port 2222 and Private again, the saved record is gone |
     | Downgrade | the older release MSI is refused (1603) without ALLOWDOWNGRADE; then installed with    |
     |           | ALLOWDOWNGRADE=1 SSHD_PORT=2200: sshd answers on 2200, the rule has port 2200 and      |
     |           | still Private only                                                                     |
@@ -32,7 +35,7 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('Install', 'Upgrade', 'Repair', 'Downgrade', 'Sessions', 'Uninstall')][string]$Scenario,
+    [Parameter(Mandatory = $true)][ValidateSet('Install', 'Upgrade', 'Repair', 'Rollback', 'Downgrade', 'Sessions', 'Uninstall')][string]$Scenario,
     [string]$MsiDir = $env:MSI_DIR,
     [string]$Msi = $env:MSI,
     [string]$UpgradeMsi = $env:UPGRADE_MSI,
@@ -106,6 +109,55 @@ switch ($Scenario) {
             -FirewallPort $CustomFirewallPort -FirewallPortMode $preservation `
             -FirewallProfileMask $CustomFirewallProfileMask -FirewallProfileMode $preservation
         Complete-Checks 'Repair'
+    }
+
+    'Rollback' {
+        # A failed installation must leave the previous package as it was, its firewall settings included (the
+        # rollback action of the firewall record). The installed package is the upgrade-test build with the rule at
+        # 2222/Private; a copy of the release MSI that fails after StartServices replaces it and is rolled back.
+        $before = (Get-InstalledOpenSSHProduct).DisplayVersion
+        $failing = New-FailingMsi -Source $releaseMsi -Destination (Join-Path $LogDir 'rollback-test.msi')
+        $rows = @(Get-MsiTableRows -Path $failing -Table 'InstallExecuteSequence' -Columns 'Action', 'Sequence' | Where-Object { $_.Action -in 'StartServices', 'CITestFailAfterStart', 'InstallFinalize' })
+        Write-Host ("failing package: " + (($rows | ForEach-Object { "$($_.Action)=$($_.Sequence)" }) -join ' '))
+        $code = Invoke-Install @('/i', (Q $failing), 'ALLOWDOWNGRADE=1') '3b-rollback.log' -Allowed @(0, 1603, 3010)
+        Test-MsiLog (Join-Path $LogDir '3b-rollback.log')
+        Test-Check 'The failing package is rolled back (msiexec exit 1603)' ($code -eq 1603) "exit code $code" | Out-Null
+        if ($code -ne 1603) {
+            # Nothing to roll back: put the state the next scenarios expect back (the upgrade-test build, the rule at 2222/Private).
+            Write-Host 'The failing package installed; restoring the upgrade-test build for the next scenarios.'
+            Invoke-Install @('/i', (Q $upgradeMsiPath)) '3c-rollback-recover.log' | Out-Null
+            Set-NetFirewallRule -DisplayName 'OpenSSH SSH Server Preview (sshd)' -LocalPort $CustomFirewallPort -Profile Private
+            Complete-Checks 'Rollback of a failed installation'
+            return
+        }
+        $log = Get-Content -LiteralPath (Join-Path $LogDir '3b-rollback.log') -Raw
+        Test-Check 'MSI log shows the forced failure (CITestFailAfterStart)' ($log -match 'CITestFailAfterStart') | Out-Null
+        Test-Check 'MSI log shows the firewall settings put back by the rollback action' ($log -match "preinstall: rollback: firewall rule '[^']+' set back to") -Mode $preservation | Out-Null
+        $product = Get-InstalledOpenSSHProduct
+        Test-Check "Previous package $before registered again" ($product -and $product.DisplayVersion -eq $before) "$(if ($product) { $product.DisplayVersion } else { 'nothing installed' })" | Out-Null
+        foreach ($name in 'sshd', 'ssh-agent') {
+            $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+            Test-Check "Service $name registered again" ($null -ne $svc) "$(if ($svc) { "$($svc.Status) / $($svc.StartType)" } else { 'missing' })" | Out-Null
+        }
+        $exe = Join-Path (Get-OpenSSHInstallDir) 'sshd.exe'
+        Test-Check 'sshd.exe present again' (Test-Path -LiteralPath $exe) "$(if (Test-Path -LiteralPath $exe) { (Get-Item -LiteralPath $exe).VersionInfo.FileVersion })" | Out-Null
+        $record = Get-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH\Installer' -Name FirewallRule -ErrorAction SilentlyContinue
+        Test-Check 'Saved firewall record removed after the rollback' ($null -eq $record) "$(if ($record) { $record.FirewallRule })" -Mode $preservation | Out-Null
+        $rules = @(Get-SshdFirewallRule)
+        Test-Check 'Exactly one firewall rule for sshd after the rollback' ($rules.Count -eq 1) "$($rules.Count) rule(s)" | Out-Null
+        if ($rules.Count -ge 1) {
+            Test-Check "Firewall rule port $CustomFirewallPort after the rollback" ($rules[0].LocalPort -eq $CustomFirewallPort) "port $($rules[0].LocalPort)" -Mode $preservation | Out-Null
+            Test-Check "Firewall rule profile mask $CustomFirewallProfileMask after the rollback" ($rules[0].ProfileMask -eq $CustomFirewallProfileMask) "profile $($rules[0].Profile) ($($rules[0].ProfileMask))" -Mode $preservation | Out-Null
+            Test-Check 'Firewall rule enabled after the rollback' $rules[0].Enabled | Out-Null
+        }
+        # The rollback registers the services again but does not start them; the next scenarios need sshd running.
+        foreach ($name in 'sshd', 'ssh-agent') {
+            $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -ne 'Running') { Start-Service -Name $name }
+        }
+        $banner = Get-SshBanner -Port 22
+        Test-Check 'sshd answers on port 22 after the rollback' ($banner -match '^SSH-2\.0-OpenSSH_for_Windows_\S+ OpenSSH-Server-PN') "$banner; sshd listens on $((Get-SshdListenPort) -join ', ')" | Out-Null
+        Complete-Checks 'Rollback of a failed installation'
     }
 
     'Downgrade' {

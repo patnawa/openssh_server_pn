@@ -54,8 +54,9 @@ CI and releases:
 - `.github/workflows/openssh.yml` builds x64, x86 and ARM64, runs the OpenSSH unit tests
   (ARM64 binaries run for the first time, on windows-11-arm), installs the packages on Windows
   Server 2022 and 2025 and Windows 11 on ARM, runs the manager's `--check`, `--selftest`,
-  `--keytest` and `--authtest`, and tests upgrade, repair, downgrade, `SSHD_PORT`,
-  `ACTIVE_SESSIONS` and uninstall. A tag creates a draft release with an SBOM and provenance
+  `--keytest` and `--authtest`, and tests upgrade, repair, a failed installation rolled back (a
+  copy of the package with a custom action that fails after `StartServices`), downgrade,
+  `SSHD_PORT`, `ACTIVE_SESSIONS` and uninstall. A tag creates a draft release with an SBOM and provenance
   attestations; Authenticode signing when configured.
 - `manager.yml`: actions pinned to commit SHAs, a reproducibility report, attestations.
 - Weekly upstream version check, Dependabot for actions, winget manifests, Intune notes,
