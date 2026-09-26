@@ -29,6 +29,8 @@
                         <PermissionEx Sddl="O:BAG:SYD:P(A;OICI;KA;;;SY)(A;OICI;KA;;;BA)" />
                     </RegistryKey>
                 </RegistryKey>
+                <!-- ErrorControl="normal": a start failure at boot is logged and startup continues. With "critical",
+                     Windows would restart with the last known good configuration whenever sshd fails to start. -->
                 <ServiceInstall
                     Name="sshd"
                     DisplayName="OpenSSH SSH Server"
@@ -36,7 +38,7 @@
                     Start="auto"
                     Type="ownProcess"
                     Interactive="no"
-                    ErrorControl="critical"
+                    ErrorControl="normal"
                     Vital="yes">
                     <util:ServiceConfig
                         ResetPeriodInDays="1"

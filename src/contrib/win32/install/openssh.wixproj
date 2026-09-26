@@ -56,10 +56,51 @@
 
     <Import Project="$(WixTargetsPath)" />
 
-    <!-- Embeds preinstall.ps1 into the package: writes $(IntermediateOutputPath)preinstall.wxi with
-         PreInstallScript = base64 of the script (UTF-8, no BOM). product.wxs passes it to powershell.exe. -->
+    <!-- Embeds preinstall.ps1 into the package: writes $(IntermediateOutputPath)preinstall.wxi with two defines, each the
+         base64 of a script (UTF-8, no BOM) that product.wxs passes to powershell.exe on its command line:
+         - PreInstallScript: the file without its "#region firewall" parts (phases pre and sessions),
+         - FirewallScript: the file without its "#region pre" parts (phases fwsave, fwrollback, fwcommit, firewall, port).
+         Comment lines, blank lines and indentation are left out and every line ends with LF, so the package bytes do not
+         depend on the line endings of the checkout. Windows limits a command line to 32767 characters; the build stops
+         when a script leaves less than about 1700 characters for the rest of the command (powershell.exe path, install
+         folder, arguments). tests\preinstall.Tests.ps1 checks that both scripts parse and keep every statement. -->
+    <UsingTask TaskName="EmbedInstallerScript" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+        <ParameterGroup>
+            <Source ParameterType="System.String" Required="true" />
+            <Output ParameterType="System.String" Required="true" />
+        </ParameterGroup>
+        <Task>
+            <Code Type="Fragment" Language="cs"><![CDATA[
+var lines = File.ReadAllLines(Source);
+var include = new StringBuilder("<Include>");
+foreach (var variant in new[] { new[] { "PreInstallScript", "firewall" }, new[] { "FirewallScript", "pre" } })
+{
+    var script = new StringBuilder();
+    bool skip = false;
+    foreach (var line in lines)
+    {
+        var t = line.Trim();
+        var region = System.Text.RegularExpressions.Regex.Match(t, @"^#(end)?region\s+(\w+)");
+        if (region.Success && region.Groups[2].Value == variant[1]) { skip = !region.Groups[1].Success; continue; }
+        if (skip || t.Length == 0 || t.StartsWith("#")) continue;
+        script.Append(t).Append('\n');
+    }
+    var base64 = Convert.ToBase64String(new UTF8Encoding(false).GetBytes(script.ToString()));
+    if (base64.Length > 31000)
+    {
+        Log.LogError("{0}: {1} characters of base64; at most 31000 fit on the powershell.exe command line. Move code into the other region or shorten the script.", variant[0], base64.Length);
+        return false;
+    }
+    Log.LogMessage(MessageImportance.High, "{0}: {1} characters of base64 (command line limit 32767)", variant[0], base64.Length);
+    include.Append("<?define ").Append(variant[0]).Append("=\"").Append(base64).Append("\"?>");
+}
+include.Append("</Include>\r\n");
+File.WriteAllText(Output, include.ToString());
+]]></Code>
+        </Task>
+    </UsingTask>
     <Target Name="EncodePreInstallScript" BeforeTargets="Compile">
         <MakeDir Directories="$(IncludeSearchPaths)" />
-        <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;$t = [IO.File]::ReadAllText('$(MSBuildProjectDirectory)\preinstall.ps1'); $b = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t)); [IO.File]::WriteAllText('$(IncludeSearchPaths)preinstall.wxi', '&lt;Include&gt;&lt;?define PreInstallScript=' + [char]34 + $b + [char]34 + '?&gt;&lt;/Include&gt;' + [Environment]::NewLine)&quot;" />
+        <EmbedInstallerScript Source="$(MSBuildProjectDirectory)\preinstall.ps1" Output="$(IncludeSearchPaths)preinstall.wxi" />
     </Target>
 </Project>
