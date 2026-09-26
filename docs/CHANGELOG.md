@@ -66,7 +66,7 @@ fixes per hardening check, and an icon in the notification area. Built from the 
 
 | File | Size | SHA-256 |
 |---|---|---|
-| `OpenSSHServerManager.exe` | 808,960 bytes | `73B34152E137AA23920F7D2DD993B37B1A113DAF7D10788CFD1532FA9D69BB2A` |
+| `OpenSSHServerManager.exe` | 818,688 bytes | `3DE33B00C2965077870F61833B2139F13B95DDD5BBF663F448B92A37492E1C8D` |
 
 Rebuilt from a fresh CRLF checkout with the same compiler, the executable has the same SHA-256.
 
@@ -130,7 +130,10 @@ New:
   *Cancel*. It can be switched off.
 - **Access check before every save**: a warning when the account running the manager would be
   refused by `DenyUsers`, `AllowUsers`, `DenyGroups` or `AllowGroups`, decided in the order of
-  `allowed_user` in `auth.c`, with group names resolved like `win32_groupaccess.c`.
+  `allowed_user` in `auth.c`: the lists lower-cased and `DOMAIN/name` read as `domain\name` as
+  `servconf.c` does on Windows, and groups matched like `ga_match` in `win32_groupaccess.c` (one
+  entry with `*` or `?` makes sshd compare the whole list by name, so `sshusers` then no longer
+  matches the domain group `corp\sshusers`).
 - **Backups**: a list of the backups with what restoring each one would change; restore or
   delete.
 - **Setup wizard**: port and network profiles, your key, key-only login for administrators or
@@ -142,7 +145,9 @@ New:
   passphrase through `SSH_ASKPASS`, remove, start the agent).
 - **Logs tab**: a period (last hour, 24 hours, 7 or 30 days, all), multi-select, *Copy selected*,
   *Export* (CSV, HTML, text), event details with Enter, and *Failed logins by address*: failed and
-  abandoned logins by client address with their count, time span and the account names tried,
+  abandoned logins by client address with their count, time span and the account names tried
+  (the address is read from the end of each message, so a user name such as
+  `x from 10.1.2.3 port 22` cannot put an innocent address on the list),
   and a firewall block rule for `sshd`'s ports kept by hand (block, unblock; this computer's own
   addresses are refused, an address with an open SSH connection warns first).
 - **Hardening tab**: *Fix selected* (settings in one save and one restart; service, host keys, key
@@ -158,6 +163,14 @@ New:
   of a list. Lists sort by a click on a column header (not the lists whose order matters).
 - **Sessions**: several sessions can be selected and disconnected at once.
 - **Firewall tab**: asks before the rule is switched off or would no longer allow `sshd`'s port.
+- **A new port and the firewall rule**: after a port change the rule gets the new port *added*;
+  a rule that had a single port drops the old one only when the new settings are kept, and when
+  they are not kept (or `sshd` does not start) the rule gets its old ports back with the old file.
+  1.5.0 moved the rule to the new port at once and left it there when the file was rolled back.
+- **Connect** (Dashboard and Client tab) starts `ssh` without administrator rights
+  (`runas /trustlevel:0x20000`): `ssh` reads the user's own configuration, which can run
+  commands, and those must not run with the manager's rights. A host alias that starts with `-`
+  is refused, and `--` ends the options.
 - **Restart** on the Dashboard asks first, like Stop.
 - **Preferences** on the About tab, stored in `HKCU\Software\OpenSSH Server Manager`.
 - `--screenshot` also renders the new dialogs and the wizard pages, and takes `--theme dark|light`;
@@ -166,8 +179,8 @@ New:
 Verification (Windows 11 Pro 26200, not elevated: no administrator rights were available in this
 session):
 
-- `--unittest`: all 41 tests passed (20 before), on the fresh build and on the committed executable.
-- `--selftest`: 80 of 83 passed. The three failures read the live host keys (`sshd -t` and
+- `--unittest`: all 44 tests passed (20 before), on the fresh build and on the committed executable.
+- `--selftest`: 83 of 86 passed. The three failures read the live host keys (`sshd -t` and
   `sshd -T` on the live configuration: "no hostkeys available") and the security of the services,
   which needs administrator rights; they passed elevated with 1.5.0 and the code under them did
   not change. The new window tests pass: a Settings save that keeps the second `Port` line and

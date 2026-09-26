@@ -270,9 +270,15 @@ namespace OpenSSHServerManager
             var again = new Button { Text = "&Check again", AutoSize = true, MinimumSize = new Size(0, Ui.Px(32)) };
             again.Click += (s, e) =>
             {
-                UseWaitCursor = true;
+                // The check can take seconds and keeps the window responsive: the countdown pauses and the buttons wait,
+                // so a Keep clicked meanwhile cannot be overtaken by the countdown, and the check cannot start twice.
+                _timer.Stop(); keep.Enabled = back.Enabled = again.Enabled = false; UseWaitCursor = true;
                 try { var r = checkAgain(); ShowReport(r.Key, r.Value); }
-                finally { UseWaitCursor = false; }
+                finally
+                {
+                    UseWaitCursor = false; keep.Enabled = back.Enabled = again.Enabled = true;
+                    if (DialogResult == DialogResult.None && _left > 0) _timer.Start();
+                }
             };
             bar.Controls.Add(keep); bar.Controls.Add(back); bar.Controls.Add(again);
             p.Controls.Add(bar);
@@ -280,7 +286,12 @@ namespace OpenSSHServerManager
             CancelButton = back;
             ShowReport(report, problems);
             Tick();
-            _timer.Tick += (s, e) => { _left--; Tick(); if (_left <= 0) { _timer.Stop(); DialogResult = DialogResult.Abort; } };
+            _timer.Tick += (s, e) =>
+            {
+                if (DialogResult != DialogResult.None) { _timer.Stop(); return; } // an answer was given already
+                _left--; Tick();
+                if (_left <= 0) { _timer.Stop(); DialogResult = DialogResult.Abort; }
+            };
             Shown += (s, e) => { _timer.Start(); keep.Focus(); };
             FormClosed += (s, e) => _timer.Dispose();
         }

@@ -517,27 +517,40 @@ namespace OpenSSHServerManager
             var lines = EffectiveLinesFor(me, configPath, port, out err);
             if (lines == null) return null; // sshd -t and the other checks report a configuration sshd cannot read
             Func<string, List<string>> values = k => lines.Where(x => x.Key == k).Select(x => x.Value).ToList();
-            return AccessRefusal(me, values("denyusers"), values("allowusers"), values("denygroups"), values("allowgroups"), CurrentAccountInGroup);
+            return AccessRefusal(me, values("denyusers"), values("allowusers"), values("denygroups"), values("allowgroups"), CurrentAccountInGroups);
+        }
+
+        /// <summary>
+        /// A pattern of the Allow and Deny lists as sshd for Windows keeps it (servconf.c, after reading the configuration):
+        /// the first "/" becomes "\" (DOMAIN/name), and A-Z are lower-cased.
+        /// </summary>
+        internal static string NormalisePattern(string p)
+        {
+            p = p ?? ""; int slash = p.IndexOf('/');
+            if (slash >= 0) p = p.Substring(0, slash) + "\\" + p.Substring(slash + 1);
+            return Accounts.AsciiLower(p);
         }
 
         /// <summary>
         /// The decision of allowed_user in sshd's auth.c for one account: DenyUsers, then AllowUsers, then DenyGroups, then
-        /// AllowGroups. User patterns are compared with the name as sshd has it (Accounts.Canonical), case-sensitively like
-        /// match_pattern; the part after @ (the client's host or address) is not known here and counts as matching.
-        /// inGroup answers whether the account is in a group or in a group that matches a pattern with * or ?.
+        /// AllowGroups. Patterns are normalised as sshd for Windows does (NormalisePattern) and user patterns compared with
+        /// the name as sshd has it (Accounts.Canonical), like match_pattern; the part after @ (the client's host or address)
+        /// is not known here and counts as matching. inGroups answers ga_match for a whole list (DenyGroups or
+        /// AllowGroups): with a * or ? in any entry sshd compares every entry by name, otherwise each by its SID.
         /// </summary>
-        internal static string AccessRefusal(string user, List<string> denyUsers, List<string> allowUsers, List<string> denyGroups, List<string> allowGroups, Func<string, bool> inGroup)
+        internal static string AccessRefusal(string user, List<string> denyUsers, List<string> allowUsers, List<string> denyGroups, List<string> allowGroups, Func<List<string>, bool> inGroups)
         {
+            denyUsers = denyUsers.Select(NormalisePattern).ToList(); allowUsers = allowUsers.Select(NormalisePattern).ToList();
+            denyGroups = denyGroups.Select(NormalisePattern).ToList(); allowGroups = allowGroups.Select(NormalisePattern).ToList();
             Func<string, string> userPart = p => { int at = p.LastIndexOf('@'); return at >= 0 ? p.Substring(0, at) : p; };
             foreach (var p in denyUsers)
                 if (Glob(user, userPart(p)))
                     return user + " (you) is listed in DenyUsers (" + p + ")" + (p.IndexOf('@') >= 0 ? " for connections from " + p.Substring(p.LastIndexOf('@') + 1) : "") + ", so sshd refuses the login.";
             if (allowUsers.Count > 0 && !allowUsers.Any(p => Glob(user, userPart(p))))
                 return "AllowUsers lists only " + string.Join(" ", allowUsers) + "; " + user + " (you) is not among them, so sshd refuses the login.";
-            foreach (var g in denyGroups)
-                if (inGroup(g)) return user + " (you) is a member of " + g + ", which DenyGroups lists, so sshd refuses the login.";
-            if (allowGroups.Count > 0 && !allowGroups.Any(inGroup))
-                return "AllowGroups lists only " + string.Join(", ", allowGroups) + "; " + user + " (you) is in none of these groups, so sshd refuses the login.";
+            if (denyGroups.Count > 0 && inGroups(denyGroups)) return user + " (you) is a member of a group that DenyGroups lists (" + string.Join(", ", denyGroups) + "), so sshd refuses the login.";
+            if (allowGroups.Count > 0 && !inGroups(allowGroups))
+                return "AllowGroups lists only " + string.Join(", ", allowGroups) + "; " + user + " (you) is in none of these groups as sshd compares them, so sshd refuses the login.";
             return null;
         }
 
@@ -558,28 +571,44 @@ namespace OpenSSHServerManager
         }
 
         /// <summary>
-        /// Whether the account running this program is in a group, the way sshd checks it (win32_groupaccess.c): a name without
-        /// wildcards through its SID (CheckTokenMembership), a pattern against the account's local, built-in and domain group
-        /// names, lower-cased, "name" for local and built-in groups and "domain\name" for domain groups.
+        /// ga_match of sshd for Windows (win32_groupaccess.c) for the account running this program and one list: when any entry
+        /// has * or ?, every entry is compared by name with the account's local, built-in and domain groups (lower-cased,
+        /// "name" for local and built-in groups, "domain\name" for domain groups); otherwise each entry is looked up and
+        /// its SID checked against the account's groups (CheckTokenMembership).
         /// </summary>
-        public static bool CurrentAccountInGroup(string pattern)
+        public static bool CurrentAccountInGroups(List<string> patterns)
         {
             var id = WindowsIdentity.GetCurrent();
             var groups = (id.Groups ?? new IdentityReferenceCollection()).OfType<SecurityIdentifier>().ToList();
-            if (pattern.IndexOfAny(new[] { '*', '?' }) < 0)
-            {
-                var sid = Acl.SidOfAccount(pattern);
-                return sid != null && groups.Contains(sid);
-            }
+            return GaMatch(patterns, () => GroupNames(groups), p => { var sid = Acl.SidOfAccount(p); return sid != null && groups.Contains(sid); });
+        }
+
+        /// <summary>
+        /// ga_match of win32_groupaccess.c: when any pattern has * or ?, the whole list is compared by name (names: the group
+        /// names sshd builds); otherwise each entry is resolved and checked for membership (isMember, by SID).
+        /// </summary>
+        internal static bool GaMatch(List<string> patterns, Func<List<string>> names, Func<string, bool> isMember)
+        {
+            if (patterns.Any(p => p.IndexOfAny(new[] { '*', '?' }) >= 0)) return GroupNamesMatch(names(), patterns);
+            return patterns.Any(isMember);
+        }
+
+        /// <summary>True when one of the names matches one of the patterns (match_pattern).</summary>
+        internal static bool GroupNamesMatch(IEnumerable<string> names, List<string> patterns) { return names.Any(n => patterns.Any(p => Glob(n, p))); }
+
+        /// <summary>The group names sshd builds for name matching: S-1-5-32 (built-in) and S-1-5-21 (local and domain) groups only.</summary>
+        private static List<string> GroupNames(IEnumerable<SecurityIdentifier> groups)
+        {
+            var l = new List<string>();
             foreach (var sid in groups.Where(s => s.Value.StartsWith("S-1-5-32-") || s.Value.StartsWith("S-1-5-21-")))
             {
                 string name;
                 try { name = sid.Translate(typeof(NTAccount)).Value; } catch { continue; }
                 int i = name.IndexOf('\\');
                 if (i > 0 && (sid.Value.StartsWith("S-1-5-32-") || string.Equals(name.Substring(0, i), Environment.MachineName, StringComparison.OrdinalIgnoreCase))) name = name.Substring(i + 1);
-                if (Glob(name.ToLowerInvariant(), pattern)) return true;
+                l.Add(name.ToLowerInvariant());
             }
-            return false;
+            return l;
         }
 
         /// <summary>True when a configuration has a Match block with a Group condition, or includes files that may have one.</summary>

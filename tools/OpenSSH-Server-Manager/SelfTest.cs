@@ -395,6 +395,28 @@ namespace OpenSSHServerManager
                 if (c.Includes().Count != 1) throw new Exception("Include not found");
                 return null;
             });
+            test("sshd_config: a commented example below an Include is not used", () =>
+            {
+                var c = new SshdConfig { Lines = new List<string> { "Include C:/x/*.conf", "#PasswordAuthentication yes", "Match all" } };
+                c.Set("PasswordAuthentication", "no");
+                if (c.Lines[0] != "PasswordAuthentication no" || c.Lines[2] != "#PasswordAuthentication yes") throw new Exception(string.Join(" | ", c.Lines));
+                return null;
+            });
+            test("the ports sshd listens on (Port and ListenAddress together)", () =>
+            {
+                Func<string[], string> ports = lines => string.Join(",", MainForm.ExpectedPorts(new SshdConfig { Lines = lines.ToList() }));
+                if (ports(new string[0]) != "22") throw new Exception("defaults");
+                if (ports(new[] { "Port 22", "Port 2222" }) != "22,2222") throw new Exception("two Port lines");
+                if (ports(new[] { "Port 22", "ListenAddress 10.0.0.1:2200" }) != "2200") throw new Exception("every ListenAddress has its port: Port is not used, got " + ports(new[] { "Port 22", "ListenAddress 10.0.0.1:2200" }));
+                if (ports(new[] { "Port 2222", "ListenAddress 10.0.0.1", "ListenAddress [::1]:2200" }) != "2222,2200") throw new Exception("mixed");
+                return null;
+            });
+            test("Allow and Deny patterns as sshd for Windows keeps them", () =>
+            {
+                if (AuthConfig.NormalisePattern("CORP/Alice") != "corp\\alice" || AuthConfig.NormalisePattern("Admins*") != "admins*") throw new Exception(AuthConfig.NormalisePattern("CORP/Alice"));
+                if (Export.Neutralise("\t=1+1") != "'\t=1+1" || Export.Neutralise("\r@x") != "'\r@x" || Export.Neutralise("-2") != "-2" || Export.Neutralise("ok") != "ok") throw new Exception("export cells");
+                return null;
+            });
             test("sshd_config: backups get unique names, are listed newest first and pruned", () =>
             {
                 var dir = Path.Combine(tmpDir, "backups"); Directory.CreateDirectory(dir);
@@ -447,16 +469,23 @@ namespace OpenSSHServerManager
             });
             test("access check: DenyUsers, AllowUsers, DenyGroups, AllowGroups as sshd decides", () =>
             {
-                Func<string, bool> admins = g => g == "administrators" || AuthConfig.Glob("administrators", g);
+                // alice is in the local group administrators and the domain group corp\sshusers ("sshusers" resolves to it by SID).
+                var names = new List<string> { "administrators", "corp\\sshusers" };
+                Func<List<string>, bool> admins = list => AuthConfig.GaMatch(list, () => names, p => p == "administrators" || p == "sshusers" || p == "corp\\sshusers");
                 var none = new List<string>();
                 if (AuthConfig.AccessRefusal("alice", none, none, none, none, admins) != null) throw new Exception("no lists refused");
                 if (AuthConfig.AccessRefusal("alice", new List<string> { "al*" }, none, none, none, admins) == null) throw new Exception("DenyUsers al* did not refuse alice");
                 if (AuthConfig.AccessRefusal("alice", none, new List<string> { "bob", "carol" }, none, none, admins) == null) throw new Exception("AllowUsers without alice did not refuse");
                 if (AuthConfig.AccessRefusal("alice", none, new List<string> { "alice@10.0.0.*" }, none, none, admins) != null) throw new Exception("user@host counts as matching (the host is not known here)");
-                if (AuthConfig.AccessRefusal("alice", none, new List<string> { "Alice" }, none, none, admins) == null) throw new Exception("sshd compares user names case-sensitively");
+                if (AuthConfig.AccessRefusal("alice", none, new List<string> { "Alice" }, none, none, admins) != null) throw new Exception("sshd for Windows lower-cases the lists (servconf.c), so Alice must match alice");
+                if (AuthConfig.AccessRefusal("corp\\alice", none, new List<string> { "CORP/alice" }, none, none, admins) != null) throw new Exception("DOMAIN/name must match domain\\name");
                 if (AuthConfig.AccessRefusal("alice", none, none, new List<string> { "admin*" }, none, admins) == null) throw new Exception("DenyGroups admin* did not refuse an administrator");
                 if (AuthConfig.AccessRefusal("alice", none, none, none, new List<string> { "openssh users" }, admins) == null) throw new Exception("AllowGroups without a group of alice did not refuse");
                 if (AuthConfig.AccessRefusal("alice", none, none, none, new List<string> { "openssh users", "administrators" }, admins) != null) throw new Exception("AllowGroups with administrators refused an administrator");
+                // ga_match: one pattern with a wildcard makes sshd compare every entry by name, so "sshusers" no longer
+                // matches the domain group corp\sshusers.
+                if (AuthConfig.AccessRefusal("alice", none, none, none, new List<string> { "sshusers" }, admins) != null) throw new Exception("a group found by its SID refused");
+                if (AuthConfig.AccessRefusal("alice", none, none, none, new List<string> { "sshusers", "ops-*" }, admins) == null) throw new Exception("with a wildcard in the list, sshusers must be compared by name and fail as sshd does");
                 foreach (var g in new[] { new[] { "abc", "a?c", "1" }, new[] { "abc", "a*", "1" }, new[] { "abc", "*c", "1" }, new[] { "abc", "a*d", "0" }, new[] { "", "*", "1" }, new[] { "ab", "a", "0" }, new[] { "a*b", "a*b", "1" } })
                     if (AuthConfig.Glob(g[0], g[1]) != (g[2] == "1")) throw new Exception("Glob(" + g[0] + ", " + g[1] + ")");
                 return null;
@@ -473,6 +502,9 @@ namespace OpenSSHServerManager
                     { "sshd: error: maximum authentication attempts exceeded for root from 192.0.2.11 port 1 ssh2 [preauth]", "192.0.2.11|root" },
                     { "sshd: Timeout before authentication for 192.0.2.12 port 2", "192.0.2.12|" },
                     { "sshd: Failed password for alice from ::ffff:192.0.2.13 port 3 ssh2", "192.0.2.13|alice" },
+                    // A user name chosen to put an innocent address first: the real one is the last.
+                    { "sshd: Invalid user x from 10.1.2.3 port 22 from 203.0.113.5 port 5555", "203.0.113.5|x from 10.1.2.3 port 22" },
+                    { "sshd: Failed password for invalid user x from 10.1.2.3 port 22 from 203.0.113.6 port 1 ssh2", "203.0.113.6|x from 10.1.2.3 port 22" },
                     { "sshd: Accepted publickey for alice from 192.0.2.14 port 4 ssh2: ED25519 SHA256:x", null },
                     { "sshd: Server listening on 0.0.0.0 port 22.", null },
                 };
@@ -910,7 +942,8 @@ namespace OpenSSHServerManager
                     d.Show(); Application.DoEvents();
                     var text = d.DiffTextForTest.Replace("\r", "");
                     if (text != "  a\n- b\n+ B\n  c\n+ d\n") throw new Exception("shown as [" + text.Replace("\n", "|") + "]");
-                    if (d.LineBackForTest("+ B") != Theme.Current.Added || d.LineBackForTest("- b") != Theme.Current.Removed) throw new Exception("line colours: " + d.LineBackForTest("+ B") + ", " + d.LineBackForTest("- b"));
+                    // Under high contrast both backgrounds are the window colour: only the + and - tell the lines apart.
+                    if (!Theme.Current.HighContrast && (d.LineBackForTest("+ B").ToArgb() != Theme.Current.Added.ToArgb() || d.LineBackForTest("- b").ToArgb() != Theme.Current.Removed.ToArgb())) throw new Exception("line colours: " + d.LineBackForTest("+ B") + ", " + d.LineBackForTest("- b"));
                     d.Close();
                 }
                 return null;

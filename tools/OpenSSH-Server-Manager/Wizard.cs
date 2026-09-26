@@ -52,12 +52,12 @@ namespace OpenSSHServerManager
         private readonly Label _keysState, _summary;
         private readonly Func<int> _myKeyCount;
         private readonly Action _addKey;
-        private readonly int _currentPort, _currentProfiles; private readonly bool _fwExists;
+        private readonly int _currentPort, _currentProfiles; private readonly bool _fwExists, _hadRestriction;
         public WizardPlan Plan;
 
         public SetupWizard(int currentPort, FirewallRule fw, string allowGroups, Func<int> myKeyCount, Action addKey)
         {
-            _myKeyCount = myKeyCount; _addKey = addKey; _currentPort = currentPort; _fwExists = fw != null;
+            _myKeyCount = myKeyCount; _addKey = addKey; _currentPort = currentPort; _fwExists = fw != null; _hadRestriction = !string.IsNullOrEmpty(allowGroups);
             _currentProfiles = fw == null ? DefaultProfiles() : ((fw.Profiles & 0x7fffffff) == 0x7fffffff ? 7 : fw.Profiles & 7);
             Text = "Set up the SSH server"; StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
             MinimizeBox = MaximizeBox = false; ShowInTaskbar = false; ClientSize = new Size(Ui.Px(720), Ui.Px(470)); Font = new Font("Segoe UI", Ui.Pt(9.5f));
@@ -180,7 +180,8 @@ namespace OpenSSHServerManager
                 Port = (int)_port.Value, Profiles = profiles, FirewallEnabled = profiles != 0,
                 Login = _allKeys.Checked ? WizardLogin.EveryoneKeyOnly : _adminKeys.Checked ? WizardLogin.AdministratorsKeyOnly : WizardLogin.Keep,
                 Recommended = _recommended.Checked,
-                AllowGroups = _restrict.Checked ? _groups.Text.Trim() : null,
+                // Unticked: a restriction that was there is removed; none there, nothing is written.
+                AllowGroups = _restrict.Checked ? _groups.Text.Trim() : (_hadRestriction ? "" : null),
             };
         }
 
