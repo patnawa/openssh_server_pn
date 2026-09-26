@@ -41,6 +41,14 @@ Installer:
   session, exit 1 with a connection open. **Not run**: an actual install, upgrade, repair,
   rollback or `SSHD_PORT` change; the CI workflow runs these on its first run.
 
+Build:
+
+- **Reproducible executables.** `Directory.Build.targets` next to the Visual Studio projects adds
+  `/Brepro` (compiler and linker) and `/PDBALTPATH:%_PDB%` (linker): no time stamps in the
+  objects and PE headers, no build-folder path in the debug directory. Two clean x64 builds of
+  `ssh-keygen.exe` made minutes apart here were byte-identical (SHA-256 `40BCB7EC…97C9`). The
+  vcpkg libraries are not covered yet.
+
 CI and releases:
 
 - `.github/workflows/openssh.yml` builds x64, x86 and ARM64, runs the OpenSSH unit tests

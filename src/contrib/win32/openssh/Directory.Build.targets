@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Imported by MSBuild after every project in this folder (Microsoft.Common.targets), so it adds to what the projects set.
+     Reproducible binaries: the same source, compiler and build folder give the same bytes.
+     /Brepro (compiler and linker): no time stamps in the objects and the PE header; the time-stamp field and the PDB
+     signature are derived from the content instead.
+     /PDBALTPATH:%_PDB%: the debug directory of each executable names its .pdb file only, not the full path of the
+     build folder. (%25 is the escaped % sign in MSBuild.) -->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalOptions>%(AdditionalOptions) /Brepro</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <AdditionalOptions>%(AdditionalOptions) /Brepro /PDBALTPATH:%25_PDB%25</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>
