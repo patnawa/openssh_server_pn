@@ -228,10 +228,13 @@ Source changes to the upstream packaging, for WiX 3.14 and for server deployment
   requires. The `OpenSSHPreInstall` custom action runs the embedded script directly after it:
   `WixQuietExec`, deferred, no impersonation, `Return="ignore"`, condition
   `NOT Installed OR REMOVE OR REINSTALL`. It names 64-bit PowerShell (`System64Folder`) in the
-  x64 and ARM64 packages and 32-bit PowerShell (`SystemFolder`) in the x86 package. In fact
-  `WixQuietExec` comes from the x86 `WixCA` binary in every package, so on 64-bit Windows the
-  path is redirected to `SysWOW64` and the script runs in 32-bit PowerShell; it reaches native
-  tools through `Sysnative`. Public properties `ALLOWDOWNGRADE`, `KEEP_INBOX_OPENSSH` and
+  x64 and ARM64 packages and 32-bit PowerShell (`SystemFolder`) in the x86 package. `WixCA` is
+  an x86 binary in every package; with the `WixQuietExec` entry point the path was redirected to
+  `SysWOW64` and the script ran in 32-bit PowerShell (on Windows on ARM an emulated one, about
+  75 seconds per start on GitHub's ARM64 runner), so after 10.5.1.0 the x64 and ARM64 packages
+  use `WixQuietExec64`, which lifts the redirection and starts the native PowerShell. The script
+  reaches native tools through `Sysnative` only when it runs in a 32-bit process (the x86
+  package). Public properties `ALLOWDOWNGRADE`, `KEEP_INBOX_OPENSSH` and
   `FIREWALL_PROFILES` (and, after 10.5.1.0, `SSHD_PORT` and `ACTIVE_SESSIONS`) are secure custom
   properties. After 10.5.1.0, `RemoveExistingProducts` follows `InstallExecute` (see above).
 - `product.wxs` (10.5.1.0): a second deferred action, `OpenSSHFirewallProfiles`, runs the same

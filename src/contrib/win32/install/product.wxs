@@ -11,15 +11,19 @@
 <!-- Currently support x86, x64 builds. Assumes only previews are built as MSIs. -->
 <!-- Each platform has its own UpgradeCode; the other two are listed so that a package of another
      architecture is removed as well: all of them register the same services and firewall rule. -->
-<!-- SystemPowerShellFolder: the path the custom actions give for powershell.exe. WixQuietExec comes from the x86
-     WixCA binary in every package, so on 64-bit Windows the path is redirected to SysWOW64 and the scripts run in
-     32-bit PowerShell; preinstall.ps1 reaches native tools through Sysnative. -->
+<!-- SystemPowerShellFolder: the path the custom actions give for powershell.exe. QuietExec: the WixCA entry point that
+     runs it. WixCA is an x86 binary in every package; WixQuietExec would start the 32-bit PowerShell of SysWOW64 (on
+     Windows on ARM an emulated one, about 75 seconds per start), so the x64 and ARM64 packages use WixQuietExec64,
+     which lifts the file system redirection and starts the native PowerShell. preinstall.ps1 works in both: it
+     reaches native tools through Sysnative only when it runs in a 32-bit process. -->
 <!-- FirewallSchedAction: the WiX action that schedules the creation of the firewall rule. The ARM64 package uses the
      _A64 variant; naming the x86 one there would add a second, x86 copy of the WiX firewall actions. -->
 <?if $(var.Platform) = "x64"?>
 <?define InstallerVersion = "200"?>
 <?define ProgramFilesFolder = "ProgramFiles64Folder"?>
 <?define SystemPowerShellFolder = "System64Folder"?>
+<?define QuietExec = "WixQuietExec64"?>
+<?define QuietExecCmdLine = "WixQuietExec64CmdLine"?>
 <?define FirewallSchedAction = "WixSchedFirewallExceptionsInstall"?>
 <?define UpgradeCode = "9E9D0D93-E70D-4424-ADBD-AD3B226A226D"?>
 <?define OtherUpgradeCodeA = "2A1799F1-5B26-4DDC-A0C7-03F75C4C08D2"?>
@@ -30,6 +34,8 @@
 <?define InstallerVersion = "200"?>
 <?define ProgramFilesFolder = "ProgramFilesFolder"?>
 <?define SystemPowerShellFolder = "SystemFolder"?>
+<?define QuietExec = "WixQuietExec"?>
+<?define QuietExecCmdLine = "WixQuietExecCmdLine"?>
 <?define FirewallSchedAction = "WixSchedFirewallExceptionsInstall"?>
 <?define UpgradeCode = "2A1799F1-5B26-4DDC-A0C7-03F75C4C08D2"?>
 <?define OtherUpgradeCodeA = "9E9D0D93-E70D-4424-ADBD-AD3B226A226D"?>
@@ -41,6 +47,8 @@
 <?define InstallerVersion = "500"?>
 <?define ProgramFilesFolder = "ProgramFiles64Folder"?>
 <?define SystemPowerShellFolder = "System64Folder"?>
+<?define QuietExec = "WixQuietExec64"?>
+<?define QuietExecCmdLine = "WixQuietExec64CmdLine"?>
 <?define FirewallSchedAction = "WixSchedFirewallExceptionsInstall_A64"?>
 <?define UpgradeCode = "5D153A07-920A-4978-8B33-8447DD4C42F9"?>
 <?define OtherUpgradeCodeA = "9E9D0D93-E70D-4424-ADBD-AD3B226A226D"?>
@@ -130,15 +138,15 @@
         <Property Id="PreInstallCommand" Value="&amp;([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$(var.PreInstallScript)'))))" />
         <Property Id="FirewallCommand" Value="&amp;([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$(var.FirewallScript)'))))" />
         <SetProperty Id="OpenSSHPreInstall" Sequence="execute" Before="OpenSSHPreInstall" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;[PreInstallCommand] '[INSTALLFOLDER]' '[REMOVE]' '[KEEP_INBOX_OPENSSH]'&quot;" />
-        <CustomAction Id="OpenSSHPreInstall" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+        <CustomAction Id="OpenSSHPreInstall" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
 
         <!-- ACTIVE_SESSIONS=abort: an immediate check before InstallValidate (so before anything is changed and before
              Windows Installer looks for files in use) stops the installation with 1603 when OpenSSHPreInstall would end
              an SSH session. The script names the sessions in the log (lines "preinstall: error: ..."); it runs as the
              installing user, and fails closed when it cannot list the processes. close (the default) ends them. -->
         <Property Id="ACTIVE_SESSIONS" Value="close" Secure="yes" />
-        <SetProperty Action="SetOpenSSHCheckSessionsCommand" Id="WixQuietExecCmdLine" Sequence="execute" Before="OpenSSHCheckSessions" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;[PreInstallCommand] '[INSTALLFOLDER]' '[REMOVE]' '' sessions&quot;" />
-        <CustomAction Id="OpenSSHCheckSessions" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="immediate" Return="check" />
+        <SetProperty Action="SetOpenSSHCheckSessionsCommand" Id="$(var.QuietExecCmdLine)" Sequence="execute" Before="OpenSSHCheckSessions" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;[PreInstallCommand] '[INSTALLFOLDER]' '[REMOVE]' '' sessions&quot;" />
+        <CustomAction Id="OpenSSHCheckSessions" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="immediate" Return="check" />
 
         <!-- The sshd firewall rule (server.wxs) belongs to the package: the removal of the old package deletes it and this
              package creates it again with port 22. So that a server moved to another port stays reachable after an
@@ -158,18 +166,18 @@
              removed before any file of this package is installed, in the same transaction. -->
         <SetProperty Action="SetOpenSSHFirewallSaveKeep" Id="OpenSSHFirewallSave" Sequence="execute" Before="OpenSSHFirewallSave" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' fwsave -Previous keep&quot;"><![CDATA[Installed OR OPENSSH_PREVIOUS_INSTALLED OR OPENSSH_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchA)_INSTALLED OR OPENSSH_$(var.OtherArchA)_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchB)_INSTALLED OR OPENSSH_$(var.OtherArchB)_NEWER_INSTALLED]]></SetProperty>
         <SetProperty Action="SetOpenSSHFirewallSaveFresh" Id="OpenSSHFirewallSave" Sequence="execute" Before="OpenSSHFirewallSave" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' fwsave -Previous none&quot;"><![CDATA[NOT (Installed OR OPENSSH_PREVIOUS_INSTALLED OR OPENSSH_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchA)_INSTALLED OR OPENSSH_$(var.OtherArchA)_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchB)_INSTALLED OR OPENSSH_$(var.OtherArchB)_NEWER_INSTALLED)]]></SetProperty>
-        <CustomAction Id="OpenSSHFirewallSave" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+        <CustomAction Id="OpenSSHFirewallSave" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
         <SetProperty Id="OpenSSHFirewallSaveRollback" Sequence="execute" Before="OpenSSHFirewallSaveRollback" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' fwrollback&quot;" />
-        <CustomAction Id="OpenSSHFirewallSaveRollback" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="rollback" Return="ignore" Impersonate="no" />
+        <CustomAction Id="OpenSSHFirewallSaveRollback" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="rollback" Return="ignore" Impersonate="no" />
         <SetProperty Id="OpenSSHFirewallCommit" Sequence="execute" Before="OpenSSHFirewallCommit" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' fwcommit&quot;" />
-        <CustomAction Id="OpenSSHFirewallCommit" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="commit" Return="ignore" Impersonate="no" />
+        <CustomAction Id="OpenSSHFirewallCommit" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="commit" Return="ignore" Impersonate="no" />
         <!-- Settings of the sshd firewall rule, set right after the rule is created (the rule itself comes from server.wxs
              with port 22 and Profile="all"). Networks: FIREWALL_PROFILES (comma list of domain, private, public or all),
              else the saved ones, else all profiles on Windows Server and Domain and Private on client editions. Ports:
              SSHD_PORT, else the saved ones. Enabled state and remote addresses: the saved ones. -->
         <Property Id="FIREWALL_PROFILES" Secure="yes" />
         <SetProperty Id="OpenSSHFirewallProfiles" Sequence="execute" Before="OpenSSHFirewallProfiles" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '[REMOVE]' '[KEEP_INBOX_OPENSSH]' firewall '[FIREWALL_PROFILES]' '[MsiNTProductType]' -SshdPort '[SSHD_PORT]'&quot;" />
-        <CustomAction Id="OpenSSHFirewallProfiles" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+        <CustomAction Id="OpenSSHFirewallProfiles" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
 
         <!-- SSHD_PORT (1-65535): the firewall rule gets that port (above), and after StartServices has started sshd - which
              creates %ProgramData%\ssh\sshd_config from sshd_config_default at its first start - OpenSSHSshdPort writes
@@ -177,7 +185,7 @@
              sshd does not listen on the new port, the previous file is put back and the rule gets its port(s) again. -->
         <Property Id="SSHD_PORT" Secure="yes" />
         <SetProperty Id="OpenSSHSshdPort" Sequence="execute" Before="OpenSSHSshdPort" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' port -SshdPort '[SSHD_PORT]'&quot;" />
-        <CustomAction Id="OpenSSHSshdPort" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+        <CustomAction Id="OpenSSHSshdPort" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
 
         <!-- OpenSSHPreInstall (and with ACTIVE_SESSIONS=abort, OpenSSHCheckSessions) runs for a first install or upgrade, a
              repair (files are rewritten) and any removal; it is skipped for a maintenance run that only adds features, which

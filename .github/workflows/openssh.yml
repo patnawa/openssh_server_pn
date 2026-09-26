@@ -415,7 +415,13 @@ jobs:
       # unittest-*.exe from their own folders, with the test data the build copied there; the runner is elevated,
       # which unittest-win32compat needs for its symbolic link test.
       - name: Run the unit tests
-        run: ./.github/scripts/Invoke-UnitTests.ps1 -BinPath (Join-Path $env:RUNNER_TEMP 'bin') -Label $env:ARCH
+        run: ./.github/scripts/Invoke-UnitTests.ps1 -BinPath (Join-Path $env:RUNNER_TEMP 'bin') -Label $env:ARCH -TimeoutMinutes 4
+
+      # libcrypto arithmetic, curves and random numbers, and each ssh-keygen key type, one process per probe with a
+      # timeout: tells a broken library apart from a broken test, and names the primitive when the tests hang.
+      - name: Crypto probes
+        if: ${{ !cancelled() }}
+        run: ./.github/scripts/Test-CryptoProbes.ps1 -BinPath (Join-Path $env:RUNNER_TEMP 'bin') -Label $env:ARCH
 
   install-test:
     name: Install ${{ matrix.arch }} on ${{ matrix.os }}
@@ -539,6 +545,34 @@ jobs:
       - name: Uninstall
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: ./.github/scripts/Test-Installer.ps1 -Scenario Uninstall
+
+      # When the installation failed: what the Service Control Manager and the applications logged, what is left in
+      # %ProgramData%\ssh, and the crypto probes on the package's own binaries (extracted with an administrative
+      # install, since the rollback removed the installed ones).
+      - name: Diagnose the failed installation
+        if: ${{ !cancelled() && steps.install.outcome == 'failure' }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $report = Join-Path $env:LOG_DIR 'diagnose.txt'
+          $since = (Get-Date).AddMinutes(-60)
+          function Section($title) { Write-Host "== $title"; Add-Content -LiteralPath $report -Value "== $title" }
+          function Show($text) { $t = ($text | Out-String -Width 220).TrimEnd(); Write-Host $t; Add-Content -LiteralPath $report -Value $t }
+          Section 'System log: Service Control Manager about sshd and ssh-agent'
+          Show (Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = $since } -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'sshd|ssh-agent|OpenSSH' } | Select-Object TimeCreated, Id, Message | Format-List)
+          Section 'Application log: errors and crashes'
+          Show (Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 1, 2; StartTime = $since } -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'sshd|ssh-keygen|ssh-agent|OpenSSH|libcrypto' } | Select-Object TimeCreated, ProviderName, Id, Message | Format-List)
+          Section 'OpenSSH/Operational (if the channel still exists)'
+          Show (Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 40 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Id, Message | Format-List)
+          Section 'Services and %ProgramData%\ssh now'
+          Show (Get-Service sshd, ssh-agent -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType)
+          Show (Get-ChildItem -LiteralPath (Join-Path $env:ProgramData 'ssh') -ErrorAction SilentlyContinue | Format-Table Name, Length, LastWriteTime)
+          Section 'Crypto probes on the binaries of the package'
+          $image = Join-Path $env:RUNNER_TEMP 'admin-image'
+          $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList @('/a', ('"' + (Join-Path $env:MSI_DIR $env:MSI) + '"'), '/qn', ('TARGETDIR="' + $image + '"'), '/l*v', ('"' + (Join-Path $env:LOG_DIR 'admin-image.log') + '"')) -Wait -PassThru
+          Write-Host "administrative install: exit $($p.ExitCode)"
+          $bin = Get-ChildItem -LiteralPath $image -Recurse -Filter sshd.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($bin) { ./.github/scripts/Test-CryptoProbes.ps1 -BinPath $bin.DirectoryName -Label "$env:ARCH package" *>&1 | Tee-Object -FilePath (Join-Path $env:LOG_DIR 'crypto-probes.txt') }
+          else { Write-Host 'sshd.exe not found in the administrative image' }
 
       - name: Upload the logs
         if: ${{ !cancelled() }}
