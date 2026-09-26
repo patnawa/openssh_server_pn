@@ -68,7 +68,13 @@ Libraries:
   ARM64 process: `BN_mul` and `BN_mod_exp` correct, `RAND_bytes` fine, the ed25519 key (OpenSSH's
   own arithmetic) and `sshd -t` fine; P-256 `EC_KEY_new_by_curve_name` NULL with "point is not on
   curve", a P-384 key generated but failing `EC_KEY_check_key`, P-521 fine, ECDSA generation
-  failed, RSA generation still running after 180 s.
+  failed, RSA generation still running after 180 s. **Verified with the patch** on the same
+  runner, 2026-09-26: all 767 unit tests pass (`unittest-kex` 332, `unittest-sshkey` 98,
+  `unittest-sshbuf` 121, `unittest-hostkeys` 18 among them), every probe is fine (RSA generation
+  in one second), and the ARM64 package installs (101 s), passes the manager's `--check`,
+  `--selftest` (86 tests), `--keytest` and `--authtest`, and the upgrade (rule kept), repair,
+  rollback, downgrade with `SSHD_PORT=2200`, `ACTIVE_SESSIONS` and uninstall scenarios: 195
+  checks, none failed. That is the first ARM64 build of this project that runs.
 
 Build:
 
