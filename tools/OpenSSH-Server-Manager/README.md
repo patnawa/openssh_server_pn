@@ -166,8 +166,8 @@ it. The build is deterministic: the same source and compiler give the same SHA-2
 | `icon\render.py` | The program icon: draws every size (16 to 256 px, small sizes by hand, pixel by pixel) and writes `icon\app.ico`, which `build.ps1` builds into the executable. Needs Python 3 with Pillow; running it again gives the same file |
 
 Download: the executable and its `.exe.config` (keep both in one folder) are attached to the
-product releases, such as [v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0), and to releases of their
-own, such as [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0), each with `SHA256SUMS.txt`.
+product releases, such as [v10.5.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.2.0), and to releases of their
+own, such as [manager-v1.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.6.0), each with `SHA256SUMS.txt`.
 
 The built `bin\OpenSSHServerManager.exe` and its `.exe.config` are committed. After a change,
 rebuild them with `build.ps1` and commit them with the source. The GitHub workflow

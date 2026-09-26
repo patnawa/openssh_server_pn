@@ -17,26 +17,28 @@ you have set up keys; the manager's setup wizard switches them off for administr
 
 This project is independent: it is not affiliated with Microsoft or the OpenBSD OpenSSH project.
 
-## Current build: 10.5.1.0 (2026-09-25)
+## Current build: 10.5.2.0 (2026-09-26)
 
 | Package | Target | Size | SHA-256 |
 |---|---|---|---|
-| `OpenSSH-Win64-v10.5.1.0.msi` | Windows x64: every Windows Server edition, 64-bit Windows 10 and 11 | 6.6 MB | `5BC5FD7CCFC27940AA2F9377F066DBE4F48421F3422E432AEB6CEEACEF2326B8` |
-| `OpenSSH-Win32-v10.5.1.0.msi` | Windows x86: 32-bit Windows client editions | 5.8 MB | `4F8E1BB626238E11BC7DDBE7B18A3086924A00592CBA4AD571AAD67F8D00671F` |
-| `OpenSSH-ARM64-v10.5.1.0.msi` | Windows 10 and 11 on ARM. **Do not install this one**: its `sshd` cannot start, because the Visual Studio 2022 ARM64 compiler miscompiles a helper of LibreSSL's arithmetic (found on 2026-09-26, the first time the ARM64 binaries ran; details in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md#run-time-tests)). The source carries the fix, verified on ARM64 hardware (all 767 unit tests, the manager's tests and the install tests pass); the next release replaces the package | 6.5 MB | `A7107F66AA73B284D3454B2AB4477E19A1008CB75D29A4720B68B1F4EB98DF70` |
-| `OpenSSHServerManager.exe` (1.5.0) | Management console, any Windows with .NET Framework 4.x, all architectures | 638 KB | `B4BCA5D3EE5AF2E3501D6B47B03F9BE228CD5C610CC3C75C5B56144D26D5573E` |
+| `OpenSSH-Win64-v10.5.2.0.msi` | Windows x64: every Windows Server edition, 64-bit Windows 10 and 11 | 6.6 MB | `4E80A1A5960E8F4BC79CEC0858E53B9BC824F28216BB87CBB0004EF448FF4975` |
+| `OpenSSH-Win32-v10.5.2.0.msi` | Windows x86: 32-bit Windows client editions | 5.9 MB | `5765CC556406478C4CE8901FA5B4ABECB80613E7B599461B05C39C8B5D4FECC9` |
+| `OpenSSH-ARM64-v10.5.2.0.msi` | Windows 10 and 11 on ARM | 6.4 MB | `35F6A258760C0FB8ADB0DCC8D91E189F71D92E50D38D26653913B7B7EFA9B4FC` |
+| `OpenSSHServerManager.exe` (1.6.0) | Management console, any Windows with .NET Framework 4.x, all architectures | 800 KB | `3DE33B00C2965077870F61833B2139F13B95DDD5BBF663F448B92A37492E1C8D` |
 
-On Windows 7 and Windows Server 2008 R2 without WMF 3.0 or later, the installer of 10.5.1.0 does
-not finish: its steps wait for ever on the Windows PowerShell 2.0 these systems ship with. To end
-such an installation, see [docs/INSTALL.md](docs/INSTALL.md#a-hung-installation). Install WMF 5.1
-first, or use the next release, which fixes this.
+10.5.2.0 replaces 10.5.1.0, whose ARM64 package cannot start `sshd` (the Visual Studio 2022 ARM64
+compiler miscompiles a helper of LibreSSL's arithmetic) and whose installer hangs on Windows 7 and
+Windows Server 2008 R2 with the Windows PowerShell 2.0 they ship with
+([docs/INSTALL.md](docs/INSTALL.md#a-hung-installation) says how to end such an installation).
+Details in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md#run-time-tests).
 
-Download them from the release [v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0), together with
-`OpenSSHServerManager.exe.config` (keep it next to the executable) and `SHA256SUMS.txt`. The
-management console also has releases of its own, such as
-[manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0). The files are **unsigned**: always compare
-the SHA-256 hash before installing (`Get-FileHash .\OpenSSH-Win64-v10.5.1.0.msi`, or the check in
-[docs/INSTALL.md](docs/INSTALL.md#1-choose-a-package)). Anyone can rebuild them with
+Download them from the release [v10.5.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.2.0), together with
+`OpenSSHServerManager.exe.config` (keep it next to the executable), `SHA256SUMS.txt` and the SBOM
+`OpenSSH-Server-PN-v10.5.2.0.cdx.json`. The management console also has releases of its own, such as
+[manager-v1.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.6.0). The files are **unsigned**: always compare
+the SHA-256 hash before installing (`Get-FileHash .\OpenSSH-Win64-v10.5.2.0.msi`, or the check in
+[docs/INSTALL.md](docs/INSTALL.md#1-choose-a-package)). `gh attestation verify <file> --repo patnawa/openssh_server_pn`
+shows that a file was built by this repository's workflow. Anyone can rebuild them with
 [docs/BUILDING.md](docs/BUILDING.md). Installed, the product appears as *OpenSSH Server PN* in
 *Apps & features*, and the server identifies itself as `SSH-2.0-OpenSSH_for_Windows_10.5 OpenSSH-Server-PN`.
 
@@ -44,8 +46,8 @@ What is in this build:
 
 | Component | Version | Note |
 |---|---|---|
-| OpenSSH | 10.5p1, file version 10.5.1.0 | Three releases ahead of the Windows port's `latestw_all` branch (10.2p1). How the 10.3, 10.4 and 10.5 releases were merged is in the changelog |
-| LibreSSL | 4.3.2 (2026-05-26) | The official 10.0.0.0 Windows package shipped 4.2.0 |
+| OpenSSH | 10.5p1, file version 10.5.2.0 | Three releases ahead of the Windows port's `latestw_all` branch (10.2p1). How the 10.3, 10.4 and 10.5 releases were merged is in the changelog |
+| LibreSSL | 4.3.2 (2026-05-26) | The official 10.0.0.0 Windows package shipped 4.2.0. ARM64: with LibreSSL's workaround for the compiler defect ([libressl/portable#1403](https://github.com/libressl/portable/issues/1403)) |
 | libfido2 | 1.17.0 (2026-04-15) | Includes YSA-2026-01 (restricted `webauthn.dll` search path) |
 | libcbor, zlib | 0.14.0, 1.3.2 | |
 | Installer | WiX 3.14 | Removes whatever is installed first; see below |
@@ -69,11 +71,14 @@ Run the MSI over whatever is there. Before it copies a file it:
 Older packages are refused unless you ask for a downgrade. Public installer properties are
 checked before anything runs. The firewall rule opens TCP 22 on all networks on Windows Server,
 and on Domain and Private networks only on Windows 10 and 11, so a laptop on public Wi-Fi does
-not expose SSH. Details: [docs/INSTALL.md](docs/INSTALL.md).
+not expose SSH. An upgrade keeps the rule's ports and networks, `SSHD_PORT=<n>` moves the server
+to another port, and `ACTIVE_SESSIONS=abort` makes the install stop instead of ending open
+sessions. If the install fails, the previous package comes back with its firewall settings.
+Details: [docs/INSTALL.md](docs/INSTALL.md).
 
 ```powershell
 # install (elevated)
-msiexec /i .\OpenSSH-Win64-v10.5.1.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
+msiexec /i .\OpenSSH-Win64-v10.5.2.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
 
 # verify
 ssh -V                                  # OpenSSH_for_Windows_10.5p1 OpenSSH-Server-PN, LibreSSL 4.3.2
@@ -141,21 +146,25 @@ known limitations.
 
 ## Verification of this build
 
-- The OpenSSH sources passed all 767 unit tests in the 10.5.0.0 build. 10.5.1.0 changed the
-  identity strings, the version resource and the build tooling; the unit tests were not run again.
-- The installer was tested on Windows 11 Pro: upgrade with open sessions, same-version
-  replacement, blocked and allowed downgrade, switching architecture, install from inside an SSH
-  session, adding and removing features, repair, uninstall, firewall profiles and rejected
-  property values. The changelog lists which scenarios ran with the release packages themselves.
-  After each install: automatic service start, public-key login, and recovery after
-  `Restart-Service sshd` and after a forced kill of `sshd.exe`.
-- The key generator created, authorized and logged in with every key type, with and without a
-  passphrase, against the installed server; a wrong passphrase and an unauthorized key were
-  refused.
-- Every setting of the Authentication tab was tested with real password and key logins against
-  a temporary server on 127.0.0.1: Windows authentication only, public key only, either one,
-  both required, rules for a user and for a group, rule order, and Kerberos being offered. Wrong
-  passwords were refused.
+- The CI built the release from the tag `v10.5.2.0` (2026-09-26) and ran all 767 OpenSSH unit
+  tests on x64, x86 and ARM64, none failed.
+- It installed the packages on Windows Server 2022 and 2025 (x64) and on Windows 11 on ARM
+  (ARM64), and a fourth time on Windows Server 2022 with the installer's steps on the Windows
+  PowerShell 2.0 engine of Windows 7 and Server 2008 R2. On each machine it ran install, upgrade
+  with the firewall settings kept, repair, a failed installation rolled back, refused and allowed
+  downgrade with `SSHD_PORT`, `ACTIVE_SESSIONS` with a key login open, and uninstall. After the
+  install it ran OpenSSH Server Manager's `--check`, `--selftest`, `--keytest` (every key type,
+  with a login) and `--authtest` (the Authentication tab's settings with real logins). That was
+  195 checks per machine and 199 with PowerShell 2.0, none failed.
+- The installer of the earlier builds was also tested by hand on Windows 11 Pro. That covered
+  upgrade with open sessions, same-version replacement, blocked and allowed downgrade, switching
+  architecture, install from inside an SSH session, adding and removing features, repair,
+  uninstall, firewall profiles and rejected property values. After each install: automatic
+  service start, public-key login, and recovery after `Restart-Service sshd` and after a forced
+  kill of `sshd.exe`.
+- Not tested: Windows 7, 8.1 and Windows Server 2008 R2 to 2019 themselves (of Windows 7 and
+  Server 2008 R2 only their PowerShell 2.0 engine), a restart with the new package installed,
+  and Kerberos logins.
 
 The full record, including what could not be tested here, is in [docs/CHANGELOG.md](docs/CHANGELOG.md).
 

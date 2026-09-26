@@ -2,18 +2,33 @@
 
 All builds of this project, newest first. Each entry lists the source, the library versions,
 every change to the packaging, and how the result was verified. Published as GitHub releases:
+[v10.5.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.2.0) (with Manager
+1.6.0), [manager-v1.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.6.0),
 [v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0) (with Manager
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
 ## 10.5.2.0 (2026-09-26)
 
-The build that repairs the ARM64 package, with the installer changes and the CI below and
-OpenSSH Server Manager 1.6.0. OpenSSH 10.5p1, libfido2 1.17.0, libcbor 0.14.0 and zlib 1.3.2 are
-unchanged; LibreSSL stays 4.3.2 with the ARM64 workaround. Built, tested and packaged by the CI
-from the tag `v10.5.2.0` (`.github/workflows/openssh.yml`), which also creates the draft release
-with `SHA256SUMS.txt`, the SBOM and the attestations; the hashes of the published files are in the
-README and in the release.
+The build that repairs the ARM64 package and makes the installer work on Windows 7 and Windows
+Server 2008 R2, with the other installer changes and the CI below and OpenSSH Server Manager
+1.6.0. OpenSSH 10.5p1, libfido2 1.17.0, libcbor 0.14.0 and zlib 1.3.2 are unchanged; LibreSSL
+stays 4.3.2 with the ARM64 workaround. Built, tested and packaged by the CI from the tag
+`v10.5.2.0` (`.github/workflows/openssh.yml`, run 36242773841), which also created the draft
+release with `SHA256SUMS.txt`, the SBOM and the attestations. The tag first pointed at the commit
+before the Windows 7 fix (run 36238981664). That draft was never published, and the tag was moved
+to the fix and the release built again.
+
+| File | Size | SHA-256 |
+|---|---|---|
+| `OpenSSH-Win64-v10.5.2.0.msi` | 6,922,240 bytes | `4E80A1A5960E8F4BC79CEC0858E53B9BC824F28216BB87CBB0004EF448FF4975` |
+| `OpenSSH-Win32-v10.5.2.0.msi` | 6,139,904 bytes | `5765CC556406478C4CE8901FA5B4ABECB80613E7B599461B05C39C8B5D4FECC9` |
+| `OpenSSH-ARM64-v10.5.2.0.msi` | 6,660,096 bytes | `35F6A258760C0FB8ADB0DCC8D91E189F71D92E50D38D26653913B7B7EFA9B4FC` |
+| `OpenSSH-Server-PN-v10.5.2.0.cdx.json` | 14,357 bytes | `4DC2DBFF1AEE57FFF0CB93FFB1D55F114C2AF2FEEEAFB3FD48712FE96665DC77` |
+| `OpenSSHServerManager.exe` (1.6.0) | 818,688 bytes | `3DE33B00C2965077870F61833B2139F13B95DDD5BBF663F448B92A37492E1C8D` |
+
+Product codes: x64 `{C4C6F50F-9551-403F-9B28-E36B16383154}`, x86
+`{DBEA3D60-9B23-4E9F-89DA-07D631FB4E9E}`, ARM64 `{87F1C4D6-7A71-4555-BA6D-F0BBEDEF2240}`.
 
 Installer:
 
@@ -44,7 +59,10 @@ Installer:
   nothing missing, because each step had done its work before it started waiting. Its uninstall
   hung once in the same way. The same package with `-InputFormat None` on PowerShell 2.0
   installed in 6 s and uninstalled in 1 s. It also installed over Microsoft's
-  `OpenSSH-Win64-v10.0.0.0.msi` in 6 s and kept the Private network of Microsoft's rule.
+  `OpenSSH-Win64-v10.0.0.0.msi` in 6 s and kept the Private network of Microsoft's rule. In the
+  CI of the fix (pull request #2) and of this release (run 36242773841), every install scenario
+  passed with the steps on PowerShell 2.0, and every pre-install step reported PowerShell 2.0:
+  199 checks, none failed.
 - **The firewall rule keeps its settings on upgrade.** 10.5.1.0 removed the rule with the old
   package and created it again with port 22 and the default networks, so a server moved to port
   2222 lost remote access after an unattended upgrade. The rule's ports, networks, enabled state
@@ -136,7 +154,10 @@ CI and releases:
   x64 install tests on Windows Server 2022 and 2025 and the release files all passed; the two
   ARM64 jobs found the LibreSSL defect above. The Pester job first ran with Pester 4.9.0: 113 of
   160 tests passed, and the 46 failures were its file assertions, which Pester 4 reads as
-  collection checks; it installs 3.4.6 now.
+  collection checks; it installs 3.4.6 now. With 3.4.6 it reached the certificate tests and
+  waited there for a key passphrase until the job timeout, in all three runs. The tests set
+  `SSH_ASKPASS` only when `$IsWindows` is true, and Windows PowerShell does not define it. The
+  workflow now sets it (pull request #3).
 
 ## OpenSSH Server Manager 1.6.0 (2026-09-26)
 

@@ -19,8 +19,8 @@ Download the package and `SHA256SUMS.txt` from the latest release on the
 [Releases](https://github.com/patnawa/openssh_server_pn/releases) page, for example:
 
 ```powershell
-$base = 'https://github.com/patnawa/openssh_server_pn/releases/download/v10.5.1.0'
-Invoke-WebRequest "$base/OpenSSH-Win64-v10.5.1.0.msi" -OutFile .\OpenSSH-Win64-v10.5.1.0.msi
+$base = 'https://github.com/patnawa/openssh_server_pn/releases/download/v10.5.2.0'
+Invoke-WebRequest "$base/OpenSSH-Win64-v10.5.2.0.msi" -OutFile .\OpenSSH-Win64-v10.5.2.0.msi
 Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile .\SHA256SUMS.txt
 ```
 
@@ -28,8 +28,8 @@ The packages are unsigned, so verify the download first. The hash must match the
 `SHA256SUMS.txt` (and the value in the README):
 
 ```powershell
-$line = Select-String -Path .\SHA256SUMS.txt -Pattern 'OpenSSH-Win64-v10.5.1.0.msi' -SimpleMatch
-(Get-FileHash .\OpenSSH-Win64-v10.5.1.0.msi -Algorithm SHA256).Hash -eq $line.Line.Split(' ')[0]   # must print True
+$line = Select-String -Path .\SHA256SUMS.txt -Pattern 'OpenSSH-Win64-v10.5.2.0.msi' -SimpleMatch
+(Get-FileHash .\OpenSSH-Win64-v10.5.2.0.msi -Algorithm SHA256).Hash -eq $line.Line.Split(' ')[0]   # must print True
 ```
 
 ## 2. Install
@@ -38,7 +38,7 @@ Interactive (double-click) and silent installs both work. The MSI has no user in
 run it from an elevated prompt for a log:
 
 ```powershell
-msiexec /i .\OpenSSH-Win64-v10.5.1.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
+msiexec /i .\OpenSSH-Win64-v10.5.2.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
 ```
 
 | Property | Default | Effect |
@@ -50,8 +50,8 @@ msiexec /i .\OpenSSH-Win64-v10.5.1.0.msi /qn /norestart /l*v "$env:TEMP\openssh-
 | `ALLOWDOWNGRADE=1` | unset | Replace an installed newer package with this one (section 3) |
 | `KEEP_INBOX_OPENSSH=1` | unset | Leave the in-box Windows *OpenSSH Server* capability installed; its `sshd` registration is still taken over (section 6) |
 | `FIREWALL_PROFILES=` | by edition | Networks the firewall rule applies to: `all`, `domain,private`, `domain` or `private`. Unset: all networks on Windows Server, Domain and Private on Windows 10 and 11 |
-| `SSHD_PORT=<n>` | unset | TCP port for `sshd`, 1 to 65535, digits only (builds after 10.5.1.0). The firewall rule gets this port, and `%ProgramData%\ssh\sshd_config` gets `Port <n>` after the services have started (the previous file is kept as `sshd_config.bak.<date>-<time>`); `sshd` is restarted. If `sshd` does not listen on the new port, the previous file is put back and the log has a `preinstall: warning:` line; the install still succeeds |
-| `ACTIVE_SESSIONS=abort` | `close` | What happens to open SSH sessions (builds after 10.5.1.0). `close` ends them, as before. `abort` stops the install before anything changes, with exit code 1603 and a `preinstall: error:` line that names the sessions, so a deployment tool can try again later |
+| `SSHD_PORT=<n>` | unset | TCP port for `sshd`, 1 to 65535, digits only (10.5.2.0 and later). The firewall rule gets this port, and `%ProgramData%\ssh\sshd_config` gets `Port <n>` after the services have started (the previous file is kept as `sshd_config.bak.<date>-<time>`); `sshd` is restarted. If `sshd` does not listen on the new port, the previous file is put back and the log has a `preinstall: warning:` line; the install still succeeds |
+| `ACTIVE_SESSIONS=abort` | `close` | What happens to open SSH sessions (10.5.2.0 and later). `close` ends them, as before. `abort` stops the install before anything changes, with exit code 1603 and a `preinstall: error:` line that names the sessions, so a deployment tool can try again later |
 
 The installer accepts only these values for `FIREWALL_PROFILES`, `KEEP_INBOX_OPENSSH`, `SSHD_PORT`
 and `ACTIVE_SESSIONS`, and no apostrophe in `INSTALLFOLDER`. Any other value stops the install
@@ -61,9 +61,9 @@ LocalSystem.
 Examples:
 
 ```powershell
-msiexec /i .\OpenSSH-Win64-v10.5.1.0.msi ADDLOCAL=Client /qn          # workstation, client only
-msiexec /i .\OpenSSH-Win64-v10.5.1.0.msi ADDLOCAL=Server ADD_PATH=0 /qn  # server, no PATH change
-msiexec /i .\OpenSSH-Win64-v10.5.1.0.msi REMOVE=Server /qn            # drop the server feature later
+msiexec /i .\OpenSSH-Win64-v10.5.2.0.msi ADDLOCAL=Client /qn          # workstation, client only
+msiexec /i .\OpenSSH-Win64-v10.5.2.0.msi ADDLOCAL=Server ADD_PATH=0 /qn  # server, no PATH change
+msiexec /i .\OpenSSH-Win64-v10.5.2.0.msi REMOVE=Server /qn            # drop the server feature later
 ```
 
 What the installer configures:
@@ -74,7 +74,7 @@ What the installer configures:
 - Services `sshd` ("OpenSSH SSH Server") and `ssh-agent` ("OpenSSH Authentication Agent"),
   start type **Automatic**, recovery policy: restart on first, second and subsequent failures,
   counter reset after one day. Both services are started at the end of the install. Error
-  control is Normal in builds after 10.5.1.0 (it was Critical, with which a failing `sshd` at
+  control is Normal since 10.5.2.0 (it was Critical, with which a failing `sshd` at
   boot made Windows try the last known good configuration).
 - Inbound firewall rule **OpenSSH SSH Server Preview (sshd)**, TCP 22, program-scoped to
   `sshd.exe`. On Windows Server it applies to all networks, so domain-joined and workgroup
@@ -82,7 +82,7 @@ What the installer configures:
   a laptop on public Wi-Fi does not expose SSH. `FIREWALL_PROFILES` overrides both, and the
   Firewall tab of OpenSSH Server Manager changes it later. Official Microsoft packages enable the
   rule for Private only.
-  Since the builds after 10.5.1.0, an upgrade, downgrade or repair keeps the rule's ports,
+  Since 10.5.2.0, an upgrade, downgrade or repair keeps the rule's ports,
   networks, enabled state and allowed remote addresses; `FIREWALL_PROFILES` and `SSHD_PORT` given
   on the command line take precedence. 10.5.1.0 and earlier recreated the rule with the defaults
   above, so after an upgrade *to* 10.5.1.0 pass `FIREWALL_PROFILES` again, and move the port back
@@ -114,7 +114,7 @@ installed and clears it before it copies a single file:
 5. Files, services, firewall rule and registry entries are re-created and the services started.
 
 All of this runs inside one Windows Installer transaction: if the install fails, the previous
-package is restored, and in builds after 10.5.1.0 also its firewall settings. The pre-install
+package is restored, and since 10.5.2.0 also its firewall settings. The pre-install
 steps are not undone: sessions it ended stay ended, and a removed in-box *OpenSSH Server*
 capability stays removed (`Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0`
 brings it back). Pass `ACTIVE_SESSIONS=abort` to stop an install instead of ending sessions.
@@ -140,8 +140,7 @@ msiexec /i .\OpenSSH-Win64-v<older-version>.msi ALLOWDOWNGRADE=1 /qn /norestart
 ```
 
 Packages before 10.5.1.0 do not know `ALLOWDOWNGRADE`; to go back to one of them, uninstall
-first ([section 7](#7-uninstall)). 10.5.1.0 is the first release published here, so there is
-no older published package yet.
+first ([section 7](#7-uninstall)). The oldest package published here is 10.5.1.0.
 
 **Adding or removing a feature later** (`ADDLOCAL=`, `REMOVE=`) goes through the same package.
 Adding a feature replaces no file, so the cleanup is skipped and open sessions stay connected.
@@ -314,7 +313,7 @@ Clients connect with `Enter-PSSession -HostName server -UserName user`.
 ## 7. Uninstall
 
 ```powershell
-msiexec /x .\OpenSSH-Win64-v10.5.1.0.msi /qn
+msiexec /x .\OpenSSH-Win64-v10.5.2.0.msi /qn
 ```
 
 or through *Apps & features* / `Programs and Features`. The uninstaller ends open sessions and
@@ -338,7 +337,7 @@ you want a clean slate.
 | Error 1925 *You do not have sufficient privileges to complete this installation for all users of the machine* (exit code 1603) | Silent install from a non-elevated prompt. Run `msiexec` elevated. |
 | Error 1730 *You must be an Administrator to remove this application* | Silent install from a non-elevated prompt. Run `msiexec` elevated. |
 | Restart pending after an upgrade | Expected when the upgrade ran from inside an SSH session, because the old copies of the files that session held are deleted at the restart. Also expected when Windows could only finish removing the in-box server at the restart. Everything else is already in place. |
-| The installation does not finish, with no error, on Windows 7 or Windows Server 2008 R2 | Packages up to 10.5.1.0 only. Their installer steps run on Windows PowerShell 2.0, which these systems ship with, and PowerShell 2.0 waits for input that never comes. End the installation as described below, then install a later package: they start PowerShell with `-InputFormat None`. Installing WMF 5.1 (PowerShell 5.1) also avoids it. |
+| The installation does not finish, with no error, on Windows 7 or Windows Server 2008 R2 | 10.5.1.0 and earlier only. Their installer steps run on Windows PowerShell 2.0, which these systems ship with, and PowerShell 2.0 waits for input that never comes. End the installation as described below, then install 10.5.2.0 or later: they start PowerShell with `-InputFormat None`. Installing WMF 5.1 (PowerShell 5.1) also avoids it. |
 | *Another installation is already in progress* (error 1500, exit code 1618) | An installation is still running in the Windows Installer service, also after `msiexec.exe` was ended in Task Manager. Wait for it to finish, or end a hung one as described below. |
 
 ### A hung installation
