@@ -162,9 +162,10 @@ known limitations.
   uninstall, firewall profiles and rejected property values. After each install: automatic
   service start, public-key login, and recovery after `Restart-Service sshd` and after a forced
   kill of `sshd.exe`.
-- Not tested: Windows 7, 8.1 and Windows Server 2008 R2 to 2019 themselves (of Windows 7 and
-  Server 2008 R2 only their PowerShell 2.0 engine), a restart with the new package installed,
-  and Kerberos logins.
+- The owner installed the release package on the Windows Server 2008 R2 machine where the installation had hung,
+  and it passed (2026-09-26).
+- Not tested: Windows 7, 8.1 and Windows Server 2012 to 2019 themselves, a restart with the new
+  package installed, and Kerberos logins.
 
 The full record, including what could not be tested here, is in [docs/CHANGELOG.md](docs/CHANGELOG.md).
 

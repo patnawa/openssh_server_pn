@@ -22,7 +22,7 @@ re-check it whenever the toolchain or the Windows SDK changes.
 
 \* ARM64: not with the 10.5.1.0 package, whose `sshd` cannot start (see the run-time tests below); 10.5.2.0 carries the fix, verified on ARM64 hardware on 2026-09-26.
 
-† Windows 7 and Windows Server 2008 R2 with the Windows PowerShell 2.0 they ship with (no WMF 3.0 or later): the installer of 10.5.1.0 and earlier hangs at its first PowerShell step ([INSTALL.md, *A hung installation*](INSTALL.md#a-hung-installation), reported on Windows Server 2008 R2 on 2026-09-26). 10.5.2.0 and later start PowerShell with `-InputFormat None`, and the CI runs every install scenario with the installer's steps on the PowerShell 2.0 engine (see *Known limitations* below).
+† Windows 7 and Windows Server 2008 R2 with the Windows PowerShell 2.0 they ship with (no WMF 3.0 or later): the installer of 10.5.1.0 and earlier hangs at its first PowerShell step ([INSTALL.md, *A hung installation*](INSTALL.md#a-hung-installation), reported on Windows Server 2008 R2 on 2026-09-26). 10.5.2.0 and later start PowerShell with `-InputFormat None`, and the CI runs every install scenario with the installer's steps on the PowerShell 2.0 engine (see *Known limitations* below). The 10.5.2.0 package installed on that Windows Server 2008 R2 machine.
 
 Windows Server ships for x64 only; Windows on ARM exists for Windows 10 and 11 only. Windows
 Server Core and Nano Server: Server Core is supported. Nano Server is not tested and the
@@ -68,6 +68,7 @@ friends) are not statically imported; the code resolves them at run time and fal
 | The x64 package without `-InputFormat None` (first `v10.5.2.0` tag run), steps on PowerShell 2.0 (`-Version 2`), as on Windows 7 / Server 2008 R2 | same | **hangs** at its first step; a second `msiexec` returns 1618; ending `powershell.exe` four times lets it finish with exit 0 and nothing missing. The recovery in INSTALL.md, section 8 |
 | The same package with `-InputFormat None`, steps on PowerShell 2.0: install, uninstall, and install over Microsoft's `OpenSSH-Win64-v10.0.0.0.msi` | same | pass: 6 s, 1 s and 6 s; the Private network of Microsoft's rule kept |
 | Windows Server 2016 / 2019 / 2022 / 2025 | not executed in this build cycle | static checks only |
+| Install of the x64 package 10.5.2.0 (release run 36242773841) | Windows Server 2008 R2, the machine of the report, 2026-09-26 | pass, as reported by the owner |
 | Windows 7 / 8.1 / 10 before 1809 | not executed | static checks only |
 
 Contributions of test results on other platforms are welcome; see

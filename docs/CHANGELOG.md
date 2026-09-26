@@ -62,7 +62,8 @@ Installer:
   `OpenSSH-Win64-v10.0.0.0.msi` in 6 s and kept the Private network of Microsoft's rule. In the
   CI of the fix (pull request #2) and of this release (run 36242773841), every install scenario
   passed with the steps on PowerShell 2.0, and every pre-install step reported PowerShell 2.0:
-  199 checks, none failed.
+  199 checks, none failed. The owner then installed the release package on the Windows Server
+  2008 R2 machine of the report, and it passed.
 - **The firewall rule keeps its settings on upgrade.** 10.5.1.0 removed the rule with the old
   package and created it again with port 22 and the default networks, so a server moved to port
   2222 lost remote access after an unattended upgrade. The rule's ports, networks, enabled state
