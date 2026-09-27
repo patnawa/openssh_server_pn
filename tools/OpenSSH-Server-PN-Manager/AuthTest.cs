@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: AuthTest
+// OpenSSH Server PN Manager: AuthTest
 
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     /// <summary>
     /// --authtest: the settings of the Authentication tab, checked with real logins. Each case is written by AuthConfig.Apply
@@ -94,7 +94,7 @@ namespace OpenSSHServerManager
                 CreateTestService(service, Proc.Quote(Ssh.Exe("sshd.exe")) + " -f " + Proc.Quote(cfgPath) + " -E " + Proc.Quote(logPath));
                 serviceCreated = true;
 
-                sb.AppendLine("OpenSSH Server Manager " + Program.AppVersion + " login-method test");
+                sb.AppendLine("OpenSSH Server PN Manager " + Program.AppVersion + " login-method test");
                 sb.AppendLine("temporary sshd service " + service + " on 127.0.0.1:" + port + ", configuration copied from " + Ssh.ConfigPath);
                 sb.AppendLine("temporary account " + user + " (member of " + usersGroup + "), key " + key.Fingerprint);
                 var cases = new List<Case>
@@ -117,6 +117,26 @@ namespace OpenSSHServerManager
                     {
                         failed++; sb.AppendLine("FAIL  " + c.Name + ": " + ex.Message.Replace(Environment.NewLine, " "));
                         try { StopTestService(service); } catch { } // sshd keeps its log file locked while it runs
+                        sb.AppendLine(LogTail(logPath, 12));
+                    }
+                }
+                // SFTP as the SFTP tab writes it, with real transfers of the temporary account (public key login).
+                var sftp = new SftpRun { Dir = dir, User = user, Port = port, Key = key.PrivatePath, KnownHosts = knownHosts };
+                foreach (var c in SftpCases(dir, user, sid, usersGroup))
+                {
+                    try
+                    {
+                        var cfg = new SshdConfig { Lines = baseCfg.Lines.ToList(), NewLine = baseCfg.NewLine, Path = cfgPath };
+                        AuthConfig.Apply(cfg, M(false, true, false, false), new List<AuthRule>());
+                        if (SftpConfig.Read(cfg).RulesProblem != null) throw new Exception("the live sshd_config has a hand-edited section of SFTP-only accounts: " + SftpConfig.Read(cfg).RulesProblem);
+                        SftpConfig.Apply(cfg, c.Enabled, c.Enabled, c.Rules);
+                        Serve(cfg, cfgPath, service, port, authorizedKeys);
+                        sb.AppendLine("PASS  " + c.Name + ": " + c.Check(sftp));
+                    }
+                    catch (Exception ex)
+                    {
+                        failed++; sb.AppendLine("FAIL  " + c.Name + ": " + ex.Message.Replace(Environment.NewLine, " "));
+                        try { StopTestService(service); } catch { }
                         sb.AppendLine(LogTail(logPath, 12));
                     }
                 }
@@ -147,10 +167,9 @@ namespace OpenSSHServerManager
             return failed == 0 ? 0 : 1;
         }
 
-        private static string RunCase(Case c, SshdConfig baseCfg, string cfgPath, string service, int port, string user, string password, string key, string knownHosts, string authorizedKeys)
+        /// <summary>Serves a configuration with the test service: on 127.0.0.1 and the test port, keys from the test file, nobody else restricted.</summary>
+        private static void Serve(SshdConfig cfg, string cfgPath, string service, int port, string authorizedKeys)
         {
-            var cfg = new SshdConfig { Lines = baseCfg.Lines.ToList(), NewLine = baseCfg.NewLine, Path = cfgPath };
-            AuthConfig.Apply(cfg, c.Global, c.Rules); // exactly what the Authentication tab writes
             cfg.Set("Port", port.ToString());
             cfg.Set("ListenAddress", "127.0.0.1");
             foreach (var k in new[] { "AllowUsers", "AllowGroups", "DenyUsers", "DenyGroups" }) cfg.Set(k, "");
@@ -160,6 +179,140 @@ namespace OpenSSHServerManager
             var t = Ssh.TestConfig(cfgPath);
             if (!t.Ok) throw new Exception("sshd -t rejected the configuration: " + t.Output);
             RestartTestService(service, port);
+        }
+
+        // ---------------- SFTP ----------------
+
+        /// <summary>What an SFTP case needs to connect: the account, its key, the test server.</summary>
+        private sealed class SftpRun
+        {
+            public string Dir, User, Key, KnownHosts; public int Port;
+
+            /// <summary>
+            /// sftp with a batch of commands, public key only, host key pinned. sftp -b stops at the first command that fails
+            /// and exits with 1, so a batch of one command tells whether that command worked.
+            /// </summary>
+            public RunResult Batch(params string[] commands)
+            {
+                var batch = Path.Combine(Dir, "sftp-batch.txt");
+                File.WriteAllText(batch, string.Join("\n", commands) + "\n", new UTF8Encoding(false));
+                var args = "-F none -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + Proc.Quote(KnownHosts) + " -o GlobalKnownHostsFile=" + Proc.Quote(KnownHosts) +
+                           " -o ConnectTimeout=15 -o IdentityAgent=none -o IdentitiesOnly=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o BatchMode=yes" +
+                           " -i " + Proc.Quote(Key) + " -P " + Port + " -b " + Proc.Quote(batch) + " " + Proc.Quote(User + "@127.0.0.1");
+                return Proc.Run(Ssh.Exe("sftp.exe"), args, 120000, null, new Dictionary<string, string> { { "SSH_ASKPASS_REQUIRE", "never" } });
+            }
+
+            /// <summary>A command over ssh (not SFTP), public key only.</summary>
+            public RunResult Command(string command)
+            {
+                var args = "-F none -T -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + Proc.Quote(KnownHosts) + " -o GlobalKnownHostsFile=" + Proc.Quote(KnownHosts) +
+                           " -o ConnectTimeout=15 -o IdentityAgent=none -o IdentitiesOnly=yes -o PasswordAuthentication=no -o BatchMode=yes -i " + Proc.Quote(Key) +
+                           " -p " + Port + " -l " + Proc.Quote(User) + " 127.0.0.1 " + command;
+                return Proc.Run(Ssh.Exe("ssh.exe"), args, 90000, null, new Dictionary<string, string> { { "SSH_ASKPASS_REQUIRE", "never" } });
+            }
+
+            public void Works(RunResult r, string what) { if (!r.Ok) throw new Exception(what + " failed: " + Short(r.Output)); }
+            public void Refused(RunResult r, string what) { if (r.Ok) throw new Exception(what + " worked but must be refused: " + Short(r.Output)); }
+
+            /// <summary>A file of random content in the test folder (not in a folder the account can reach).</summary>
+            public string MakeFile(string name, int size)
+            {
+                var p = Path.Combine(Dir, name); var b = new byte[size];
+                new Random(size).NextBytes(b); File.WriteAllBytes(p, b);
+                return p;
+            }
+        }
+
+        private static bool SameBytes(string a, string b) { return File.Exists(a) && File.Exists(b) && File.ReadAllBytes(a).SequenceEqual(File.ReadAllBytes(b)); }
+        /// <summary>A local path for an sftp batch command: forward slashes, in double quotes (sftp reads quoted arguments).</summary>
+        private static string SftpPath(string p) { return "\"" + p.Replace('\\', '/') + "\""; }
+
+        private sealed class SftpCase { public string Name; public bool Enabled = true; public List<SftpRule> Rules = new List<SftpRule>(); public Func<SftpRun, string> Check; }
+
+        private static List<SftpCase> SftpCases(string dir, string user, SecurityIdentifier sid, string usersGroup)
+        {
+            var jailRoot = Path.Combine(dir, "sftp");
+            var jail = Path.Combine(jailRoot, user);                 // C:\...\sftp\%u for this account
+            var shared = Path.Combine(dir, "sftp-published");        // a download-only folder for the Users group
+            return new List<SftpCase>
+            {
+                new SftpCase
+                {
+                    Name = "SFTP for all accounts: upload and download with the key (8 MiB, byte for byte)",
+                    Check = s =>
+                    {
+                        var up = s.MakeFile("up.bin", 8 << 20); var back = Path.Combine(s.Dir, "back.bin");
+                        s.Works(s.Batch("put " + SftpPath(up) + " osm-up.bin"), "upload");
+                        s.Works(s.Batch("get osm-up.bin " + SftpPath(back)), "download");
+                        if (!SameBytes(up, back)) throw new Exception("the file came back different");
+                        s.Works(s.Batch("rm osm-up.bin"), "removal");
+                        var cmd = s.Command("echo " + Marker);
+                        if (!cmd.Ok || !cmd.StdOut.Contains(Marker)) throw new Exception("a command did not run for an account that is not SFTP-only: " + Short(cmd.Output));
+                        return "upload, download, removal ok; commands still run";
+                    },
+                },
+                new SftpCase
+                {
+                    Name = "SFTP-only account confined to its folder (" + SftpConfig.ExpandFolder(Path.Combine(jailRoot, "%u"), user, null) + ")",
+                    Rules = { new SftpRule { Name = user, Folder = Path.Combine(jailRoot, "%u") } },
+                    Check = s =>
+                    {
+                        var done = SftpConfig.PrepareFolder(jail, sid, false); // as Apply on the SFTP tab
+                        var up = s.MakeFile("jail-up.bin", 1 << 20); var back = Path.Combine(s.Dir, "jail-back.bin");
+                        s.Works(s.Batch("put " + SftpPath(up) + " in.bin"), "upload");
+                        if (!SameBytes(up, Path.Combine(jail, "in.bin"))) throw new Exception("the upload is not in " + jail);
+                        s.Works(s.Batch("mkdir sub", "rename in.bin sub/in.bin", "get sub/in.bin " + SftpPath(back)), "mkdir, rename and download");
+                        if (!SameBytes(up, back)) throw new Exception("the file came back different");
+                        var pwd = s.Batch("cd sub", "cd ..", "pwd");
+                        if (!pwd.Ok || !pwd.StdOut.Contains("Remote working directory: /")) throw new Exception("pwd in the folder: " + Short(pwd.Output));
+                        s.Refused(s.Batch("cd .."), "cd .. above the folder");
+                        s.Refused(s.Batch("get /../../Windows/win.ini " + SftpPath(Path.Combine(s.Dir, "x1"))), "a download from outside the folder (/../..)");
+                        s.Refused(s.Batch("get C:/Windows/win.ini " + SftpPath(Path.Combine(s.Dir, "x2"))), "a download by drive letter");
+                        s.Refused(s.Batch("put " + SftpPath(up) + " /../escape.bin"), "an upload outside the folder");
+                        if (File.Exists(Path.Combine(jailRoot, "escape.bin"))) throw new Exception("a file reached " + jailRoot);
+                        var cmd = s.Command("echo " + Marker);
+                        if (cmd.StdOut.Contains(Marker)) throw new Exception("a command ran for an SFTP-only account");
+                        return done + "; upload, mkdir, rename, download ok; / is the folder; ../, C:/ and uploads outside refused; commands refused";
+                    },
+                },
+                new SftpCase
+                {
+                    Name = "SFTP-only group " + usersGroup + ", download only, one shared folder",
+                    Rules = { new SftpRule { IsGroup = true, Name = usersGroup, Folder = shared, ReadOnly = true } },
+                    Check = s =>
+                    {
+                        SftpConfig.PrepareFolder(shared, new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null), true);
+                        var published = Path.Combine(shared, "report.bin"); var src = s.MakeFile("report.bin", 256 << 10); File.Copy(src, published, true);
+                        var back = Path.Combine(s.Dir, "report-back.bin");
+                        s.Works(s.Batch("get report.bin " + SftpPath(back)), "download");
+                        if (!SameBytes(src, back)) throw new Exception("the file came back different");
+                        s.Refused(s.Batch("put " + SftpPath(src) + " new.bin"), "an upload");
+                        s.Refused(s.Batch("rm report.bin"), "a removal");
+                        s.Refused(s.Batch("mkdir x"), "a new folder");
+                        if (!File.Exists(published) || File.Exists(Path.Combine(shared, "new.bin"))) throw new Exception("the folder changed");
+                        return "download ok; upload, removal and new folder refused";
+                    },
+                },
+                new SftpCase
+                {
+                    Name = "SFTP off: no transfers, commands still run",
+                    Enabled = false,
+                    Check = s =>
+                    {
+                        s.Refused(s.Batch("pwd"), "an SFTP session");
+                        var cmd = s.Command("echo " + Marker);
+                        if (!cmd.Ok || !cmd.StdOut.Contains(Marker)) throw new Exception("a command failed: " + Short(cmd.Output));
+                        return "SFTP refused; commands run";
+                    },
+                },
+            };
+        }
+
+        private static string RunCase(Case c, SshdConfig baseCfg, string cfgPath, string service, int port, string user, string password, string key, string knownHosts, string authorizedKeys)
+        {
+            var cfg = new SshdConfig { Lines = baseCfg.Lines.ToList(), NewLine = baseCfg.NewLine, Path = cfgPath };
+            AuthConfig.Apply(cfg, c.Global, c.Rules); // exactly what the Authentication tab writes
+            Serve(cfg, cfgPath, service, port, authorizedKeys);
             string err;
             var eff = AuthConfig.EffectiveFor(user, cfgPath, port, out err);
             if (eff == null) throw new Exception(err);
@@ -237,7 +390,7 @@ namespace OpenSSHServerManager
             try
             {
                 // LocalSystem (no account given), started on demand, own process: sshd needs SYSTEM to log other accounts on.
-                IntPtr svc = CreateService(scm, name, "OpenSSH Server Manager login-method test (temporary)", 0xF01FF /*SERVICE_ALL_ACCESS*/, 0x10 /*SERVICE_WIN32_OWN_PROCESS*/,
+                IntPtr svc = CreateService(scm, name, "OpenSSH Server PN Manager login-method test (temporary)", 0xF01FF /*SERVICE_ALL_ACCESS*/, 0x10 /*SERVICE_WIN32_OWN_PROCESS*/,
                                            3 /*SERVICE_DEMAND_START*/, 1 /*SERVICE_ERROR_NORMAL*/, commandLine, null, IntPtr.Zero, null, null, null);
                 if (svc == IntPtr.Zero) throw new Win32Exception();
                 CloseServiceHandle(svc);
@@ -270,7 +423,7 @@ namespace OpenSSHServerManager
             var info = new Accounts.USER_INFO_1
             {
                 Name = name, Password = password, Priv = 1 /*USER_PRIV_USER*/,
-                Comment = "Temporary account of OpenSSH Server Manager --authtest, deleted when the test ends",
+                Comment = "Temporary account of OpenSSH Server PN Manager --authtest, deleted when the test ends",
                 Flags = 0x0001 /*UF_SCRIPT*/ | 0x10000 /*UF_DONT_EXPIRE_PASSWD*/,
             };
             int parm;

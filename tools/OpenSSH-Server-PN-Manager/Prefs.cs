@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: Prefs, Diff
+// OpenSSH Server PN Manager: Prefs, Diff
 
 using System;
 using System.Collections.Generic;
@@ -6,27 +6,55 @@ using System.Linq;
 using System.Text;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     // ------------------------------------------------------------------------------------------
-    // Preferences of the person using the manager (HKCU\Software\OpenSSH Server Manager)
+    // Preferences of the person using the manager (HKCU\Software\OpenSSH Server PN Manager)
     // ------------------------------------------------------------------------------------------
     internal static class Prefs
     {
-        private const string KeyPath = @"Software\OpenSSH Server Manager";
+        private const string KeyPath = @"Software\OpenSSH Server PN Manager";
+        /// <summary>Where the manager kept the preferences under its earlier name, OpenSSH Server Manager (1.6.0 and older).</summary>
+        internal const string LegacyKeyPath = @"Software\OpenSSH Server Manager";
         /// <summary>Unattended modes (tests, --check, --screenshot) never read or write the registry: they see the defaults and their own changes.</summary>
         private static readonly Dictionary<string, object> Memory = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        private static bool _migrated;
+
+        /// <summary>
+        /// The first time the preferences are used: when this account has none under the new name but has some under the
+        /// earlier one, they are copied over, so an update keeps the appearance, the questions and the notifications.
+        /// The old key stays, for an older version that may still be started.
+        /// </summary>
+        private static void MigrateOnce()
+        {
+            if (_migrated) return;
+            _migrated = true;
+            try
+            {
+                using (var now = Registry.CurrentUser.OpenSubKey(KeyPath)) if (now != null) return;
+                using (var old = Registry.CurrentUser.OpenSubKey(LegacyKeyPath))
+                {
+                    if (old == null || old.ValueCount == 0) return;
+                    using (var k = Registry.CurrentUser.CreateSubKey(KeyPath))
+                        foreach (var name in old.GetValueNames()) k.SetValue(name, old.GetValue(name), old.GetValueKind(name));
+                    Log.Info("Preferences copied from HKCU\\" + LegacyKeyPath + " to HKCU\\" + KeyPath);
+                }
+            }
+            catch (Exception ex) { Log.Error("Could not copy the preferences of OpenSSH Server Manager", ex, false); }
+        }
 
         private static object Read(string name)
         {
             lock (Memory) { object v; if (Memory.TryGetValue(name, out v)) return v; }
             if (Program.Unattended) return null;
+            MigrateOnce();
             try { using (var k = Registry.CurrentUser.OpenSubKey(KeyPath)) return k == null ? null : k.GetValue(name); } catch { return null; }
         }
 
         private static void Write(string name, object value)
         {
             if (Program.Unattended) { lock (Memory) Memory[name] = value; return; }
+            MigrateOnce();
             try
             {
                 using (var k = Registry.CurrentUser.CreateSubKey(KeyPath))

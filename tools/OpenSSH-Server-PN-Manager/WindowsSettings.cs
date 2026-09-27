@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: WindowsSettings
+// OpenSSH Server PN Manager: WindowsSettings
 
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     // ------------------------------------------------------------------------------------------
     // Default shell (registry) and firewall (COM, language independent)
@@ -86,7 +86,9 @@ namespace OpenSSHServerManager
                 foreach (var name in names)
                 {
                     dynamic byName = null;
-                    try { byName = policy.Rules.Item(name); } catch (COMException) { continue; } // no rule of that name
+                    // No rule of that name: through dynamic, the COM error comes as FileNotFoundException (0x80070002), and
+                    // must not end the search, or the second name is never tried.
+                    try { byName = policy.Rules.Item(name); } catch (Exception ex) when (ex is COMException || ex is FileNotFoundException) { continue; }
                     if ((int)byName.Direction == 1) return FromRule(name, byName);
                     foreach (dynamic r in policy.Rules)
                     {
@@ -137,7 +139,7 @@ namespace OpenSSHServerManager
             {
                 rule = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule"));
                 rule.Name = ManagedRuleName;
-                rule.Description = "Inbound rule for OpenSSH SSH Server (sshd), managed by OpenSSH Server Manager";
+                rule.Description = "Inbound rule for OpenSSH SSH Server (sshd), managed by OpenSSH Server PN Manager";
                 rule.Protocol = 6; // TCP
                 rule.Direction = 1; // in
                 rule.Action = 1; // allow
@@ -160,20 +162,47 @@ namespace OpenSSHServerManager
         }
 
         /// <summary>The inbound block rule this program keeps for addresses blocked from SSH (block rules win over allow rules).</summary>
-        public const string BlockRuleName = "OpenSSH Server Manager: blocked addresses";
+        public const string BlockRuleName = "OpenSSH Server PN Manager: blocked addresses";
+        /// <summary>The block rule's name under the earlier name of the manager, OpenSSH Server Manager (1.6.0 and older): still read and kept up to date, so no blocked address is lost by an update.</summary>
+        public const string LegacyBlockRuleName = "OpenSSH Server Manager: blocked addresses";
 
-        /// <summary>The addresses in the block rule (empty when there is none).</summary>
+        /// <summary>The block rules in the policy, under the current name first, then the earlier one: (name, rule) pairs.</summary>
+        private static List<KeyValuePair<string, dynamic>> BlockRules(object policyObject)
+        {
+            dynamic policy = policyObject;
+            var l = new List<KeyValuePair<string, dynamic>>();
+            foreach (var n in new[] { BlockRuleName, LegacyBlockRuleName })
+            {
+                // No such rule: through dynamic, the COM error comes as FileNotFoundException (0x80070002).
+                try { dynamic r = policy.Rules.Item(n); l.Add(new KeyValuePair<string, dynamic>(n, r)); } catch (Exception ex) when (ex is COMException || ex is FileNotFoundException) { }
+            }
+            return l;
+        }
+
+        /// <summary>The name of the block rule that exists (the earlier name while only that one exists), or the current name.</summary>
+        public static string BlockRuleNameInUse()
+        {
+            try { var l = BlockRules((object)Policy()); return l.Count > 0 ? l[0].Key : BlockRuleName; } catch (COMException) { return BlockRuleName; }
+        }
+
+        /// <summary>
+        /// The addresses in the block rule (empty when there is none). When both names exist (1.6.0 was started again after
+        /// 2.0.0), the addresses of both.
+        /// </summary>
         public static List<string> BlockedAddresses()
         {
             try
             {
-                dynamic policy = Policy();
-                dynamic r = policy.Rules.Item(BlockRuleName);
-                var v = (string)r.RemoteAddresses;
-                if (string.IsNullOrEmpty(v) || v == "*") return new List<string>();
-                return v.Split(',').Select(a => NormaliseAddress(a.Trim())).Where(a => a.Length > 0).Distinct().ToList();
+                var all = new List<string>();
+                foreach (var kv in BlockRules((object)Policy()))
+                {
+                    var v = (string)kv.Value.RemoteAddresses;
+                    if (string.IsNullOrEmpty(v) || v == "*") continue;
+                    all.AddRange(v.Split(',').Select(a => NormaliseAddress(a.Trim())).Where(a => a.Length > 0));
+                }
+                return all.Distinct().ToList();
             }
-            catch (COMException) { return new List<string>(); } // no such rule
+            catch (COMException) { return new List<string>(); }
         }
 
         /// <summary>"1.2.3.4/255.255.255.255" (how Windows stores a single address) as "1.2.3.4"; ranges and subnets stay as they are.</summary>
@@ -186,26 +215,27 @@ namespace OpenSSHServerManager
 
         /// <summary>
         /// Writes the block rule: TCP to the given local ports from these addresses is blocked on every profile. An empty
-        /// list removes the rule.
+        /// list removes the rule. When rules of both names exist, the first is written and the other removed afterwards.
         /// </summary>
         public static void SetBlockedAddresses(IList<string> addresses, string ports)
         {
             dynamic policy = Policy();
-            dynamic existing = null;
-            try { existing = policy.Rules.Item(BlockRuleName); } catch (COMException) { }
-            if (addresses == null || addresses.Count == 0) { if (existing != null) policy.Rules.Remove(BlockRuleName); return; }
-            if (existing != null)
+            var rules = BlockRules((object)policy);
+            if (addresses == null || addresses.Count == 0) { foreach (var kv in rules) policy.Rules.Remove(kv.Key); return; }
+            if (rules.Count > 0)
             {
                 // Changed in place: removing and adding again would leave a moment with nothing blocked, and every address
                 // unblocked if the new rule could not be added.
+                dynamic existing = rules[0].Value;
                 existing.RemoteAddresses = string.Join(",", addresses);
                 existing.LocalPorts = ports;
                 existing.Enabled = true;
+                for (int i = 1; i < rules.Count; i++) policy.Rules.Remove(rules[i].Key);
                 return;
             }
             dynamic rule = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule"));
             rule.Name = BlockRuleName;
-            rule.Description = "Addresses blocked from SSH by OpenSSH Server Manager (Logs tab, Failed logins by address).";
+            rule.Description = "Addresses blocked from SSH by OpenSSH Server PN Manager (Logs tab, Failed logins by address).";
             rule.Protocol = 6; rule.Direction = 1; rule.Action = 0; // TCP, inbound, block
             rule.LocalPorts = ports;
             rule.RemoteAddresses = string.Join(",", addresses);

@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: Hardening
+// OpenSSH Server PN Manager: Hardening
 
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     // ------------------------------------------------------------------------------------------
     // Hardening checks
@@ -220,6 +220,57 @@ namespace OpenSSHServerManager
             l.Add(new CheckResult { Name = "Login banner", Status = string.IsNullOrEmpty(lvlBanner) ? "INFO" : "OK", Detail = string.IsNullOrEmpty(lvlBanner) ? "no legal notice banner configured (optional)" : "Banner " + lvlBanner });
             l.Add(new CheckResult { Name = "Agent forwarding", Status = "INFO", Detail = "AllowAgentForwarding " + E("allowagentforwarding") + "; set 'no' unless clients need to forward their agent" });
             l.Add(new CheckResult { Name = "TCP forwarding", Status = "INFO", Detail = "AllowTcpForwarding " + E("allowtcpforwarding") + ", GatewayPorts " + E("gatewayports") + "; set 'no' for file-transfer-only servers" });
+            l.AddRange(Sftp(cfg));
+            return l;
+        }
+
+        /// <summary>The SFTP subsystem (its program exists, transfers are logged) and the folders of SFTP-only accounts.</summary>
+        internal static List<CheckResult> Sftp(SshdConfig cfg)
+        {
+            var l = new List<CheckResult>();
+            var st = SftpConfig.Read(cfg);
+            if (!st.Enabled)
+                l.Add(new CheckResult { Name = "SFTP", Status = "INFO", Detail = "off (no Subsystem sftp line): WinSCP, FileZilla and sftp cannot connect; switch it on on the SFTP tab if files are to be transferred" });
+            else
+            {
+                string err; var args = SshdArgs.Split(st.Subsystem, out err);
+                var prog = args == null || args.Count == 0 ? "" : args[0];
+                // internal-sftp runs sftp-server.exe of the install folder; a bare name is looked up there too.
+                var path = prog == "internal-sftp" ? Ssh.Exe(SftpConfig.DefaultServer) : Path.IsPathRooted(prog) ? prog : Ssh.Exe(prog);
+                if (!File.Exists(path) && !File.Exists(path + ".exe"))
+                    l.Add(new CheckResult { Name = "SFTP", Status = "WARN", Detail = "Subsystem sftp runs " + prog + ", which does not exist (" + path + "): SFTP clients cannot connect" });
+                else if (!st.LogTransfers)
+                    l.Add(new CheckResult { Name = "SFTP", Status = "INFO", Detail = "on (Subsystem sftp " + st.Subsystem + "); file transfers are not logged: tick Log file transfers on the SFTP tab for a record of every upload and download" });
+                else
+                    l.Add(new CheckResult { Name = "SFTP", Status = "OK", Detail = "on, file transfers logged in the OpenSSH event log (Subsystem sftp " + st.Subsystem + ")" });
+            }
+            if (st.RulesProblem != null)
+            {
+                l.Add(new CheckResult { Name = "SFTP-only accounts", Status = "WARN", Detail = "the section of SFTP-only accounts in sshd_config was changed by hand (" + st.RulesProblem + "); correct it on the sshd_config (text) tab" });
+                return l;
+            }
+            if (st.Rules.Count == 0) return l;
+            var missing = new List<string>();
+            foreach (var r in st.Rules.Where(x => x.Folder != null))
+            {
+                string path;
+                if (r.IsGroup)
+                {
+                    if (r.Folder.Contains("%u") || r.Folder.Contains("%h")) continue; // one folder per member: not known here
+                    path = SftpConfig.ExpandFolder(r.Folder, "", null);
+                }
+                else
+                {
+                    var sid = Acl.SidOfAccount(r.Name);
+                    path = SftpConfig.ExpandFolder(r.Folder, r.Name, Accounts.ProfileDir(sid));
+                    if (path == null) continue; // %h of an account that has not logged on yet
+                }
+                if (!Directory.Exists(path)) missing.Add(r.Kind.ToLowerInvariant() + " " + r.Name + ": " + path);
+            }
+            if (missing.Count > 0)
+                l.Add(new CheckResult { Name = "SFTP-only accounts", Status = "WARN", Detail = "folder missing, so SFTP logins fail: " + string.Join("; ", missing) + ". Apply on the SFTP tab creates them" });
+            else
+                l.Add(new CheckResult { Name = "SFTP-only accounts", Status = "OK", Detail = st.Rules.Count + " rule(s): " + string.Join("; ", st.Rules.Select(r => r.Kind.ToLowerInvariant() + " " + r.Name + " " + r.Describe())) });
             return l;
         }
     }

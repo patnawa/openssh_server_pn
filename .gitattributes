@@ -1,5 +1,5 @@
 # The management console's config is published with a SHA-256: keep its bytes (CRLF) exactly as committed.
-tools/OpenSSH-Server-Manager/bin/*.config -text
+tools/OpenSSH-Server-PN-Manager/bin/*.config -text
 # preinstall.ps1 goes into the MSI (openssh.wixproj): check it out with CRLF whatever core.autocrlf says, as for the 10.5.1.0 packages.
 src/contrib/win32/install/preinstall.ps1 text eol=crlf
 # vcpkg applies these with git apply to sources that have LF line endings: keep them LF on every checkout.

@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Helpers for the install tests in .github/workflows/openssh.yml: run msiexec, read MSI properties,
-    check the services, the banner and the firewall rule, run OpenSSH Server Manager's test modes, and
+    check the services, the banner and the firewall rule, run OpenSSH Server PN Manager's test modes, and
     collect the results of a group of checks.
 
 .DESCRIPTION
@@ -470,7 +470,7 @@ function Test-MsiLog {
 
 function Invoke-ManagerTest {
     <#
-      Runs OpenSSH Server Manager in one of its unattended modes (--check, --selftest, --keytest,
+      Runs OpenSSH Server PN Manager in one of its unattended modes (--check, --selftest, --keytest,
       --authtest, --unittest). It is a GUI-subsystem program: wait for it and read the report it writes.
       Returns the exit code.
     #>
@@ -486,14 +486,14 @@ function Invoke-ManagerTest {
     $null = $p.Handle   # keeps the process handle so that ExitCode is available after the exit
     if (-not $p.WaitForExit($TimeoutMinutes * 60 * 1000)) {
         try { $p.Kill() } catch { Write-Verbose "already exited: $_" }
-        throw "OpenSSHServerManager.exe $Mode did not finish within $TimeoutMinutes minutes"
+        throw "OpenSSHServerPNManager.exe $Mode did not finish within $TimeoutMinutes minutes"
     }
     $p.WaitForExit()
-    Write-Host "== OpenSSHServerManager.exe $Mode, exit code $($p.ExitCode)"
+    Write-Host "== OpenSSHServerPNManager.exe $Mode, exit code $($p.ExitCode)"
     if (Test-Path -LiteralPath $report) { Get-Content -LiteralPath $report | ForEach-Object { Write-Host $_ } } else { Write-Host "(no report at $report)" }
     if ($env:GITHUB_STEP_SUMMARY) {
         $result = if (Test-Path -LiteralPath $report) { (Select-String -LiteralPath $report -Pattern '^RESULT' | Select-Object -Last 1).Line } else { 'no report' }
-        Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "- OpenSSH Server Manager ``$Mode``: exit code $($p.ExitCode), $result" -Encoding utf8
+        Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "- OpenSSH Server PN Manager ``$Mode``: exit code $($p.ExitCode), $result" -Encoding utf8
     }
     $p.ExitCode
 }

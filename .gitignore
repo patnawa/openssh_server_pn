@@ -1,4 +1,4 @@
-tools/OpenSSH-Server-Manager/obj/
+tools/OpenSSH-Server-PN-Manager/obj/
 *.msi
 *.log
 vcpkg/

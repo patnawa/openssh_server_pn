@@ -1,4 +1,4 @@
-"""Render the application icon for OpenSSH Server Manager ("Key tile", final).
+"""Render the application icon for OpenSSH Server PN Manager ("Key tile", final).
 
 Concept: a Windows 11 style tile in a deep navy-to-teal gradient carrying a
 white key. The key's bow is a small terminal screen with a ">_" prompt, so the

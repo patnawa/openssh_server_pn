@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: Dialogs
+// OpenSSH Server PN Manager: Dialogs
 
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     // ------------------------------------------------------------------------------------------
     // Rule dialog of the Authentication tab
@@ -112,6 +112,117 @@ namespace OpenSSHServerManager
             if (!m.AnyEnabled) { MessageBox.Show(this, "Tick at least one login method.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
             if (_others.Any(o => o.IsGroup == group && o.Name == name)) { MessageBox.Show(this, "There is already a rule for " + (group ? "group " : "user ") + name + ".", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
             Result = new AuthRule { IsGroup = group, Name = name, Methods = m };
+            DialogResult = DialogResult.OK;
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Rule dialog of the SFTP tab
+    // ------------------------------------------------------------------------------------------
+    /// <summary>Adds or edits an SFTP-only user or group: its folder and whether it may only download.</summary>
+    internal sealed class SftpRuleDialog : ThemedForm
+    {
+        private readonly RadioButton _user = new RadioButton { Text = "User", AutoSize = true, Checked = true, Margin = new Padding(3, 5, 3, 3) };
+        private readonly RadioButton _group = new RadioButton { Text = "Group", AutoSize = true, Margin = new Padding(16, 5, 3, 3) };
+        private readonly ComboBox _name = new ComboBox { AccessibleName = "User or group name", DropDownStyle = ComboBoxStyle.DropDown, Width = Ui.Px(420), Margin = new Padding(3, 2, 3, 6) };
+        private readonly CheckBox _confine = new CheckBox { Text = "Confine to a folder: the account sees it as / and cannot leave it", AutoSize = true, Checked = true, Margin = new Padding(3, 6, 3, 2) };
+        private readonly TextBox _folder = new TextBox { AccessibleName = "Folder", Width = Ui.Px(330), Margin = new Padding(3, 2, 3, 2) };
+        private readonly Button _browse = new Button { Text = "Browse...", AutoSize = true, MinimumSize = new Size(Ui.Px(90), Ui.Px(28)), Margin = new Padding(3, 1, 3, 2) };
+        private readonly CheckBox _readOnly = new CheckBox { Text = "Download only: no upload, rename, removal or new folders", AutoSize = true, Margin = new Padding(3, 8, 3, 2) };
+        private readonly List<SftpRule> _others;
+        private readonly string _defaultUserFolder = Path.Combine(Path.GetPathRoot(Environment.SystemDirectory) ?? "C:\\", "SFTP") + "\\%u";
+        public SftpRule Result;
+
+        public SftpRuleDialog(SftpRule existing, List<SftpRule> others)
+        {
+            _others = others ?? new List<SftpRule>();
+            Text = existing == null ? "Add an SFTP-only account or group" : "SFTP-only " + existing.Kind.ToLowerInvariant() + " " + existing.Name;
+            StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
+            MinimizeBox = MaximizeBox = false; ShowInTaskbar = false; AutoSize = true; AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            Padding = new Padding(10); Font = new Font("Segoe UI", Ui.Pt(9.5f));
+
+            var p = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Dock = DockStyle.Fill };
+            var kind = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true };
+            kind.Controls.Add(new Label { Text = "Applies to:", AutoSize = true, Margin = new Padding(3, 7, 8, 3) });
+            kind.Controls.Add(_user); kind.Controls.Add(_group);
+            p.Controls.Add(kind);
+            p.Controls.Add(new Label { Text = "Name: a local account or group, or DOMAIN\\name for a domain account", AutoSize = true, Margin = new Padding(3, 8, 3, 0) });
+            p.Controls.Add(_name);
+            p.Controls.Add(_confine);
+            var folderRow = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true, Margin = new Padding(20, 0, 3, 0) };
+            folderRow.Controls.Add(_folder); folderRow.Controls.Add(_browse);
+            p.Controls.Add(folderRow);
+            p.Controls.Add(new Label
+            {
+                Text = "%u stands for the account name, so each account gets a folder of its own. Apply creates the folder of a user and gives it access; other accounts get none.",
+                AutoSize = true, MaximumSize = new Size(Ui.Px(440), 0), ForeColor = Theme.Muted, Margin = new Padding(20, 2, 3, 2)
+            });
+            p.Controls.Add(_readOnly);
+            p.Controls.Add(new Label
+            {
+                Text = "The account can only transfer files: no shell, no commands, no terminal and no forwarding.",
+                AutoSize = true, MaximumSize = new Size(Ui.Px(440), 0), ForeColor = Theme.Muted, Margin = new Padding(3, 8, 3, 2)
+            });
+            var ok = new Button { Text = "OK", Width = Ui.Px(100), Height = Ui.Px(30) };
+            var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = Ui.Px(100), Height = Ui.Px(30) };
+            var bar = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Width = Ui.Px(440), Margin = new Padding(3, 12, 3, 3) };
+            bar.Controls.Add(cancel); bar.Controls.Add(ok);
+            p.Controls.Add(bar);
+            Controls.Add(p);
+            AcceptButton = ok; CancelButton = cancel;
+
+            if (existing != null)
+            {
+                _group.Checked = existing.IsGroup; _user.Checked = !existing.IsGroup;
+                _confine.Checked = existing.Folder != null; _readOnly.Checked = existing.ReadOnly;
+            }
+            _folder.Text = existing != null && existing.Folder != null ? existing.Folder : _defaultUserFolder;
+            FillSuggestions();
+            if (existing != null) _name.Text = existing.Name;
+            _user.CheckedChanged += (s, e) => FillSuggestions();
+            _confine.CheckedChanged += (s, e) => { _folder.Enabled = _browse.Enabled = _confine.Checked; };
+            _folder.Enabled = _browse.Enabled = _confine.Checked;
+            _browse.Click += (s, e) =>
+            {
+                using (var d = new FolderBrowserDialog { Description = "The folder the account sees as /", ShowNewFolderButton = true })
+                {
+                    var start = SftpConfig.ExpandFolder(_folder.Text.Trim(), "", null);
+                    if (start != null) { while (start.Length > 3 && !Directory.Exists(start)) start = Path.GetDirectoryName(start) ?? ""; if (Directory.Exists(start)) d.SelectedPath = start; }
+                    if (d.ShowDialog(this) == DialogResult.OK) _folder.Text = d.SelectedPath;
+                }
+            };
+            ok.Click += OnOk;
+        }
+
+        private void FillSuggestions()
+        {
+            var text = _name.Text;
+            _name.Items.Clear();
+            foreach (var n in _group.Checked ? Accounts.LocalGroups() : Accounts.LocalUsers()) _name.Items.Add(n);
+            _name.Text = text;
+        }
+
+        private void OnOk(object sender, EventArgs e)
+        {
+            bool group = _group.Checked; string err;
+            var typed = _name.Text.Trim();
+            var name = Accounts.Canonical(typed, group, out err);
+            if (name == null)
+            {
+                bool domainName = typed.Replace('/', '\\').IndexOf('\\') > 0 && !typed.StartsWith(".") && err.Contains("was not found") && Accounts.DomainJoined();
+                if (!domainName) { MessageBox.Show(this, err, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                if (MessageBox.Show(this, err + "\n\nUse \"" + typed + "\" anyway? sshd matches it only when it is spelled exactly as DOMAIN\\name.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+                name = Accounts.AsciiLower(typed.Replace('/', '\\'));
+            }
+            string folder = null;
+            if (_confine.Checked)
+            {
+                folder = _folder.Text.Trim();
+                var ferr = SftpConfig.FolderError(folder);
+                if (ferr != null) { MessageBox.Show(this, ferr, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); _folder.Focus(); return; }
+            }
+            if (_others.Any(o => o.IsGroup == group && o.Name == name)) { MessageBox.Show(this, "There is already a rule for " + (group ? "group " : "user ") + name + ".", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+            Result = new SftpRule { IsGroup = group, Name = name, Folder = folder, ReadOnly = _readOnly.Checked };
             DialogResult = DialogResult.OK;
         }
     }
@@ -339,7 +450,7 @@ namespace OpenSSHServerManager
             _note = new Label { AutoSize = true, Margin = new Padding(12, 8, 3, 3), ForeColor = Theme.Muted, MaximumSize = new Size(Ui.Px(760), 0) };
             bar1.Controls.Add(_note);
             root.Controls.Add(bar1, 0, 2);
-            root.Controls.Add(new Label { Text = "Blocked now (firewall rule \"" + Firewall.BlockRuleName + "\"):", AutoSize = true, Font = new Font("Segoe UI", Ui.Pt(9.5f), FontStyle.Bold), Margin = new Padding(3, 8, 3, 3) }, 0, 3);
+            root.Controls.Add(new Label { Text = "Blocked now (firewall rule \"" + Firewall.BlockRuleNameInUse() + "\"):", AutoSize = true, Font = new Font("Segoe UI", Ui.Pt(9.5f), FontStyle.Bold), Margin = new Padding(3, 8, 3, 3) }, 0, 3);
             _blocked = new ListView { View = View.Details, FullRowSelect = true, GridLines = true, Dock = DockStyle.Fill, HideSelection = false, MultiSelect = true, AccessibleName = "Blocked addresses" };
             _blocked.Columns.Add("Address", Ui.Px(300));
             root.Controls.Add(_blocked, 0, 4);

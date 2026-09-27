@@ -10,7 +10,7 @@ you have set up keys; the manager's setup wizard switches them off for administr
 | Folder | Contents |
 |---|---|
 | `src/` | The server and client source: OpenSSH 10.5p1 with the Windows port, the vendored-library manifest (LibreSSL 4.3.2, libfido2 1.17.0) and the WiX installer. The repository history starts on 26 September 2026; the earlier history, with upstream OpenSSH's, is kept outside the repository for merging new OpenSSH releases ([BUILDING.md](docs/BUILDING.md#2-layout)) |
-| `tools/OpenSSH-Server-Manager/` | [OpenSSH Server Manager](tools/OpenSSH-Server-Manager/README.md), the management console (C# source, build script, the built executable) |
+| `tools/OpenSSH-Server-PN-Manager/` | [OpenSSH Server PN Manager](tools/OpenSSH-Server-PN-Manager/README.md), the management console (C# source, build script, the built executable) |
 | `docs/` | Installation, compatibility, building, releasing, changelog, feature audit and roadmap |
 | `.github/`, `tools/release/` | CI (build, unit and install tests of the packages, the management console), release tooling (SBOM, upstream version check) |
 | `packaging/` | winget manifests and Intune / Configuration Manager deployment notes |
@@ -59,6 +59,28 @@ denial-of-service fix, complete `PubkeyAcceptedAlgorithms` enforcement for ECDSA
 `mlkem768nistp256-sha256` hybrid key exchange, and the experimental
 `ssh-mldsa44-ed25519@openssh.com` post-quantum key type.
 
+## Since 10.5.2.0 (in this repository, for the next release)
+
+- **SFTP with AES about 3.5 times as fast on x64.** LibreSSL 4.x built with Visual Studio never
+  detected the processor's AES-NI and carry-less multiplication, so every AES cipher ran on slow
+  table code. This build uses them (`msvc-x64-cpu-caps.patch`, [docs/BUILDING.md](docs/BUILDING.md#6-refreshing-the-vendored-libraries)).
+  A 512 MiB SFTP transfer over the loopback, MB/s up / down (the median of three runs, averaged
+  over two interleaved rounds):
+
+  | Cipher | 10.5.2.0 | This build |
+  |---|---|---|
+  | `aes128-gcm@openssh.com` | 154 / 160 | 487 / 597 |
+  | `aes256-gcm@openssh.com` | 122 / 126 | 502 / 499 |
+  | `aes256-ctr` | 143 / 144 | 500 / 472 |
+  | `chacha20-poly1305@openssh.com` | 296 / 280 | 291 / 325 |
+
+  WinSCP and FileZilla use AES by default, so they gain without a change. OpenSSH clients choose
+  `chacha20-poly1305@openssh.com` first; `-c aes128-gcm@openssh.com` makes them use AES.
+- **OpenSSH Server PN Manager 2.0.0**: the management console under the project's name, with an
+  SFTP tab (SFTP on or off, logging of every transfer, SFTP-only accounts confined to a folder, download
+  only), SFTP on the Dashboard, Sessions and Logs tabs, and an About page with this project's
+  details. See below and [docs/CHANGELOG.md](docs/CHANGELOG.md).
+
 ## Installer
 
 Run the MSI over whatever is there. Before it copies a file it:
@@ -86,16 +108,19 @@ Get-Service sshd, ssh-agent             # Running, StartType Automatic
 Test-NetConnection localhost -Port 22   # TcpTestSucceeded : True
 ```
 
-## OpenSSH Server Manager
+## OpenSSH Server PN Manager
 
-OpenSSH has no control panel; this project adds one. **OpenSSH Server Manager** is a single
-executable (`OpenSSHServerManager.exe`, .NET Framework 4.x, no installation):
+OpenSSH has no control panel; this project adds one. **OpenSSH Server PN Manager** is a single
+executable (`OpenSSHServerPNManager.exe`, .NET Framework 4.x, no installation). Up to version 1.6.0,
+the one in the current release, it was called OpenSSH Server Manager (`OpenSSHServerManager.exe`);
+version 2.0.0 takes over its preferences, rules and firewall block list:
 
 - **Setup wizard**: port and networks, your key, key-only login for administrators or everyone,
   the recommended settings and who may log in, in five steps.
-- **Dashboard**: service state, version, listeners, sessions, firewall, host key fingerprints;
+- **Dashboard**: service state, version, listeners, sessions, SFTP, firewall, host key fingerprints;
   start, stop, restart, test the configuration, add your public key, generate host keys.
-- **Sessions**: live connections with user, start time, duration and peer address; disconnect.
+- **Sessions**: live connections with user, start time, duration, peer address and what they do
+  (SFTP, scp, shell or command); disconnect.
 - **Settings** and **sshd_config (text)**: form and full-text editing. Every save shows the
   changes first, warns when your own account would be refused, is checked with `sshd -t`, never
   writes over a file changed meanwhile, and keeps a backup (with a browser to compare and restore
@@ -106,6 +131,10 @@ executable (`OpenSSHServerManager.exe`, .NET Framework 4.x, no installation):
   users or groups, for example public key only for administrators. See which methods any account
   gets before you apply. *Apply* warns before you would lock yourself out and then checks the
   result with the running server.
+- **SFTP**: switch SFTP on or off and log every file transfer in the event log. Keep SFTP-only
+  accounts and groups: they transfer files and nothing else, optionally confined to a folder they
+  see as `/` (one per account with `%u`), optionally download only; *Apply* creates the folders.
+  Tested with real transfers and escape attempts (`--authtest`).
 - **Keys**: administrator and per-user `authorized_keys` with fingerprints and the ACLs `sshd`
   requires; comments in the files are kept.
 - **Key generator**: creates Ed25519, ECDSA, RSA and post-quantum ML-DSA key pairs, verifies
@@ -114,21 +143,25 @@ executable (`OpenSSHServerManager.exe`, .NET Framework 4.x, no installation):
 - **Client**: your `known_hosts` (add a server's keys after comparing fingerprints),
   the hosts of `.ssh\config`, and the keys in `ssh-agent`.
 - **Firewall**: rule state, profiles and ports.
-- **Logs**: the OpenSSH event log by period, with filters and export; failed logins by client
+- **Logs**: the OpenSSH event log by period, with filters and export, SFTP transfers; failed logins by client
   address, with a firewall block list; the file log.
-- **Hardening**: 27 checks, including a security audit of the permissions on the program folder,
+- **Hardening**: 28 checks (29 with SFTP-only accounts), including a security audit of the permissions on the program folder,
   the configuration and host keys, the registry and the services, and whether SSH is reachable
   on a public network. Fix the selected warnings, or apply all recommended settings; export the
   report.
+- **About**: version, publisher and licence, the paths and versions of the server, links to this
+  project's website, updates and support, and *Copy details* for a problem report.
 - Dark mode and high contrast, keyboard shortcuts, and an icon in the notification area that
   reports when `sshd` stops or failed logins pile up.
 
 `--check`, `--unittest`, `--selftest`, `--keytest`, `--authtest` and `--screenshot` run the same code
-unattended. See [tools/OpenSSH-Server-Manager/README.md](tools/OpenSSH-Server-Manager/README.md).
+unattended. See [tools/OpenSSH-Server-PN-Manager/README.md](tools/OpenSSH-Server-PN-Manager/README.md).
 
-![OpenSSH Server Manager authentication](docs/images/manager-authentication.png)
+![OpenSSH Server PN Manager: SFTP-only accounts](docs/images/manager-sftp.png)
 
-![OpenSSH Server Manager key generator](docs/images/manager-keygen.png)
+![OpenSSH Server PN Manager: login methods](docs/images/manager-authentication.png)
+
+![OpenSSH Server PN Manager: key generator](docs/images/manager-keygen.png)
 
 ## Supported Windows versions
 
@@ -181,7 +214,7 @@ The full record, including what could not be tested here, is in [docs/CHANGELOG.
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Every build: changes and verification |
 | [docs/COMPARISON-BITVISE.md](docs/COMPARISON-BITVISE.md) | Feature audit against Bitvise SSH Server and other commercial servers |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Planned improvements |
-| [tools/OpenSSH-Server-Manager/README.md](tools/OpenSSH-Server-Manager/README.md) | The management console |
+| [tools/OpenSSH-Server-PN-Manager/README.md](tools/OpenSSH-Server-PN-Manager/README.md) | The management console |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to propose changes |
 | [SECURITY.md](SECURITY.md) | Reporting vulnerabilities, and the security design of the packages |
 
@@ -193,4 +226,4 @@ OpenSSH is developed by the OpenBSD project and distributed under BSD-style lice
 port is copyright Microsoft Corporation under the same terms. `src/LICENCE` has the full text, and
 every package ships `LICENSE.txt` and `NOTICE.txt` (third-party notices for LibreSSL, libfido2,
 libcbor and zlib) in its install folder. The additions of this project (installer logic,
-OpenSSH Server Manager, documentation) are provided under the same terms.
+OpenSSH Server PN Manager, documentation), copyright © 2026 patnawa, are provided under the same terms.

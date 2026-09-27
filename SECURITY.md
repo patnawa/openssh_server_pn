@@ -9,7 +9,7 @@ Three different parties own the code involved, and vulnerability reports should 
 |---|---|
 | OpenSSH itself (protocol handling, `ssh`, `sshd`, `sftp`, key handling) as found in any build, including the official Microsoft packages | The OpenSSH project: [openssh.com/report.html](https://www.openssh.com/report.html) (`openssh@openssh.com`). Windows-port specific code: Microsoft Security Response Center, [msrc.microsoft.com/create-report](https://msrc.microsoft.com/create-report), as described in the upstream [PowerShell/Win32-OpenSSH security policy](https://github.com/PowerShell/Win32-OpenSSH/blob/L1-Prod/.github/SECURITY.md). |
 | Vendored libraries (LibreSSL, libfido2, libcbor, zlib) | The respective upstream project. We will pick up the fix in the next build; open an issue here so it is tracked. |
-| **This project**: the MSI installers and their pre-install script, OpenSSH Server Manager, the build scripts and library version choices documented in `docs/`, or the published hashes | This repository, see below. |
+| **This project**: the MSI installers and their pre-install script, OpenSSH Server PN Manager, the build scripts and library version choices documented in `docs/`, or the published hashes | This repository, see below. |
 
 ## Reporting an issue in this repository's packages
 
@@ -52,14 +52,14 @@ Authenticode-signed only when a signing service is configured; the release notes
 - **Exposure.** On Windows 10 and 11 the firewall rule applies to Domain and Private networks
   only; on Windows Server to all networks. Password logins are allowed after install so that
   the first login works. INSTALL.md section 5 lists the hardening to apply once keys are set up.
-  The Authentication tab of OpenSSH Server Manager turns password logins off for everyone or
+  The Authentication tab of OpenSSH Server PN Manager turns password logins off for everyone or
   for single users and groups.
 - **Files and services.** Program files inherit the protected `%ProgramFiles%` permissions,
   `sshd` keeps host keys readable by SYSTEM and Administrators only, and the
   `HKLM\SOFTWARE\OpenSSH` key (which holds `DefaultShell`) is writable by administrators only.
-  The Hardening tab of OpenSSH Server Manager and `OpenSSHServerManager.exe --check` verify all
+  The Hardening tab of OpenSSH Server PN Manager and `OpenSSHServerPNManager.exe --check` verify all
   of this, and whether SSH is reachable on a public network.
-- **OpenSSH Server Manager.** It runs elevated and writes configuration only after `sshd -t`
+- **OpenSSH Server PN Manager.** It runs elevated and writes configuration only after `sshd -t`
   accepts it. The key generator hands passphrases to `ssh-keygen` through `SSH_ASKPASS`, never on
   a command line. It never displays a private key, and it verifies that each private key is
   readable only by its owner, SYSTEM and Administrators.
@@ -70,3 +70,14 @@ Authenticode-signed only when a signing service is configured; the release notes
   the installed `sshd.exe`, with its files in a folder only SYSTEM and Administrators can change.
   `--authtest` creates a temporary local account with a random password, usable only through a
   temporary server on 127.0.0.1, and deletes it when the test ends.
+- **SFTP-only accounts.** The SFTP tab forces `internal-sftp` and switches terminals and every kind
+  of forwarding off for them, so their key or password opens file transfer and nothing else. A
+  folder it creates for them gives full control to SYSTEM and Administrators and modify (or read)
+  rights to that account or group only; parent folders it has to create are for SYSTEM and
+  Administrators only, so no account can create another one's folder next to its own. An existing
+  folder keeps its permissions, and the question before *Apply* names an owner or other accounts
+  that can open it. `ChrootDirectory`
+  is enforced by the Windows port of OpenSSH, which checks every path `sftp-server` opens, not by
+  Windows itself, so the account's NTFS permissions are the second line of defence: keep folders
+  outside an account's reach closed to it. `--authtest` tries to leave the folder with `..`, a
+  drive letter and an upload outside it, and fails if any of them works.

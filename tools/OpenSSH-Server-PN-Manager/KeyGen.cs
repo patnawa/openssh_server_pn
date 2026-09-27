@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: KeyGen
+// OpenSSH Server PN Manager: KeyGen
 
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     // ------------------------------------------------------------------------------------------
     // Key pair generator: ssh-keygen with the passphrase handed over through SSH_ASKPASS, never on a command line
@@ -312,7 +312,7 @@ namespace OpenSSHServerManager
                 snapshots.Add(FileSnapshot.Take(target)); snapshots.Add(FileSnapshot.Take(target + ".bak"));
                 var owner = IsAdminKeysFile(target) ? null : WindowsIdentity.GetCurrent().User;
                 int port = SshdConfig.Load().EffectivePort;
-                sb.AppendLine("OpenSSH Server Manager " + Program.AppVersion + " key test, account " + user + ", port " + port);
+                sb.AppendLine("OpenSSH Server PN Manager " + Program.AppVersion + " key test, account " + user + ", port " + port);
                 sb.AppendLine("authorized_keys used by sshd for this account: " + target);
                 int n = 0; KeyGenResult firstEncrypted = null; string firstPass = null;
                 foreach (var t in Types)

@@ -16,7 +16,7 @@
     |                      | from the overlay portfile.                                                   |
     | libcbor, zlib        | the overrides in src/contrib/win32/openssh/vcpkg.json (vcpkg registry ports)  |
 
-    Release files given with -File (the MSIs, OpenSSHServerManager.exe and its .exe.config) are
+    Release files given with -File (the MSIs, OpenSSHServerPNManager.exe and its .exe.config) are
     listed as components of type "file" with their SHA-256 and SHA-512.
 
     The output is deterministic: the serial number is derived from the content, and the time stamp
@@ -42,7 +42,7 @@
     GitHub owner/name of this project, for the purl and the links.
 
 .EXAMPLE
-    ./tools/release/New-Sbom.ps1 -File dist/*.msi, dist/OpenSSHServerManager.exe -OutFile dist/OpenSSH-Server-PN-v10.5.1.0.cdx.json
+    ./tools/release/New-Sbom.ps1 -File dist/*.msi, dist/OpenSSHServerPNManager.exe -OutFile dist/OpenSSH-Server-PN-v10.5.1.0.cdx.json
 #>
 [CmdletBinding()]
 param(
@@ -272,10 +272,10 @@ $resolvedFiles = @($File | Where-Object { $_ } | ForEach-Object { Resolve-Path -
 # The management console's version: from the executable itself (the committed binary is what is published; .NET
 # reads the version resource on Windows and the assembly metadata elsewhere), else from the source.
 $managerVersion = $null
-$managerExe = $resolvedFiles | Where-Object { (Split-Path $_ -Leaf) -eq 'OpenSSHServerManager.exe' } | Select-Object -First 1
+$managerExe = $resolvedFiles | Where-Object { (Split-Path $_ -Leaf) -eq 'OpenSSHServerPNManager.exe' } | Select-Object -First 1
 if ($managerExe) { $managerVersion = (Get-Item -LiteralPath $managerExe).VersionInfo.ProductVersion }
 if (-not $managerVersion) {
-    $programCs = Join-Path $RepoRoot 'tools' 'OpenSSH-Server-Manager' 'Program.cs'
+    $programCs = Join-Path $RepoRoot 'tools' 'OpenSSH-Server-PN-Manager' 'Program.cs'
     if (Test-Path -LiteralPath $programCs) {
         $mv = [regex]::Match((Read-Text $programCs), 'AppVersion\s*=\s*"([^"]+)"')
         if ($mv.Success) { $managerVersion = $mv.Groups[1].Value }
@@ -289,11 +289,11 @@ foreach ($path in $resolvedFiles) {
         'Win64' { 'Windows Installer package for x64' }
         'Win32' { 'Windows Installer package for x86' }
         'ARM64' { 'Windows Installer package for ARM64' }
-        '^OpenSSHServerManager\.exe$' { 'OpenSSH Server Manager, the management console (.NET Framework 4.x, AnyCPU); the executable committed in tools/OpenSSH-Server-Manager/bin' }
-        '\.exe\.config$' { 'Configuration file of OpenSSH Server Manager (keep it next to the executable)' }
+        '^OpenSSHServerPNManager\.exe$' { 'OpenSSH Server PN Manager, the management console (.NET Framework 4.x, AnyCPU); the executable committed in tools/OpenSSH-Server-PN-Manager/bin' }
+        '\.exe\.config$' { 'Configuration file of OpenSSH Server PN Manager (keep it next to the executable)' }
         default { 'Release file' }
     }
-    $fileVersionOf = if ($name -like '*.msi') { $Version } elseif ($name -like 'OpenSSHServerManager.exe*' -and $managerVersion) { $managerVersion } else { $null }
+    $fileVersionOf = if ($name -like '*.msi') { $Version } elseif ($name -like 'OpenSSHServerPNManager.exe*' -and $managerVersion) { $managerVersion } else { $null }
     $component = [ordered]@{ type = 'file'; 'bom-ref' = $ref; name = $name }
     if ($fileVersionOf) { $component.version = $fileVersionOf }
     $component.description = $description

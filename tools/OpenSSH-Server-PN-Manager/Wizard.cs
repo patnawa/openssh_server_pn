@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: setup wizard
+// OpenSSH Server PN Manager: setup wizard
 
 using System;
 using System.Collections.Generic;
@@ -6,7 +6,7 @@ using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     /// <summary>How accounts log in after the wizard.</summary>
     internal enum WizardLogin { Keep, AdministratorsKeyOnly, EveryoneKeyOnly }

@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: MainForm
+// OpenSSH Server PN Manager: MainForm
 
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     /// <summary>
     /// Sizes for this screen. The manifest declares system DPI awareness, so Windows does not stretch the window: fonts
@@ -44,7 +44,7 @@ namespace OpenSSHServerManager
             {
                 if (_appIconRead) return _appIcon;
                 _appIconRead = true;
-                try { using (var s = typeof(Ui).Assembly.GetManifestResourceStream("OpenSSHServerManager.app.ico")) if (s != null) _appIcon = new Icon(s); }
+                try { using (var s = typeof(Ui).Assembly.GetManifestResourceStream("OpenSSHServerPNManager.app.ico")) if (s != null) _appIcon = new Icon(s); }
                 catch (Exception ex) { Log.Error("Program icon", ex, false); }
                 return _appIcon;
             }
@@ -64,7 +64,7 @@ namespace OpenSSHServerManager
         private readonly System.Windows.Forms.Timer _timer = new System.Windows.Forms.Timer { Interval = 5000 };
 
         // dashboard
-        private Label _lblSshd, _lblAgent, _lblVersion, _lblListen, _lblSessions, _lblFirewall, _lblConfig;
+        private Label _lblSshd, _lblAgent, _lblVersion, _lblListen, _lblSessions, _lblSftp, _lblFirewall, _lblConfig;
         private Button _btnStart, _btnStop, _btnRestart;
         private ListView _lvHostKeys;
         // settings
@@ -77,7 +77,7 @@ namespace OpenSSHServerManager
         private readonly ErrorProvider _errors = new ErrorProvider { BlinkStyle = ErrorBlinkStyle.NeverBlink };
         private string _pwshShown, _shellShown, _shellOptionShown, _rawShown = "";
         private bool _loadingSettings;
-        private TabPage _pgSettings, _pgAuth, _pgRaw;
+        private TabPage _pgSettings, _pgAuth, _pgSftp, _pgRaw;
         private Label _setPending, _rawPending, _setIncludeNote;
         private CheckBox _chkPwshSubsystem; private TextBox _txtPwshPath;
         private ComboBox _cmbShell; private TextBox _txtShellOption;
@@ -101,6 +101,15 @@ namespace OpenSSHServerManager
         private AuthState _auState = new AuthState();          // as read from sshd_config
         private List<AuthRule> _auRules = new List<AuthRule>(); // being edited
         private bool _auLoading;
+        // sftp
+        private CheckBox _sfEnabled, _sfLog;
+        private Label _sfServer, _sfRulesNote, _sfResult, _sfPending;
+        private ListView _lvSftp;
+        private Button[] _sfRuleButtons;
+        private TextBox _sfAccount;
+        private SftpState _sfFile = new SftpState();            // as read from sshd_config
+        private List<SftpRule> _sfRules = new List<SftpRule>(); // being edited
+        private bool _sfLoading;
 
         // State colours of the current palette (Theme): light, dark or high contrast.
         private static Color Green { get { return Theme.Good; } }
@@ -123,6 +132,7 @@ namespace OpenSSHServerManager
             _tabs.TabPages.Add(_pgSessions = BuildSessions());
             _tabs.TabPages.Add(_pgSettings = BuildSettings());
             _tabs.TabPages.Add(_pgAuth = BuildAuthentication());
+            _tabs.TabPages.Add(_pgSftp = BuildSftp());
             _tabs.TabPages.Add(_pgRaw = BuildRawEditor());
             _tabs.TabPages.Add(_pgKeys = BuildKeys());
             _tabs.TabPages.Add(_pgKeyGen = BuildKeyGen());
@@ -191,6 +201,7 @@ namespace OpenSSHServerManager
                         if (tab == _pgSettings) Safe(() => SaveSettings(false));
                         else if (tab == _pgRaw) Safe(() => SaveRaw());
                         else if (tab == _pgAuth) Safe(ApplyAuth);
+                        else if (tab == _pgSftp) Safe(ApplySftp);
                         else if (tab == _pgFirewall) Safe(ApplyFirewall);
                         else return base.ProcessCmdKey(ref msg, keyData);
                         return true;
@@ -237,6 +248,20 @@ namespace OpenSSHServerManager
             };
             FillRules(); UpdateAuthUi();
         }
+        /// <summary>--screenshot: SFTP with transfer logging and two example SFTP-only accounts, in the window only (nothing is saved).</summary>
+        /// <summary>--screenshot: drops the example rules of the Authentication tab, as its Undo changes does.</summary>
+        public void UndoAuthForTest() { LoadAuth(); }
+        public void ShowSftpExampleForTest()
+        {
+            if (_sfFile.RulesProblem != null) return;
+            _sfEnabled.Checked = true; _sfLog.Checked = true;
+            _sfRules = new List<SftpRule>
+            {
+                new SftpRule { Name = "partner", Folder = "C:\\SFTP\\%u" },
+                new SftpRule { IsGroup = true, Name = "sftp readers", Folder = "D:\\Published", ReadOnly = true },
+            };
+            FillSftpRules(); UpdateSftpUi();
+        }
 
         // ---------------- test hooks (used by --selftest, with Ssh.ConfigDirOverride) ----------------
         public void SetSettingForTest(string key, string value)
@@ -280,6 +305,9 @@ namespace OpenSSHServerManager
             return new[] { direct, start };
         }
         public bool AuthEditedForTest() { return AuthEdited(); }
+        public bool SftpEditedForTest() { return SftpEdited(); }
+        /// <summary>sshd_config as Apply on the SFTP tab would write it.</summary>
+        public SshdConfig SftpCandidateForTest() { return SftpCandidate(); }
         /// <summary>A value of the configuration every tab works on (what the next save of any tab starts from).</summary>
         public string WorkingValueForTest(string key) { return _cfg.Get(key); }
         /// <summary>sshd_config as Apply on the Authentication tab would write it.</summary>
@@ -447,6 +475,7 @@ namespace OpenSSHServerManager
                 RefreshDashboard();
                 LoadSettings();
                 LoadAuth();
+                LoadSftp();
                 LoadRaw();
                 LoadKeys();
                 LoadFirewall();
@@ -482,7 +511,7 @@ namespace OpenSSHServerManager
             };
             _lblSshd = row("SSH server (sshd)"); _lblSshd.Font = new Font(Font.FontFamily, Ui.Pt(11f), FontStyle.Bold);
             _lblAgent = row("Authentication agent"); _lblVersion = row("Version"); _lblListen = row("Listening on");
-            _lblSessions = row("Active sessions"); _lblFirewall = row("Firewall rule"); _lblConfig = row("Configuration");
+            _lblSessions = row("Active sessions"); _lblSftp = row("SFTP"); _lblFirewall = row("Firewall rule"); _lblConfig = row("Configuration");
             root.Controls.Add(grid, 0, 0);
 
             var actions = Flow();
@@ -515,6 +544,7 @@ namespace OpenSSHServerManager
         {
             public ServiceState Sshd, Agent; public string Version; public int Port; public List<string> Listeners, Sessions;
             public FirewallRule Firewall; public bool ConfigExists, RestartPending; public List<HostKey> HostKeys;
+            public SftpState Sftp; public int SftpSessions;
         }
 
         private DashboardData CollectDashboard(SshdConfig cfg)
@@ -524,6 +554,7 @@ namespace OpenSSHServerManager
             d.Firewall = Firewall.Get();
             d.ConfigExists = File.Exists(Ssh.ConfigPath); d.RestartPending = Services.ChangedSinceStart(d.Sshd, Ssh.ConfigPath);
             d.HostKeys = HostKeys.List();
+            d.Sftp = SftpConfig.Read(cfg); d.SftpSessions = Sessions.SftpSessionCount();
             return d;
         }
 
@@ -543,6 +574,9 @@ namespace OpenSSHServerManager
             _lblVersion.Text = d.Version;
             _lblListen.Text = d.Listeners.Count > 0 ? string.Join("   ", d.Listeners) : "nothing listening on port " + d.Port; _lblListen.ForeColor = d.Listeners.Count > 0 ? Green : Red;
             _lblSessions.Text = d.Sessions.Count + (d.Sessions.Count > 0 ? "   from " + string.Join(", ", d.Sessions.Take(6)) + (d.Sessions.Count > 6 ? " ..." : "") : "");
+            var sf = d.Sftp;
+            _lblSftp.Text = !sf.Enabled ? "off (no Subsystem sftp)" : "on" + (sf.LogTransfers ? ", transfers logged" : ", transfers not logged") + "   SFTP-only accounts: " + (sf.RulesProblem != null ? "section edited by hand" : sf.Rules.Count.ToString()) + "   SFTP sessions now: " + d.SftpSessions;
+            _lblSftp.ForeColor = sf.Enabled ? Green : Theme.Muted;
             var fw = d.Firewall;
             _lblFirewall.Text = fw == null ? "missing" : (fw.Enabled ? "enabled" : "DISABLED") + "   profiles: " + fw.ProfilesText + "   port: " + fw.Ports;
             _lblFirewall.ForeColor = fw != null && fw.Enabled ? Green : Red;
@@ -659,13 +693,13 @@ namespace OpenSSHServerManager
             bar.Controls.Add(Btn("Refresh", (s, e) => Safe(RefreshSessions), 100));
             bar.Controls.Add(Btn("Disconnect selected", (s, e) => Safe(() => DisconnectSessions(false)), 160));
             bar.Controls.Add(Btn("Disconnect all", (s, e) => Safe(() => DisconnectSessions(true)), 130));
-            bar.Controls.Add(new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), ForeColor = Theme.Muted, Text = "Each connection runs as an sshd-session.exe process: one owned by SYSTEM before login, then one owned by the user. Refreshes every 5 seconds." });
+            bar.Controls.Add(new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), ForeColor = Theme.Muted, MaximumSize = new Size(Ui.Px(560), 0), Text = "Each connection runs as an sshd-session.exe process: one owned by SYSTEM before login, then one owned by the user. Activity: SFTP, scp, or the shell or command the session runs. Refreshes every 5 seconds." });
             root.Controls.Add(bar, 0, 1);
             var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
             bool splitInit = false;
             split.SizeChanged += (s, e) => { if (splitInit || split.Height < Ui.Px(300)) return; splitInit = true; try { split.SplitterDistance = split.Height * 62 / 100; } catch { } };
             var sessBox = new GroupBox { Text = "Session processes (sshd-session.exe)", Dock = DockStyle.Fill, Padding = new Padding(6) };
-            _lvSessions = Lv("PID|80", "User|260", "Started|160", "Duration|100", "Role|200"); _lvSessions.AccessibleName = "Session processes";
+            _lvSessions = Lv("PID|80", "User|240", "Started|160", "Duration|100", "Role|200", "Activity|170"); _lvSessions.AccessibleName = "Session processes";
             _lvSessions.MultiSelect = true; // "Disconnect selected" ends every selected session
             _lvSessions.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Safe(() => DisconnectSessions(false)); } };
             sessBox.Controls.Add(_lvSessions); split.Panel1.Controls.Add(sessBox);
@@ -705,7 +739,7 @@ namespace OpenSSHServerManager
                 var ts = s.Start == DateTime.MinValue ? TimeSpan.Zero : DateTime.Now - s.Start;
                 if (ts < TimeSpan.Zero) ts = TimeSpan.Zero;
                 var dur = s.Start == DateTime.MinValue ? "" : ((int)ts.TotalHours).ToString("00") + ":" + ts.Minutes.ToString("00") + ":" + ts.Seconds.ToString("00");
-                var it = new ListViewItem(new[] { s.Pid == 0 ? "" : s.Pid.ToString(), s.User, s.Start == DateTime.MinValue ? "" : s.Start.ToString("yyyy-MM-dd HH:mm:ss"), dur, s.Pid == 0 ? "" : (system ? "privileged monitor (pre-login or supervisor)" : "user session") }) { Tag = s.Pid };
+                var it = new ListViewItem(new[] { s.Pid == 0 ? "" : s.Pid.ToString(), s.User, s.Start == DateTime.MinValue ? "" : s.Start.ToString("yyyy-MM-dd HH:mm:ss"), dur, s.Pid == 0 ? "" : (system ? "privileged monitor (pre-login or supervisor)" : "user session"), s.Activity }) { Tag = s.Pid };
                 if (system) it.ForeColor = Theme.Faint;
                 if (selected.Contains(s.Pid)) it.Selected = true;
                 _lvSessions.Items.Add(it);
@@ -715,8 +749,8 @@ namespace OpenSSHServerManager
             _lvConnections.BeginUpdate(); _lvConnections.Items.Clear();
             foreach (var c in conns) _lvConnections.Items.Add(new ListViewItem(c));
             _lvConnections.EndUpdate();
-            int users = list.Count(x => x.Pid != 0 && x.User.IndexOf("SYSTEM", StringComparison.OrdinalIgnoreCase) < 0);
-            _lblSessionSummary.Text = users + " user session(s), " + list.Count(x => x.Pid != 0) + " sshd-session process(es), " + conns.Count + " established connection(s) on port " + data.Port;
+            int users = list.Count(x => x.Pid != 0 && x.User.IndexOf("SYSTEM", StringComparison.OrdinalIgnoreCase) < 0), sftp = list.Count(x => x.Activity == "SFTP");
+            _lblSessionSummary.Text = users + " user session(s)" + (sftp > 0 ? " (" + sftp + " SFTP)" : "") + ", " + list.Count(x => x.Pid != 0) + " sshd-session process(es), " + conns.Count + " established connection(s) on port " + data.Port;
         }
 
         private void DisconnectSessions(bool all)
@@ -956,6 +990,7 @@ namespace OpenSSHServerManager
             var l = new List<string>();
             if (SettingsEdited()) l.Add("the Settings tab");
             if (AuthEdited()) l.Add("the Authentication tab");
+            if (SftpEdited()) l.Add("the SFTP tab");
             if (RawEdited()) l.Add("the sshd_config (text) tab");
             return l;
         }
@@ -963,9 +998,9 @@ namespace OpenSSHServerManager
         /// <summary>Marks tabs with changes not saved: "*" after the tab name and a note next to the Save buttons.</summary>
         private void UpdatePending()
         {
-            if (_pgSettings == null || _setPending == null || _rawPending == null) return; // still building
+            if (_pgSettings == null || _pgSftp == null || _setPending == null || _rawPending == null) return; // still building
             bool s = SettingsEdited(), r = RawEdited();
-            MarkTab(_pgSettings, "Settings", s); MarkTab(_pgAuth, "Authentication", AuthEdited()); MarkTab(_pgRaw, "sshd_config (text)", r);
+            MarkTab(_pgSettings, "Settings", s); MarkTab(_pgAuth, "Authentication", AuthEdited()); MarkTab(_pgSftp, "SFTP", SftpEdited()); MarkTab(_pgRaw, "sshd_config (text)", r);
             _setPending.Text = s ? "Changes not saved yet" : "";
             if (!r) _rawPending.Text = "";
             else if (_rawPending.Text.Length == 0) _rawPending.Text = "Changes not saved yet";
@@ -1268,6 +1303,9 @@ namespace OpenSSHServerManager
             var fromFile = AuthConfig.Read(c);
             if (!AuthEdited() || !SameAuth(fromFile, _auState)) { bool lost = AuthEdited(); LoadAuth(); if (lost) Status("sshd_config changed: the login-method changes not applied yet were replaced by the file"); }
             else { _auState = fromFile; FillRules(); UpdateAuthUi(); }
+            var sftpFromFile = SftpConfig.Read(c);
+            if (!SftpEdited() || !SameSftp(sftpFromFile, _sfFile)) { bool lost = SftpEdited(); LoadSftp(); if (lost) Status("sshd_config changed: the SFTP changes not applied yet were replaced by the file"); }
+            else { _sfFile = sftpFromFile; FillSftpRules(); UpdateSftpUi(); }
             _lvChecks.Items.Clear(); // run again from the new configuration when the tab is opened
         }
 
@@ -1607,6 +1645,326 @@ namespace OpenSSHServerManager
             var limits = new[] { "allowusers", "allowgroups", "denyusers", "denygroups" }.Where(k => d.ContainsKey(k) && d[k].Length > 0).Select(k => k + " " + d[k]).ToList();
             if (limits.Count > 0) sb.Append(" sshd_config also limits who may log in: " + string.Join("; ", limits) + ".");
             SetAuthResult(sb.ToString(), Theme.Text);
+        }
+
+        // ---------------- SFTP ----------------
+        private TabPage BuildSftp()
+        {
+            var page = new TabPage("SFTP");
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, Padding = new Padding(8) };
+            for (int i = 0; i < 7; i++) root.RowStyles.Add(i == 2 ? new RowStyle(SizeType.Percent, 100) : new RowStyle(SizeType.AutoSize));
+
+            var top = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Dock = DockStyle.Top };
+            top.Controls.Add(Lbl("SFTP server", true));
+            _sfEnabled = new CheckBox { Text = "SFTP: clients such as WinSCP, FileZilla and sftp can transfer files (the sftp subsystem)", AutoSize = true, Margin = new Padding(16, 4, 4, 1) };
+            _sfLog = new CheckBox { Text = "Log file transfers: each file uploaded, downloaded, renamed or removed, with the bytes, in the OpenSSH event log", AutoSize = true, Margin = new Padding(16, 1, 4, 1) };
+            top.Controls.Add(_sfEnabled); top.Controls.Add(_sfLog);
+            _sfServer = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(16, 6, 4, 1), ForeColor = Theme.Muted };
+            top.Controls.Add(_sfServer);
+            top.Controls.Add(new Label
+            {
+                AutoSize = true, ForeColor = Theme.Muted, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(16, 2, 4, 6),
+                Text = "Speed: the client chooses the cipher. On x64 processors the AES ciphers are the fastest, up to twice chacha20-poly1305: WinSCP and FileZilla use AES by default; with sftp and scp add -c aes128-gcm@openssh.com. Compression slows transfers down on a fast network."
+            });
+            root.Controls.Add(top, 0, 0);
+
+            var head = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Dock = DockStyle.Top };
+            head.Controls.Add(Lbl("SFTP-only accounts", true));
+            _sfRulesNote = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(16, 0, 4, 4), ForeColor = Theme.Muted };
+            head.Controls.Add(_sfRulesNote);
+            root.Controls.Add(head, 0, 1);
+
+            _lvSftp = Lv("Applies to|90", "Name|200", "Folder, seen as /|380", "Access|190"); _lvSftp.AccessibleName = "SFTP-only accounts and groups";
+            _lvSftp.Margin = new Padding(16, 0, 4, 0);
+            ListSorter.Disable(_lvSftp); // the order is the precedence: the first rule that matches applies
+            _lvSftp.ItemActivate += (s, e) => Safe(EditSftpRule);
+            _lvSftp.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Safe(RemoveSftpRule); } };
+            _lvSftp.SelectedIndexChanged += (s, e) => UpdateSftpRuleButtons();
+            root.Controls.Add(_lvSftp, 0, 2);
+            var rb = Flow();
+            rb.Padding = new Padding(12, 0, 4, 0);
+            _sfRuleButtons = new[]
+            {
+                Btn("Add...", (s, e) => Safe(AddSftpRule), 110), Btn("Edit...", (s, e) => Safe(EditSftpRule), 110), Btn("Remove", (s, e) => Safe(RemoveSftpRule), 110),
+                Btn("Move up", (s, e) => Safe(() => MoveSftpRule(-1)), 110), Btn("Move down", (s, e) => Safe(() => MoveSftpRule(1)), 110),
+            };
+            foreach (var b in _sfRuleButtons) rb.Controls.Add(b);
+            _tips.SetToolTip(_sfRuleButtons[3], "The first rule that matches an account applies: move a rule up to give it precedence.");
+            root.Controls.Add(rb, 0, 3);
+
+            var check = Flow();
+            check.Controls.Add(Lbl("Check an account:"));
+            _sfAccount = new TextBox { Width = Ui.Px(240), Margin = new Padding(4, 6, 4, 4), Text = KeyGen.LoginName(), AccessibleName = "Account to check for SFTP" };
+            check.Controls.Add(_sfAccount);
+            var btnShow = Btn("Show its SFTP access", (s, e) => Safe(CheckSftpAccount), 180);
+            check.Controls.Add(btnShow);
+            _tips.SetToolTip(btnShow, "What sshd works out for this account from the settings on this tab, applied or not (sshd -T with the rules and any other Match blocks; run as SYSTEM for other accounts, like the service).");
+            root.Controls.Add(check, 0, 4);
+
+            _sfResult = new Label
+            {
+                AutoSize = true, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(8, 2, 4, 4), ForeColor = Theme.Muted,
+                Text = "Apply checks the settings with sshd -t, keeps the previous sshd_config as a backup, creates the folders of the rules and gives the accounts access, and restarts sshd (the backup comes back if sshd does not start). Connected sessions stay connected."
+            };
+            root.Controls.Add(_sfResult, 0, 5);
+
+            var bar = Flow();
+            bar.Controls.Add(Btn("Apply and restart sshd", (s, e) => Safe(ApplySftp), 190));
+            bar.Controls.Add(Btn("Undo changes", (s, e) => Safe(() => { LoadSftp(); Status("SFTP settings reloaded from sshd_config"); }), 130));
+            _sfPending = new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), ForeColor = Orange };
+            bar.Controls.Add(_sfPending);
+            root.Controls.Add(bar, 0, 6);
+
+            EventHandler changed = (s, e) => { if (!_sfLoading) UpdateSftpUi(); };
+            _sfEnabled.CheckedChanged += changed; _sfLog.CheckedChanged += changed;
+            _tips.SetToolTip(_sfEnabled, "Subsystem sftp sftp-server.exe. Off: no SFTP at all, also not for the SFTP-only accounts below.");
+            _tips.SetToolTip(_sfLog, "sftp-server -l INFO: the OpenSSH/Operational event log gets a line for every file opened and closed (with the bytes read and written), renamed and removed. See the Logs tab.");
+            page.Controls.Add(root);
+            return page;
+        }
+
+        private void LoadSftp()
+        {
+            _sfFile = SftpConfig.Read(_cfg);
+            _sfRules = _sfFile.Rules.Select(r => r.Clone()).ToList();
+            _sfLoading = true;
+            try { _sfEnabled.Checked = _sfFile.Enabled; _sfLog.Checked = _sfFile.Enabled && _sfFile.LogTransfers; }
+            finally { _sfLoading = false; }
+            FillSftpRules();
+            UpdateSftpUi();
+        }
+
+        private void FillSftpRules()
+        {
+            _lvSftp.BeginUpdate(); _lvSftp.Items.Clear();
+            foreach (var r in _sfRules) _lvSftp.Items.Add(new ListViewItem(new[] { r.Kind, r.Name, r.Folder ?? "(not confined)", r.ReadOnly ? "download only" : "upload and download" }));
+            _lvSftp.EndUpdate();
+            var notes = new List<string>();
+            if (_sfFile.RulesProblem != null)
+                notes.Add("The section of SFTP-only accounts in sshd_config was changed by hand (" + _sfFile.RulesProblem + "), so it is left as it is. Correct it on the sshd_config (text) tab, or delete it to manage the rules here.");
+            else
+                notes.Add("These accounts and groups can only transfer files: no shell, no commands, no terminal, no forwarding. In a folder they see it as / and cannot leave it; %u in the folder stands for the account name. The first rule that matches an account applies.");
+            if (_sfFile.OtherMatchSettings.Count > 0)
+                notes.Add("sshd_config also forces a command or a folder elsewhere, as written there: " + string.Join("; ", _sfFile.OtherMatchSettings.Take(3)) + (_sfFile.OtherMatchSettings.Count > 3 ? "; ..." : "") + ".");
+            _sfRulesNote.Text = string.Join("\n", notes);
+            _sfRulesNote.ForeColor = _sfFile.RulesProblem != null || _sfFile.OtherMatchSettings.Count > 0 ? Orange : Theme.Muted;
+            UpdateSftpRuleButtons();
+        }
+
+        private void UpdateSftpRuleButtons()
+        {
+            bool editable = _sfFile.RulesProblem == null;
+            int i = _lvSftp.SelectedIndices.Count > 0 ? _lvSftp.SelectedIndices[0] : -1;
+            _sfRuleButtons[0].Enabled = editable;
+            _sfRuleButtons[1].Enabled = _sfRuleButtons[2].Enabled = editable && i >= 0;
+            _sfRuleButtons[3].Enabled = editable && i > 0;
+            _sfRuleButtons[4].Enabled = editable && i >= 0 && i < _sfRules.Count - 1;
+        }
+
+        private void UpdateSftpUi()
+        {
+            _sfLog.Enabled = _sfEnabled.Checked;
+            var level = _sfFile.Subsystem == null ? null : SftpConfig.LogLevel(_sfFile.Subsystem);
+            _sfServer.Text = _sfFile.Subsystem == null
+                ? "sshd_config has no Subsystem sftp line, so SFTP is off."
+                : "sshd_config: Subsystem sftp " + _sfFile.Subsystem + (level == null ? "  (sftp-server logs errors only)" : "");
+            if (!_sfEnabled.Checked && (_sfFile.RulesProblem != null || _sfRules.Count > 0))
+            {
+                _sfServer.Text += "\nSFTP-only accounts need SFTP: " + (_sfFile.RulesProblem != null ? "delete their section (changed by hand) on the sshd_config (text) tab" : "remove their rules") + " to switch it off.";
+                _sfServer.ForeColor = Red;
+            }
+            else _sfServer.ForeColor = Theme.Muted;
+            _sfPending.Text = SftpEdited() ? "Changes not applied yet" : "";
+            UpdatePending();
+        }
+
+        /// <summary>True when the SFTP tab has changes that were not applied.</summary>
+        private bool SftpEdited()
+        {
+            if (_sfEnabled.Checked != _sfFile.Enabled) return true;
+            if (_sfEnabled.Checked && _sfLog.Checked != _sfFile.LogTransfers) return true;
+            return _sfRules.Count != _sfFile.Rules.Count || _sfRules.Where((r, i) => !r.SameAs(_sfFile.Rules[i])).Any();
+        }
+
+        private static bool SameSftp(SftpState a, SftpState b)
+        {
+            return a.RulesProblem == b.RulesProblem && a.Subsystem == b.Subsystem && a.Rules.Count == b.Rules.Count && a.Rules.Where((r, i) => !r.SameAs(b.Rules[i])).Count() == 0;
+        }
+
+        private void AddSftpRule()
+        {
+            using (var dlg = new SftpRuleDialog(null, _sfRules))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                _sfRules.Add(dlg.Result); FillSftpRules(); UpdateSftpUi();
+                _lvSftp.Items[_lvSftp.Items.Count - 1].Selected = true;
+            }
+        }
+
+        private void EditSftpRule()
+        {
+            if (_sfFile.RulesProblem != null || _lvSftp.SelectedIndices.Count == 0) return;
+            int i = _lvSftp.SelectedIndices[0];
+            using (var dlg = new SftpRuleDialog(_sfRules[i], _sfRules.Where((r, j) => j != i).ToList()))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                _sfRules[i] = dlg.Result; FillSftpRules(); UpdateSftpUi();
+                _lvSftp.Items[i].Selected = true;
+            }
+        }
+
+        private void RemoveSftpRule()
+        {
+            if (_sfFile.RulesProblem != null || _lvSftp.SelectedIndices.Count == 0) return;
+            _sfRules.RemoveAt(_lvSftp.SelectedIndices[0]); FillSftpRules(); UpdateSftpUi();
+        }
+
+        private void MoveSftpRule(int delta)
+        {
+            if (_sfFile.RulesProblem != null || _lvSftp.SelectedIndices.Count == 0) return;
+            int i = _lvSftp.SelectedIndices[0], j = i + delta;
+            if (j < 0 || j >= _sfRules.Count) return;
+            var r = _sfRules[i]; _sfRules[i] = _sfRules[j]; _sfRules[j] = r;
+            FillSftpRules(); UpdateSftpUi();
+            _lvSftp.Items[j].Selected = true; _lvSftp.Focus();
+        }
+
+        /// <summary>sshd_config as it would be with the settings on this tab (nothing is saved).</summary>
+        private SshdConfig SftpCandidate()
+        {
+            var cand = _cfg.Copy();
+            SftpConfig.Apply(cand, _sfEnabled.Checked, _sfEnabled.Checked && _sfLog.Checked, _sfFile.RulesProblem == null ? _sfRules : null);
+            return cand;
+        }
+
+        /// <summary>A folder that a rule needs: created, or given access to; or a note when it cannot be prepared from here.</summary>
+        private sealed class FolderStep { public string Path; public SecurityIdentifier Sid; public bool ReadOnly; public string Text; }
+
+        /// <summary>
+        /// What the folders of the rules need before their accounts can log in: a user rule's folder (with %u and %h worked
+        /// out as sshd does) and a group rule's shared folder are created or given access; a group rule with %u needs one
+        /// folder per member, which is only noted.
+        /// </summary>
+        private static List<FolderStep> FolderPlan(List<SftpRule> rules)
+        {
+            var l = new List<FolderStep>();
+            foreach (var r in rules.Where(x => x.Folder != null))
+            {
+                var who = r.Kind.ToLowerInvariant() + " " + r.Name;
+                var sid = Acl.SidOfAccount(r.Name);
+                if (r.IsGroup && (r.Folder.Contains("%u") || r.Folder.Contains("%h")))
+                {
+                    l.Add(new FolderStep { Text = who + ": one folder per member, " + r.Folder + " (not created here: add a rule for each user, or create the folders)" });
+                    continue;
+                }
+                var path = r.IsGroup ? SftpConfig.ExpandFolder(r.Folder, "", null) : SftpConfig.ExpandFolder(r.Folder, r.Name, Accounts.ProfileDir(sid));
+                if (path == null) { l.Add(new FolderStep { Text = who + ": " + r.Folder + " uses %h, the profile folder, which the account gets at its first logon (not created here)" }); continue; }
+                if (sid == null) { l.Add(new FolderStep { Text = who + ": " + path + " not prepared, the " + (r.IsGroup ? "group" : "account") + " was not found" }); continue; }
+                bool exists = Directory.Exists(path);
+                if (exists && SftpFolderAccess(path, sid, r.ReadOnly)) continue;
+                var note = exists ? SftpConfig.FolderNote(path, sid) : null;
+                l.Add(new FolderStep { Path = path, Sid = sid, ReadOnly = r.ReadOnly, Text = who + ": " + (exists ? "give " + (r.ReadOnly ? "read" : "modify") + " rights to " : "create ") + path + (note == null ? "" : " (" + note + ")") });
+            }
+            return l;
+        }
+
+        private static bool SftpFolderAccess(string path, SecurityIdentifier sid, bool readOnly)
+        {
+            try
+            {
+                var rights = readOnly ? FileSystemRights.ReadAndExecute : FileSystemRights.Modify;
+                return Directory.GetAccessControl(path).GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+                    .Any(a => a.AccessControlType == AccessControlType.Allow && sid.Equals(a.IdentityReference) && (a.FileSystemRights & rights) == rights);
+            }
+            catch { return false; }
+        }
+
+        private void ApplySftp()
+        {
+            bool enabled = _sfEnabled.Checked, log = enabled && _sfLog.Checked;
+            var cand = SftpCandidate();
+            var steps = _sfFile.RulesProblem == null ? Bg("Looking at the folders of the rules...", () => FolderPlan(_sfRules)) : new List<FolderStep>();
+            // A rule for a group such as Users covers the administrator running this window too: say so before it applies.
+            string warning = null;
+            var tmp = WriteCandidate(cand);
+            try
+            {
+                Bg("Checking what the new settings mean for your account...", () =>
+                {
+                    string err; var me = Accounts.Canonical(KeyGen.LoginName(), false, out err) ?? Accounts.AsciiLower(KeyGen.LoginName());
+                    var lines = AuthConfig.EffectiveLinesFor(me, tmp, cand.EffectivePort, out err);
+                    var force = lines == null ? null : lines.Where(x => x.Key == "forcecommand").Select(x => x.Value).FirstOrDefault();
+                    if (force != null && force.StartsWith("internal-sftp"))
+                        warning = "your own account, " + me + ", becomes SFTP-only: no shell and no commands over SSH for you any more (this window keeps working).";
+                });
+            }
+            finally { try { File.Delete(tmp); } catch { } }
+            var rules = _sfFile.RulesProblem != null ? "The section of SFTP-only accounts edited by hand is left as it is."
+                      : _sfRules.Count == 0 ? "No SFTP-only accounts."
+                      : string.Join("\n", _sfRules.Select((r, i) => (i + 1) + ". " + r.Kind + " " + r.Name + ": SFTP only, " + r.Describe()));
+            var text = (warning != null ? "Warning: " + warning + "\n\n" : "") + "Apply these SFTP settings and restart sshd?\n\nSFTP: " + (enabled ? "on" + (log ? ", file transfers logged" : ", file transfers not logged") : "off") + ".\n" + rules +
+                       (steps.Count > 0 ? "\n\nFolders:\n" + string.Join("\n", steps.Select(s => "- " + s.Text)) : "") +
+                       "\n\nsshd_config is backed up first. Connected sessions stay connected.";
+            if (MessageBox.Show(this, text, Program.AppName, MessageBoxButtons.YesNo, warning != null ? MessageBoxIcon.Warning : MessageBoxIcon.Question,
+                    warning != null ? MessageBoxDefaultButton.Button2 : MessageBoxDefaultButton.Button1) != DialogResult.Yes) { Status("SFTP settings not applied"); return; }
+            var backup = SaveConfig(cand, "Apply the SFTP settings of the SFTP tab.", "Apply");
+            Log.Info("SFTP settings applied: " + (enabled ? "on" + (log ? ", transfers logged" : "") : "off") + "; " + (_sfFile.RulesProblem == null ? _sfRules.Count + " SFTP-only rule(s)" : "section left as it is"));
+            var done = new List<string>(); var failed = new List<string>();
+            if (steps.Any(s => s.Path != null))
+                Bg("Preparing the folders...", () =>
+                {
+                    foreach (var s in steps.Where(x => x.Path != null))
+                    {
+                        try { done.Add(SftpConfig.PrepareFolder(s.Path, s.Sid, s.ReadOnly)); Log.Info("SFTP folder: " + done[done.Count - 1]); }
+                        catch (Exception ex) { failed.Add(s.Path + ": " + ex.Message); Log.Error("SFTP folder " + s.Path, ex, false); }
+                    }
+                });
+            _cfg = SshdConfig.Load(); LoadSftp(); UseConfig(_cfg); // the applied settings are now the file's
+            bool running = RestartWithRollback(backup);
+            var summary = (running ? "Applied: SFTP " + (enabled ? "on" + (log ? ", file transfers logged in the OpenSSH event log" : "") : "off") + ", " + _sfFile.Rules.Count + " SFTP-only rule(s)." : "Not applied: the previous settings are back.") +
+                          (done.Count > 0 ? " Folders: " + string.Join("; ", done) + "." : "") + (failed.Count > 0 ? " Folders not prepared: " + string.Join("; ", failed) + "." : "");
+            _sfResult.Text = summary; _sfResult.ForeColor = !running || failed.Count > 0 ? Red : Green;
+            Status(running ? "SFTP settings applied" : "SFTP settings not applied");
+        }
+
+        /// <summary>Shows what SFTP means for one account from the settings on this tab (sshd -T with the rules applied).</summary>
+        private void CheckSftpAccount()
+        {
+            string err = null;
+            var typed = _sfAccount.Text.Trim();
+            var name = Accounts.Canonical(typed.Length == 0 ? KeyGen.LoginName() : typed, false, out err);
+            if (name == null) throw new ConfigException(err);
+            int port = _cfg.EffectivePort;
+            var tmp = WriteCandidate(SftpCandidate());
+            List<KeyValuePair<string, string>> lines = null;
+            try { Bg("Asking sshd...", () => lines = AuthConfig.EffectiveLinesFor(name, tmp, port, out err)); }
+            finally { try { File.Delete(tmp); } catch { } }
+            if (lines == null) throw new ConfigException("sshd could not work out the settings for " + name + ":\n\n" + (err ?? "").Replace(tmp, "sshd_config"));
+            Func<string, string> value = k => lines.Where(x => x.Key == k).Select(x => x.Value).FirstOrDefault() ?? "";
+            var subsystem = lines.Where(x => x.Key == "subsystem" && x.Value.StartsWith("sftp ", StringComparison.OrdinalIgnoreCase)).Select(x => x.Value.Substring(5).Trim()).FirstOrDefault();
+            // sshd -T prints "forcecommand none" when no command is forced.
+            var force = value("forcecommand"); if (force.Equals("none", StringComparison.OrdinalIgnoreCase)) force = "";
+            var chroot = value("chrootdirectory");
+            var pending = _sfPending.Text.Length > 0 ? " (the settings on this tab, not applied yet)" : "";
+            string text; Color color = Theme.Text;
+            if (subsystem == null) { text = name + " cannot use SFTP: SFTP is off" + pending + "."; color = Orange; }
+            else if (force.Length > 0 && !force.StartsWith("internal-sftp")) { text = name + ": sshd forces the command \"" + force + "\" for every session, so SFTP does not start" + pending + "."; color = Orange; }
+            else
+            {
+                bool only = force.StartsWith("internal-sftp");
+                string readOnlyNote = only && Regex.IsMatch(force, @"(^|\s)-R(\s|$)") ? ", download only" : "";
+                var sb = new StringBuilder(name + (only ? " is an SFTP-only account" + readOnlyNote : " can use SFTP, and also a shell and commands") + pending + ".");
+                if (chroot.Length > 0 && !chroot.Equals("none", StringComparison.OrdinalIgnoreCase))
+                {
+                    var path = SftpConfig.ExpandFolder(chroot, name, Accounts.ProfileDir(Acl.SidOfAccount(name)));
+                    if (path == null) sb.Append(" Its folder is " + chroot + ", with a profile folder it does not have yet.");
+                    else if (Directory.Exists(path)) sb.Append(" It sees " + path + " as / and cannot leave it.");
+                    else { sb.Append(" Its folder " + path + " does not exist, so its SFTP logins fail: Apply creates it."); color = Red; }
+                }
+                else if (only) sb.Append(" It is not confined to a folder: it reaches the disks as its Windows permissions allow.");
+                text = sb.ToString();
+            }
+            _sfResult.Text = text; _sfResult.ForeColor = color;
         }
 
         // ---------------- Raw editor ----------------
@@ -2115,7 +2473,7 @@ namespace OpenSSHServerManager
             if (lines.Count == 0) throw new ConfigException("No host keys from " + host + " port " + port + ".\n\n" + r.Output);
             var fps = Bg("Working out the fingerprints...", () => lines.Select(l => { var k = SshClient.ParseKnownHost(l); var parts = l.Split(' '); return k.Type + "  " + Keys.Fingerprint(k.Type + " " + parts[2]); }).ToList());
             if (MessageBox.Show(this, host + " port " + port + " offers these host keys:\n\n" + string.Join("\n", fps) +
-                "\n\nCompare them with the fingerprints the server's administrator gives you (on that server: ssh-keygen -lf on its host keys, or the Dashboard of OpenSSH Server Manager). Add them to your known_hosts only when they match.\n\nAdd them?",
+                "\n\nCompare them with the fingerprints the server's administrator gives you (on that server: ssh-keygen -lf on its host keys, or the Dashboard of OpenSSH Server PN Manager). Add them to your known_hosts only when they match.\n\nAdd them?",
                 Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
             Directory.CreateDirectory(KeyGen.SshDir);
             var existing = File.Exists(SshClient.KnownHostsPath) ? File.ReadAllText(SshClient.KnownHostsPath) : "";
@@ -2281,6 +2639,9 @@ namespace OpenSSHServerManager
             bar.Controls.Add(Btn("Refresh", (s, e) => Safe(LoadLogs), 100));
             bar.Controls.Add(Btn("Failed logins only", (s, e) => Safe(() => { _txtFilter.Text = "Failed"; LoadLogs(); }), 150));
             bar.Controls.Add(Btn("Accepted logins only", (s, e) => Safe(() => { _txtFilter.Text = "Accepted"; LoadLogs(); }), 160));
+            var sftpEvents = Btn("SFTP transfers", (s, e) => Safe(() => { _txtFilter.Text = "sftp-server"; LoadLogs(); }), 130);
+            _tips.SetToolTip(sftpEvents, "Events of sftp-server: each file opened and closed with the bytes read and written, renamed or removed, by account (with Log file transfers on the SFTP tab).");
+            bar.Controls.Add(sftpEvents);
             bar.Controls.Add(Btn("Failed logins by address...", (s, e) => Safe(ShowFailedByAddress), 200));
             bar.Controls.Add(Btn("Copy selected", (s, e) => Safe(() => { var rows = _lvEvents.SelectedItems.Cast<ListViewItem>().Select(i => string.Join("\t", i.SubItems.Cast<ListViewItem.ListViewSubItem>().Select(x => x.Text))).ToList(); if (rows.Count > 0) Clipboard.SetText(string.Join("\r\n", rows)); }), 120));
             bar.Controls.Add(Btn("Export...", (s, e) => Safe(() => { var f = Export.SaveList(this, "OpenSSH events", "openssh-events", "Events of " + EventLogs.LogName + " on " + Environment.MachineName + ", " + _cmbPeriod.Text.ToLowerInvariant() + (_txtFilter.Text.Trim().Length > 0 ? ", filter \"" + _txtFilter.Text.Trim() + "\"" : "") + ".", _lvEvents, r => r.Count > 2 && r[2].StartsWith("Err", StringComparison.OrdinalIgnoreCase) ? "error" : null); if (f != null) Status("Exported to " + f); }), 100));
@@ -2361,7 +2722,7 @@ namespace OpenSSHServerManager
             bar.Controls.Add(Btn("Fix selected...", (s, e) => Safe(FixSelectedChecks), 130));
             bar.Controls.Add(Btn("Apply recommended settings", (s, e) => Safe(ApplyRecommended), 210));
             bar.Controls.Add(Btn("Export report...", (s, e) => Safe(() => { var f = Export.SaveList(this, "OpenSSH hardening report", "openssh-hardening", "Hardening checks of " + Environment.MachineName + " (" + Ssh.ServerVersion() + "), " + DateTime.Now.ToString("yyyy-MM-dd HH:mm") + ", by " + Program.AppName + " " + Program.AppVersion + ".", _lvChecks, r => r.Count > 1 ? (r[1] == "OK" ? "ok" : r[1] == "WARN" ? "warn" : null) : null); if (f != null) Status("Exported to " + f); }), 140));
-            _tips.SetToolTip(bar.Controls[1], "Fixes the selected warnings (double-click or Enter on one also works). Settings in sshd_config are shown before they are saved; login methods and login restrictions open their tab instead.");
+            _tips.SetToolTip(bar.Controls[1], "Fixes the selected warnings (double-click or Enter on one also works). Settings in sshd_config are shown before they are saved; login methods, login restrictions and SFTP open their tab instead.");
             bar.Controls.Add(new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), ForeColor = Theme.Muted, MaximumSize = new Size(Ui.Px(700), 0), Text = "Recommended: ClientAliveInterval 300, MaxAuthTries 4, LoginGraceTime 60, RequiredRSASize 2048, LogLevel VERBOSE, keyboard-interactive off, PerSourcePenalties on. Windows authentication and login restrictions are never changed automatically (see the Authentication and Settings tabs)." });
             root.Controls.Add(bar, 0, 0);
             _lvChecks = Lv("Check|220", "Status|70", "Detail|700"); _lvChecks.AccessibleName = "Hardening checks";
@@ -2418,6 +2779,7 @@ namespace OpenSSHServerManager
             foreach (var c in selected.Where(x => ConfigFix(x.Name) == null))
             {
                 if (c.Name == "Password authentication") { _tabs.SelectedTab = _pgAuth; Status("Login methods are changed on the Authentication tab"); return; }
+                if (c.Name == "SFTP" || c.Name == "SFTP-only accounts") { _tabs.SelectedTab = _pgSftp; Status("SFTP and SFTP-only accounts are set on the SFTP tab; Apply creates missing folders"); return; }
                 if (c.Name == "Login restriction") { _tabs.SelectedTab = _pgSettings; _fields["AllowGroups"].Focus(); Status("Enter the groups allowed to log in (AllowGroups), for example administrators \"openssh users\""); return; }
                 if (c.Name == "Firewall rule") { _tabs.SelectedTab = _pgFirewall; Status("Tick \"Inbound rule enabled\" and click Apply"); return; }
                 if (c.Name == "sshd service")
@@ -2678,21 +3040,35 @@ namespace OpenSSHServerManager
                 using (var sized = new Icon(Ui.AppIcon, Ui.Px(64), Ui.Px(64)))
                     header.Controls.Add(new PictureBox { Image = sized.ToBitmap(), SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(Ui.Px(64), Ui.Px(64)), Margin = new Padding(4, 4, 12, 4), AccessibleName = "Program icon" });
             }
-            header.Controls.Add(new Label { Text = Program.AppName + " " + Program.AppVersion, AutoSize = true, Font = new Font(Font.FontFamily, Ui.Pt(14f), FontStyle.Bold), Margin = new Padding(4, Ui.Px(20), 4, 4) });
+            var title = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, Margin = new Padding(0, Ui.Px(8), 0, 0) };
+            title.Controls.Add(new Label { Text = Program.AppName, AutoSize = true, Font = new Font(Font.FontFamily, Ui.Pt(14f), FontStyle.Bold), Margin = new Padding(4, 0, 4, 0) });
+            title.Controls.Add(new Label { Text = "Version " + Program.AppVersion + "  ·  " + Program.Copyright, AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(6, 2, 4, 4) });
+            header.Controls.Add(title);
             flow.Controls.Add(header);
-            flow.Controls.Add(new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(820), 0), Margin = new Padding(4, 8, 4, 8), Text = "Management console for the OpenSSH for Windows server: service control, validated configuration editing with backups and rollback, authorized and host keys, default shell, Windows Firewall rule, event log viewer and a hardening check. Works with the MSI packages from this repository and with the official Microsoft packages." });
-            Action<string, string> line = (k, v) => flow.Controls.Add(new Label { AutoSize = true, Text = k.PadRight(22) + v, Font = new Font("Consolas", Ui.Pt(9.5f)), Margin = new Padding(4, 1, 4, 1) });
+            flow.Controls.Add(new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(820), 0), Margin = new Padding(4, 8, 4, 8), Text = "The management console of OpenSSH Server PN, the OpenSSH server and client for Windows: service control, configuration editing that is validated, backed up and rolled back on failure, login methods, SFTP with transfer logging and SFTP-only accounts, authorized and host keys, the Windows Firewall rule, the event log and a hardening check. It also manages the official Microsoft packages and the OpenSSH feature of Windows." });
+            // The same lines as text, for "Copy details" (what a support request needs).
+            var details = new List<string>();
+            Action<string, string> line = (k, v) => { details.Add(k.PadRight(22) + v); flow.Controls.Add(new Label { AutoSize = true, Text = k.PadRight(22) + v, Font = new Font("Consolas", Ui.Pt(9.5f)), Margin = new Padding(4, 1, 4, 1) }); };
+            line("Product:", Program.AppName + " " + Program.AppVersion); line("Publisher:", Program.Publisher); line("Licence:", "BSD-style, as OpenSSH (LICENSE.txt in the install folder)");
             line("Install folder:", Ssh.InstallDir); line("Configuration:", Ssh.ConfigPath); line("Server version:", Ssh.ServerVersion()); line("Client banner:", Ssh.ClientBanner());
-            line("Manager log:", Log.Path); line("Self-check:", "OpenSSHServerManager.exe --check [report.txt]"); line("OS:", Environment.OSVersion.VersionString + (Environment.Is64BitOperatingSystem ? " x64" : " x86")); line(".NET runtime:", Environment.Version.ToString());
-            var link = new LinkLabel { Text = "https://github.com/patnawa/openssh_server_pn  (documentation, packages, issues)", AutoSize = true, Margin = new Padding(4, 12, 4, 4) };
-            link.LinkClicked += (s, e) => Proc.OpenExternal("https://github.com/patnawa/openssh_server_pn");
-            flow.Controls.Add(link);
-            var wiki = new LinkLabel { Text = "https://github.com/PowerShell/Win32-OpenSSH/wiki  (upstream wiki)", AutoSize = true, Margin = new Padding(4) };
-            wiki.LinkClicked += (s, e) => Proc.OpenExternal("https://github.com/PowerShell/Win32-OpenSSH/wiki");
-            flow.Controls.Add(wiki);
-            flow.Controls.Add(Btn("Open manager log", (s, e) => Proc.OpenExternal("notepad.exe", "\"" + Log.Path + "\""), 150));
+            line("Manager log:", Log.Path); line("Self-check:", "OpenSSHServerPNManager.exe --check [report.txt]"); line("OS:", Environment.OSVersion.VersionString + (Environment.Is64BitOperatingSystem ? " x64" : " x86")); line(".NET runtime:", Environment.Version.ToString());
+            Action<string, string, string> link = (text, url, margin) =>
+            {
+                var l = new LinkLabel { Text = text + "  " + url, AutoSize = true, Margin = margin == "first" ? new Padding(4, 12, 4, 2) : new Padding(4, 2, 4, 2), AccessibleName = text };
+                l.LinkArea = new LinkArea(text.Length + 2, url.Length);
+                l.LinkClicked += (s, e) => Proc.OpenExternal(url);
+                flow.Controls.Add(l);
+            };
+            link("Website and documentation:", Program.Website, "first");
+            link("Updates:", Program.ReleasesUrl, null);
+            link("Support and problem reports:", Program.SupportUrl, null);
+            var buttons = Flow(); buttons.Dock = DockStyle.None; buttons.Padding = new Padding(0); buttons.WrapContents = false;
+            buttons.Controls.Add(Btn("Open manager log", (s, e) => Proc.OpenExternal("notepad.exe", "\"" + Log.Path + "\""), 150));
+            buttons.Controls.Add(Btn("Copy details", (s, e) => Safe(() => { Clipboard.SetText(string.Join(Environment.NewLine, details) + Environment.NewLine); Status("Details copied: paste them into a support request"); }), 130));
+            _tips.SetToolTip(buttons.Controls[1], "Copies the version, paths and system above, for a problem report.");
+            flow.Controls.Add(buttons);
 
-            // Preferences of this account (HKCU\Software\OpenSSH Server Manager).
+            // Preferences of this account (HKCU\Software\OpenSSH Server PN Manager).
             flow.Controls.Add(Lbl("Preferences", true));
             var themeRow = Flow(); themeRow.Dock = DockStyle.None; themeRow.Padding = new Padding(0);
             themeRow.Controls.Add(Lbl("Appearance:"));
