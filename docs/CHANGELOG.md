@@ -2,6 +2,7 @@
 
 All builds of this project, newest first. Each entry lists the source, the library versions,
 every change to the packaging, and how the result was verified. Published as GitHub releases:
+[manager-v2.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.1.0),
 [v10.5.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.3.0) (with OpenSSH
 Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.0.0),
 [v10.5.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.2.0) (with Manager
@@ -10,11 +11,19 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
-## OpenSSH Server PN Manager 2.1.0 (not released yet)
+## OpenSSH Server PN Manager 2.1.0 (2026-09-27)
 
 Keys for you, from start to finish: the setup wizard creates one, and the Key generator tab loads
 the keys you have, changes their passphrase and exports them for PuTTY, WinSCP and FileZilla. The
-server packages do not change.
+server packages do not change: 2.1.0 is published on its own, as `manager-v2.1.0` by the CI
+(`.github/workflows/manager.yml`), and runs with the 10.5.3.0 packages and earlier ones.
+
+| File | Size | SHA-256 |
+|---|---|---|
+| `OpenSSHServerPNManager.exe` | 1,003,520 bytes | `6E8C3DD3C1E9DDD373D7FA29927E2F60CB9D6B075B4AFB207F84926189A887A3` |
+| `OpenSSHServerPNManager.exe.config` | 371 bytes | `38607418BB4655C3C736572F52DA1F35D926CCBF91AD1102F0DCDA164E798451` (unchanged) |
+
+A fresh build of the source gives the same SHA-256.
 
 Fixed:
 
@@ -80,6 +89,11 @@ Verified:
   P-521 and RSA; a PEM key; the three key dialogs filled in and confirmed as a user would, a wrong
   passphrase refused and then the right one accepted). The three tests that need administrator
   rights fail as they do with 2.0.0 run the same way.
+- Elevated, in the full build of this source (`.github/workflows/openssh.yml`, run 36313157331, started by hand on
+  the branch): installed on Windows Server 2022, on Windows Server 2022 with the PowerShell 2.0
+  engine, on Windows Server 2025 and on Windows 11 on ARM64, `--selftest` passed 107 of 107 on each,
+  `--keytest` passed (an Ed25519 key through `.ppk` version 3 and an RSA 3072 key through version 2
+  logged in after the round trip), and so did `--authtest`.
 - Against the other programs, on Windows 11 with a private `sshd` 10.5.3.0 on 127.0.0.1: WinSCP
   6.5.7 logged in with all 20 `.ppk` files the manager wrote (five key types, versions 2 and 3,
   with and without a passphrase), PuTTY 0.85's `plink` with the 10 without a passphrase; `ssh`
