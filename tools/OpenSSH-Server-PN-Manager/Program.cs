@@ -2,14 +2,15 @@
 // The management console of OpenSSH Server PN: a WinForms application (.NET Framework 4.x) for the
 // OpenSSH server on Windows: service control, sshd_config editing with validation and rollback, login
 // methods (Windows authentication, public key, Kerberos; per user and group), SFTP (the subsystem,
-// transfer logging, SFTP-only accounts confined to a folder), authorized keys, a key generator, host
-// keys, default shell, Windows Firewall rule, event log viewer and a hardening check.
+// transfer logging, SFTP-only accounts confined to a folder), authorized keys, keys for you (create,
+// load, change the passphrase, convert to and from PuTTY .ppk, export), a setup wizard, host keys,
+// default shell, Windows Firewall rule, event log viewer and a hardening check.
 // Copyright (c) 2026 patnawa. BSD-style licence, like OpenSSH: see LICENSE.txt of the package.
 //
 // Source: one file per area in this folder (Program, SelfTest, Platform, Ssh, SshdConfig, Keys,
-// KeyGen, Auth, AuthTest, Sftp, WindowsSettings, Hardening, Sessions, Client, MainForm, Dialogs,
-// Wizard, Theme, Widgets, Prefs), compiled into one executable by build.ps1 (the Roslyn C# compiler
-// from Visual Studio Build Tools). Runs elevated (see app.manifest).
+// KeyGen, KeyFiles, KeyDialogs, Auth, AuthTest, Sftp, WindowsSettings, Hardening, Sessions, Client,
+// MainForm, Dialogs, Wizard, Theme, Widgets, Prefs), compiled into one executable by build.ps1 (the
+// Roslyn C# compiler from Visual Studio Build Tools). Runs elevated (see app.manifest).
 //
 // Command line (an optional file name receives the report):
 //   --unittest   tests of the program logic alone: no sshd, no service, no administrator rights
@@ -19,6 +20,7 @@
 //   --authtest   every login-method setting, and SFTP with SFTP-only accounts, with real logins against
 //                a temporary sshd on 127.0.0.1 and a temporary local account; both are removed at the end
 //   --screenshot <folder> [--ui-scale 1.5] [--theme dark|light]   every tab rendered off-screen to PNG files
+//   --wizard     opens the window and starts the setup wizard at once
 
 using System;
 using System.Collections.Generic;
@@ -46,9 +48,9 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Management console of OpenSSH Server PN: service, configuration, login methods, SFTP, keys, firewall, logs and hardening")]
 [assembly: System.Reflection.AssemblyCompany(OpenSSHServerPNManager.Program.Publisher)]
 [assembly: System.Reflection.AssemblyCopyright(OpenSSHServerPNManager.Program.Copyright)]
-[assembly: System.Reflection.AssemblyVersion("2.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("2.1.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("2.1.0")]
 
 namespace OpenSSHServerPNManager
 {
@@ -58,7 +60,7 @@ namespace OpenSSHServerPNManager
     internal static class Program
     {
         public const string AppName = "OpenSSH Server PN Manager";
-        public const string AppVersion = "2.0.0";
+        public const string AppVersion = "2.1.0";
         public const string Publisher = "patnawa";
         public const string Copyright = "Copyright © 2026 patnawa";
         public const string Website = "https://github.com/patnawa/openssh_server_pn";
@@ -66,6 +68,8 @@ namespace OpenSSHServerPNManager
         public const string ReleasesUrl = Website + "/releases";
         /// <summary>True in --check, --selftest and --screenshot: no modal dialogs may block the process.</summary>
         public static bool Unattended;
+        /// <summary>--wizard: the setup wizard starts as soon as the window is shown.</summary>
+        public static bool StartWizard;
 
         [DllImport("kernel32.dll")] private static extern bool AttachConsole(int pid);
         [DllImport("kernel32.dll")] private static extern bool FreeConsole();
@@ -123,9 +127,10 @@ namespace OpenSSHServerPNManager
                 if (ui >= 0) { Unattended = true; return SelfTest.Run(ui + 1 < args.Length ? args[ui + 1] : null, true); }
             }
 
+            StartWizard = args.Any(a => a.Equals("--wizard", StringComparison.OrdinalIgnoreCase) || a.Equals("/wizard", StringComparison.OrdinalIgnoreCase));
             if (!Elevation.IsAdministrator())
             {
-                if (Elevation.Relaunch()) return 0;
+                if (Elevation.Relaunch(StartWizard ? "--wizard" : null)) return 0;
                 MessageBox.Show("OpenSSH Server PN Manager needs administrator rights to control the sshd service, edit the server configuration and manage keys.\n\nRight-click the program and choose \"Run as administrator\".",
                     AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return 1;
@@ -215,7 +220,7 @@ namespace OpenSSHServerPNManager
                     var t0 = new DateTime(2026, 9, 26, 9, 0, 0);
                     var sources = EventLogs.FailedByAddress(new[] { "sshd: Failed password for root from 203.0.113.50 port 1 ssh2", "sshd: Invalid user oracle from 203.0.113.50 port 2", "sshd: Failed password for admin from 198.51.100.23 port 3 ssh2" }.Select((m, i) => new LogEvent { Time = t0.AddMinutes(i), Message = m }));
                     using (var d = new FailedLoginsDialog(sources, "last 24 hours", "22", new List<string>())) shot(d, "dialog-failed-logins");
-                    using (var w = new SetupWizard(22, null, null, () => 1, () => { }))
+                    using (var w = new SetupWizard(22, null, null, () => 1, () => { }, o => null))
                     {
                         w.StartPosition = FormStartPosition.Manual; w.Location = new Point(-20000, -20000); w.ShowInTaskbar = false; w.Show(); Application.DoEvents();
                         for (int p = 0; p < 5; p++)
@@ -224,6 +229,23 @@ namespace OpenSSHServerPNManager
                             using (var bmp = new Bitmap(w.Width, w.Height)) { w.DrawToBitmap(bmp, new Rectangle(0, 0, w.Width, w.Height)); bmp.Save(Path.Combine(dir, "wizard-" + (p + 1) + ".png"), System.Drawing.Imaging.ImageFormat.Png); }
                         }
                         w.Close();
+                    }
+                    // The key dialogs and the Key generator tab with a key loaded (an example key: nothing is read or written).
+                    var sampleKey = new KeyFileInfo
+                    {
+                        Path = Path.Combine(KeyGen.SshDir, "id_ed25519"), Format = "OpenSSH", Type = "ssh-ed25519", Description = "Ed25519", Encrypted = true, Comment = "alice@SERVER01",
+                        Fingerprint = "SHA256:nLrGAJ49fjAqtfX2KJQ+erIZ3xDUDyhJwwz4UolJB18", PublicLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINFhfnIhjngEwHGzCWQanrghnwUez4F1AURuXtiqig8t alice@SERVER01",
+                    };
+                    using (var d = new KeyExportDialog(sampleKey, x => { })) shot(d, "dialog-key-export");
+                    using (var d = new PassphraseChangeDialog(sampleKey, x => { })) shot(d, "dialog-key-passphrase");
+                    using (var d = new NewKeyDialog(x => { })) shot(d, "dialog-new-key");
+                    for (int i = 0; i < n; i++) if (f.TabName(i) == "Key generator") f.SelectTabForTest(i);
+                    f.ShowKeyExampleForTest(sampleKey);
+                    Application.DoEvents();
+                    using (var bmp = new Bitmap(f.Width, f.Height))
+                    {
+                        f.DrawToBitmap(bmp, new Rectangle(0, 0, f.Width, f.Height));
+                        bmp.Save(Path.Combine(dir, "keygen-example.png"), System.Drawing.Imaging.ImageFormat.Png);
                     }
                     f.Close();
                 }

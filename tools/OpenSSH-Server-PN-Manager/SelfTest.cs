@@ -601,6 +601,7 @@ namespace OpenSSHServerPNManager
                 return null;
             });
             UnitSince20(test);
+            UnitSince21(test, tmpDir);
         }
 
         /// <summary>The configuration of a default installation, with the rules section of the Authentication tab when auth is given.</summary>
@@ -751,6 +752,233 @@ namespace OpenSSHServerPNManager
             });
         }
 
+        /// <summary>Unit tests of what manager 2.1.0 added: key files in the OpenSSH and PuTTY formats, the askpass answers.</summary>
+        private static void UnitSince21(Action<string, Func<string>> test, string tmpDir)
+        {
+            Func<byte[], string> hex = b => string.Concat(b.Select(x => x.ToString("x2")));
+            test("key files: BLAKE2b and Argon2 give the test vectors of RFC 7693 and RFC 9106", () =>
+            {
+                if (hex(Blake2b.Hash(64, new byte[0])) != "786a02f742015903c6c6fd852552d272912f4740e15847618a86e217f71f5419d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce") throw new Exception("BLAKE2b-512 of nothing");
+                if (hex(Blake2b.Hash(64, Encoding.ASCII.GetBytes("abc"))) != "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923") throw new Exception("BLAKE2b-512 of abc");
+                Func<byte, int, byte[]> fill = (v, n) => Enumerable.Repeat(v, n).ToArray();
+                var vectors = new Dictionary<Argon2.Kind, string>
+                {
+                    { Argon2.Kind.D, "512b391b6f1162975371d30919734294f868e3be3984f3c1a13a4db9fabe4acb" },
+                    { Argon2.Kind.I, "c814d9d1dc7f37aa13f0d77f2494bda1c8de6b016dd388d29952a4c4672b6ce8" },
+                    { Argon2.Kind.Id, "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659" },
+                };
+                foreach (var v in vectors)
+                {
+                    var tag = hex(Argon2.Hash(v.Key, fill(1, 32), fill(2, 16), 32, 3, 4, 32, fill(3, 8), fill(4, 12)));
+                    if (tag != v.Value) throw new Exception("Argon2" + v.Key.ToString().ToLowerInvariant() + ": " + tag);
+                }
+                return null;
+            });
+            test("key files: bcrypt_pbkdf gives OpenBSD's test vector", () =>
+            {
+                var k = hex(BcryptPbkdf.Derive(Encoding.ASCII.GetBytes("password"), Encoding.ASCII.GetBytes("salt"), 4, 32));
+                if (k != "5bbf0cc293587f1c3635555c27796598d47e579071bf427e9d8fbe842aba34d9") throw new Exception(k);
+                return null;
+            });
+            test("key files: keys of ssh-keygen and the .ppk files WinSCP made of them are the same keys", () =>
+            {
+                var pairs = new[] { new[] { FxEd25519, FxEd25519Ppk, "Fixture-pass-1", "Fixture-pass-1" }, new[] { FxEcdsa, FxEcdsaPpk, null, null }, new[] { FxRsa, FxRsaPpk, "Fixture-pass-1", null } };
+                var types = new List<string>();
+                foreach (var p in pairs)
+                {
+                    var ossh = OpenSshKeyFile.Parse(Fixture(p[0]));
+                    var ppk = PpkFile.Parse(Encoding.UTF8.GetBytes(Fixture(p[1])));
+                    if (ossh.Encrypted != (p[2] != null) || ppk.Encrypted != (p[3] != null)) throw new Exception(ossh.Type + ": encryption read wrongly");
+                    var a = ossh.Decrypt(p[2]); var b = ppk.Decrypt(p[3]);
+                    if (a.Type != b.Type || !KeyFormats.Equal(a.PublicBlob, b.PublicBlob) || !KeyFormats.Equal(a.Private, b.Private) || a.Comment != b.Comment) throw new Exception(a.Type + ": the two files give different keys");
+                    if (p[2] != null) try { ossh.Decrypt("Fixture-pass-2"); throw new Exception(a.Type + ": the OpenSSH key opened with a wrong passphrase"); } catch (WrongPassphraseException) { }
+                    if (p[3] != null) try { ppk.Decrypt("Fixture-pass-2"); throw new Exception(a.Type + ": the .ppk key opened with a wrong passphrase"); } catch (WrongPassphraseException) { }
+                    types.Add(KeyFormats.Describe(a.PublicBlob));
+                }
+                return string.Join(", ", types);
+            });
+            test("key files: written as OpenSSH and .ppk (versions 2 and 3), with and without a passphrase, and read back", () =>
+            {
+                int n = 0;
+                foreach (var fx in new[] { new[] { FxEd25519, "Fixture-pass-1" }, new[] { FxEcdsa, null }, new[] { FxRsa, "Fixture-pass-1" } })
+                {
+                    var k = OpenSshKeyFile.Parse(Fixture(fx[0])).Decrypt(fx[1]);
+                    Action<PrivateKeyData, string> same = (x, what) => { if (x.Type != k.Type || !KeyFormats.Equal(x.PublicBlob, k.PublicBlob) || !KeyFormats.Equal(x.Private, k.Private) || x.Comment != k.Comment) throw new Exception(k.Type + ", " + what + ": another key came back"); n++; };
+                    foreach (var pass in new[] { "Written-pass-3", null })
+                    {
+                        var text = OpenSshKeyFile.Write(k, pass, 2);
+                        if (!text.StartsWith(OpenSshKeyFile.Begin + "\n") || text.Split('\n').Any(l => l.Length > 70)) throw new Exception("not laid out as ssh-keygen does");
+                        same(OpenSshKeyFile.Parse(text).Decrypt(pass), "OpenSSH " + (pass ?? "no passphrase"));
+                        foreach (var v in new[] { 2, 3 })
+                        {
+                            var ppk = PpkFile.Write(k, pass, v);
+                            var parsed = PpkFile.Parse(Encoding.UTF8.GetBytes(ppk));
+                            if (parsed.Version != v || parsed.Encrypted != (pass != null) || (v == 3 && pass != null) != (parsed.Kdf == "Argon2id")) throw new Exception(".ppk " + v + " header: " + ppk.Split('\n')[0]);
+                            same(parsed.Decrypt(pass), ".ppk " + v + " " + (pass ?? "no passphrase"));
+                            if (pass != null) try { parsed.Decrypt("Written-pass-4"); throw new Exception(".ppk " + v + " opened with a wrong passphrase"); } catch (WrongPassphraseException) { }
+                        }
+                    }
+                }
+                return n + " round trips";
+            });
+            test("key files: damaged and tampered files are refused", () =>
+            {
+                var k = OpenSshKeyFile.Parse(Fixture(FxEcdsa)).Decrypt(null);
+                var ppk = PpkFile.Write(k, null, 3);
+                var tampered = ppk.Replace("Comment: osm fixture ecdsa", "Comment: osm fixture ecdsA");
+                try { PpkFile.Parse(Encoding.UTF8.GetBytes(tampered)).Decrypt(null); throw new Exception("a .ppk file with a changed comment was accepted"); } catch (FormatException) { }
+                var cut = ppk.Substring(0, ppk.IndexOf("Private-MAC", StringComparison.Ordinal));
+                try { PpkFile.Parse(Encoding.UTF8.GetBytes(cut)); throw new Exception("a .ppk file without its MAC was accepted"); } catch (FormatException) { }
+                var lines = OpenSshKeyFile.Write(k, null, 2).Split('\n');
+                lines[3] = lines[3].Substring(0, 10) + (lines[3][10] == 'A' ? 'B' : 'A') + lines[3].Substring(11);
+                try { OpenSshKeyFile.Parse(string.Join("\n", lines)).Decrypt(null); throw new Exception("a changed OpenSSH key was accepted"); } catch (FormatException) { }
+                try { OpenSshKeyFile.Parse(Fixture(FxRsa)).Decrypt(null); throw new Exception("an encrypted key opened without its passphrase"); } catch (WrongPassphraseException) { }
+                try { OpenSshKeyFile.Parse("-----BEGIN RSA " + "PRIVATE KEY-----\nMIIB\n-----END RSA " + "PRIVATE KEY-----\n"); throw new Exception("a PEM file was taken for an OpenSSH key"); } catch (FormatException) { }
+                if (!PpkFile.IsPpk(Fixture(FxRsaPpk)) || PpkFile.IsPpk(Fixture(FxRsa)) || OpenSshKeyFile.IsOpenSsh(Fixture(FxRsaPpk))) throw new Exception("formats told apart wrongly");
+                try { OpenSshKeyFile.Parse(OpenSshKeyFile.Begin + OpenSshKeyFile.End.Substring(5)); throw new Exception("overlapping first and last lines were read"); } catch (FormatException) { }
+                // Settings that would take hours or all memory are refused before any work (a crafted file).
+                var slow = OpenSshKeyFile.Parse(Fixture(FxEd25519)); slow.KdfOptions = new SshWriter().String(new byte[16]).UInt32(1000000).ToArray();
+                try { slow.Decrypt("Fixture-pass-1"); throw new Exception("a million bcrypt_pbkdf rounds were started"); } catch (ConfigException ex) when (!(ex is WrongPassphraseException)) { }
+                var big = PpkFile.Parse(Encoding.UTF8.GetBytes(Fixture(FxEd25519Ppk))); big.Memory = 4 * 1024 * 1024;
+                try { big.Decrypt("Fixture-pass-1"); throw new Exception("Argon2 with 4 GiB was started"); } catch (ConfigException ex) when (!(ex is WrongPassphraseException)) { }
+                var lanes = PpkFile.Parse(Encoding.UTF8.GetBytes(Fixture(FxEd25519Ppk))); lanes.Memory = 64; lanes.Parallelism = 64;
+                try { lanes.Decrypt("Fixture-pass-1"); throw new Exception("more Argon2 lanes than memory allows were started"); } catch (ConfigException ex) when (!(ex is WrongPassphraseException)) { }
+                return null;
+            });
+            test("key files: the askpass helper answers old and new passphrases of ssh-keygen -p", () =>
+            {
+                var old = KeyGen.Wrap("Old-pass-1"); var nw = KeyGen.Wrap("");
+                var cases = new[]
+                {
+                    new[] { "Enter passphrase (empty for no passphrase): ", old, null, "Old-pass-1" },
+                    new[] { "Enter same passphrase again: ", old, null, "Old-pass-1" },
+                    new[] { "Enter old passphrase: ", old, nw, "Old-pass-1" },
+                    new[] { "Enter new passphrase (empty for no passphrase): ", old, nw, "" },
+                    new[] { "Enter same passphrase again: ", old, nw, "" },
+                    new[] { "Enter passphrase for \"C:\\Users\\a\\.ssh\\id_ed25519\": ", old, null, "Old-pass-1" },
+                    new[] { "Are you sure you want to continue connecting (yes/no/[fingerprint])? ", old, null, null },
+                };
+                foreach (var c in cases)
+                {
+                    var got = KeyGen.AskpassAnswer(c[0], null, c[1], c[2]);
+                    if (got != c[3]) throw new Exception("[" + c[0] + "]: [" + got + "], expected [" + c[3] + "]");
+                }
+                if (KeyGen.AskpassAnswer("alice@localhost's password: ", "password", KeyGen.Wrap("pw"), null) != "pw" || KeyGen.AskpassAnswer("Enter passphrase: ", "password", KeyGen.Wrap("pw"), null) != null) throw new Exception("password mode");
+                var env = KeyGen.AskpassEnvironment("", "");
+                if (env[KeyGen.SecretVariable] != "=" || env[KeyGen.NewSecretVariable] != "=") throw new Exception("an empty passphrase is not passed on as a set variable");
+                return null;
+            });
+            test("key files: an export never loses the file that was at its place", () =>
+            {
+                var dir = Path.Combine(tmpDir, "aside"); Directory.CreateDirectory(dir);
+                // A name so long that its backup name (.bak-date-time) passes 260 characters: moving the file aside may fail
+                // where deleting it would not. Either the export fails and the file stays, or the file is kept under the backup name.
+                var target = Path.Combine(dir, new string('k', Math.Max(1, 250 - dir.Length - 1)));
+                File.WriteAllText(target, "the file that was there");
+                var key = new KeyFileInfo { Path = Path.Combine(dir, "id_x"), PublicLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINFhfnIhjngEwHGzCWQanrghnwUez4F1AURuXtiqig8t test" };
+                KeyWriteResult w = null; string outcome;
+                try { w = KeyGen.Export(key, KeyExportFormat.OpenSshPublic, target, null, null, new DateTime(2026, 9, 27, 12, 0, 0)); outcome = "exported, the file kept aside"; }
+                catch (Exception ex) { outcome = "refused (" + ex.GetType().Name + "), the file kept"; }
+                if (w == null) { if (!File.Exists(target) || File.ReadAllText(target) != "the file that was there") throw new Exception("the file at the target was lost: " + outcome); }
+                else if (w.MovedAside.Count != 1 || File.ReadAllText(w.MovedAside[0]) != "the file that was there") throw new Exception("exported, but the earlier file was not kept");
+                return outcome;
+            });
+            test("key files: the names suggested for exports never take the key's own", () =>
+            {
+                var key = new KeyFileInfo { Path = @"C:\Users\a\.ssh\id_ed25519" };
+                var names = new[] { KeyExportFormat.OpenSshPrivate, KeyExportFormat.PuttyV3, KeyExportFormat.PuttyV2, KeyExportFormat.OpenSshPublic, KeyExportFormat.Rfc4716Public }.Select(f => KeyGen.ExportFileName(key, f)).ToList();
+                if (names.Distinct(StringComparer.OrdinalIgnoreCase).Count() != 5 || names.Contains("id_ed25519") || names.Contains("id_ed25519.pub")) throw new Exception(string.Join(", ", names));
+                return string.Join(", ", names);
+            });
+        }
+
+        // Test keys made for these tests only, never used anywhere else: ssh-keygen 10.5.3.0 made the OpenSSH files, WinSCP 6.5.7's
+        // key converter (PuTTY's code) the .ppk files of the same keys. The first lines are put together at run time, so that
+        // scanners for leaked keys do not take this source file for a key.
+        private static string Fixture(string text) { return text.Replace("{OSSH-B}", OpenSshKeyFile.Begin).Replace("{OSSH-E}", OpenSshKeyFile.End).Replace("{PPK}", PpkFile.Header); }
+        private const string FxEd25519 =
+            "{OSSH-B}\n" +
+            "b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABAP+qFdKY\n" +
+            "mNH6VXTtkugQAaAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAINFhfnIhjngEwHGz\n" +
+            "CWQanrghnwUez4F1AURuXtiqig8tAAAAoBBt7A2df9/MElBDi02I87zKecP9EcizatJH+M\n" +
+            "npSOns+Cqw1H3VxWDccg4k4Nhkj0D1XQQoIfHrkkXqdpTSKZ6KPSMd3cgnW04kbVYaeA1F\n" +
+            "45Y5K6DL0Cbf2MWI+yc+068Qa+/UjQlrsQBC7A8iXCuBFITfTAWeOYwv4O1t+wn0XPk/eW\n" +
+            "E13GqB5A00AwUeGvvay+u32H9a9Q+PvM1plng=\n" +
+            "{OSSH-E}\n";
+        private const string FxEd25519Ppk =
+            "{PPK}3: ssh-ed25519\n" +
+            "Encryption: aes256-cbc\n" +
+            "Comment: osm fixture ed25519\n" +
+            "Public-Lines: 2\n" +
+            "AAAAC3NzaC1lZDI1NTE5AAAAINFhfnIhjngEwHGzCWQanrghnwUez4F1AURuXtiq\n" +
+            "ig8t\n" +
+            "Key-Derivation: Argon2id\n" +
+            "Argon2-Memory: 8192\n" +
+            "Argon2-Passes: 21\n" +
+            "Argon2-Parallelism: 1\n" +
+            "Argon2-Salt: 3474998e543220d90ca371e6b769208b\n" +
+            "Private-Lines: 1\n" +
+            "LpWPicjC/xy6Lq3jAsqHc/wLNlL2z903Pl+tOKdyICtvWxSb0F4M9fwgOKqfIS1J\n" +
+            "Private-MAC: ca3bec77078f08a6607297cb174edd8622572f6962d9e05c4bb8e0a320b96f87\n";
+        private const string FxEcdsa =
+            "{OSSH-B}\n" +
+            "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAaAAAABNlY2RzYS\n" +
+            "1zaGEyLW5pc3RwMjU2AAAACG5pc3RwMjU2AAAAQQSsYHuzfCKZ5sTpDGWymtxazwv5A+6C\n" +
+            "urxII+3+IgY/uyss2Uuj5mry11mQTk5c4Xj1+SiHsm4RR+2cDQwM5cTVAAAAsDK3yGIyt8\n" +
+            "hiAAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKxge7N8IpnmxOkM\n" +
+            "ZbKa3FrPC/kD7oK6vEgj7f4iBj+7KyzZS6PmavLXWZBOTlzhePX5KIeybhFH7ZwNDAzlxN\n" +
+            "UAAAAhAKjjy7FNGkGX+nJHfTgdz7bjaUZF59NmcpiJEwgiV3qeAAAAEW9zbSBmaXh0dXJl\n" +
+            "IGVjZHNhAQIDBAUG\n" +
+            "{OSSH-E}\n";
+        private const string FxEcdsaPpk =
+            "{PPK}3: ecdsa-sha2-nistp256\n" +
+            "Encryption: none\n" +
+            "Comment: osm fixture ecdsa\n" +
+            "Public-Lines: 3\n" +
+            "AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKxge7N8Ipnm\n" +
+            "xOkMZbKa3FrPC/kD7oK6vEgj7f4iBj+7KyzZS6PmavLXWZBOTlzhePX5KIeybhFH\n" +
+            "7ZwNDAzlxNU=\n" +
+            "Private-Lines: 1\n" +
+            "AAAAIQCo48uxTRpBl/pyR304Hc+242lGRefTZnKYiRMIIld6ng==\n" +
+            "Private-MAC: 6739a31c8cc88ae4f8a62f0826d366c20577702f5980c5fc498ffad7386595f3\n";
+        private const string FxRsa =
+            "{OSSH-B}\n" +
+            "b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABC5Pi+vN8\n" +
+            "LsjQyNjnhCno2wAAAAGAAAAAEAAACXAAAAB3NzaC1yc2EAAAADAQABAAAAgQDQp8OeUP5G\n" +
+            "gBVpoj9A4BoSAZA0IN7hR2LCdwN37XAneK1YAHBWFNNt5+2eOuoiCokszgR40LbhksZ6md\n" +
+            "Ot+X92Aox20cBvDE+LHkzvEoGDKr4NSeN/w4t0VB0h/oOp6OHff5wuienepELIbHUwzTG0\n" +
+            "UUvbu4TiJo6fIertTEm0BwAAAhBYq+CEg2Jt9RDQ7rFvQY9+NIOchLCOiOBZlozRtNkjBN\n" +
+            "dlRk0qgwE355VeEKMf67+rCsQ+OvqZVMclLbGPg5ZxQesVoVctA2+gGo/ayXS5KK/qcZXh\n" +
+            "NRRz4GmJHhwZyGVFIrr42R5TZ+PdapMM/9jryj9O51de7HrFPwRTjRF3aVK1+wtp/r/XmM\n" +
+            "PdLWYZRjAML99BTqZbXLzC5skhOUW2P8CrLuAhf8UE/lcf/nwuJ5dpT+/VOKxMfzpB6/eH\n" +
+            "wXDLClB68U/tr/vz7yFPWpTAgq5uGHbikD57lQzfvC0btt5bMV6UqBfEFReTBKkC9eLLlS\n" +
+            "5J2an60VqpBg4Tq0TY77HABUYctotm5HvMsnYjgJ1KHfzWwmTfZ9nESecWAbmreFRz/3Jy\n" +
+            "cXJbjMNVn73XU8ytss5IGdnEzK/ue7LJTo+o6Ir15K9K8eoMyuSlmUnl8c20D8b+QzHOHN\n" +
+            "nhvbriOYAE5W9PR+w0He/qZ0HNpjjKsomQuYjzcuzrcGffbl1v8TpasPGqtLSi0uVWbJZj\n" +
+            "YfCfuPAqtKBNFU6oKVSfFdYLS4rkLJBKHXdF2SlHOcGx7s07No1URitn0mN/5q/6uWawDY\n" +
+            "R/A4VjhMy90NZnfymALgsD+ByAihcknT/XupDQgGWwzZ8y9Ro6aaiO3BnQWOTw/Sw5VGTn\n" +
+            "smIEsB2SRnJKV3FxDWdN4zWg3G6gEJU=\n" +
+            "{OSSH-E}\n";
+        private const string FxRsaPpk =
+            "{PPK}3: ssh-rsa\n" +
+            "Encryption: none\n" +
+            "Comment: osm fixture rsa\n" +
+            "Public-Lines: 4\n" +
+            "AAAAB3NzaC1yc2EAAAADAQABAAAAgQDQp8OeUP5GgBVpoj9A4BoSAZA0IN7hR2LC\n" +
+            "dwN37XAneK1YAHBWFNNt5+2eOuoiCokszgR40LbhksZ6mdOt+X92Aox20cBvDE+L\n" +
+            "HkzvEoGDKr4NSeN/w4t0VB0h/oOp6OHff5wuienepELIbHUwzTG0UUvbu4TiJo6f\n" +
+            "IertTEm0Bw==\n" +
+            "Private-Lines: 8\n" +
+            "AAAAgHSUl5a4OCoZ3Fzl+yN7UvWmi/SkPQNvyD1RE84JCvXy1h9qN1nRTwSEZl5X\n" +
+            "GoQkkNpIzXTXYKcOQ/kyQ3RcB5tbd6d6pFlmDngsePQ5fDzTmRrnw+xF3O/VJuXP\n" +
+            "Xrba8ef4Rmr4Jbx7e5d//4lFFYT5wCS6zb/z6scbSMDsKscZAAAAQQD+0qFQKupi\n" +
+            "0nQaY9xJ/kf7NNBAs5I5/xlzU79ZwhcWjMfgHQ3ZfGCmkw3AqfLCkCyoQjhpLik/\n" +
+            "HWQRAN81scstAAAAQQDRnoiNDtZ229AxpYTHtl7LIK/q6og2zEO1VKi3I7rJRDAc\n" +
+            "vF6ikOfWaKt7W6cL3OgResus/ATd4xkBC4cizyyDAAAAQFrcMeaFNCujCCvoVcqR\n" +
+            "gDNq0G3qBhmRoa2NeHTmA86kECRusVzdeISsX03uLRB3EZQaQ1nbEE2ctohZgC9q\n" +
+            "inU=\n" +
+            "Private-MAC: 6a995abfe936e1b80373f7015a6378da9c4ace10df6f463142ed5fdccb6913b2\n";
+
         private static void Server(Action<string, Func<string>> test, string tmpDir)
         {
             test("sshd.exe present", () => { if (!File.Exists(Ssh.Exe("sshd.exe"))) throw new Exception("missing in " + Ssh.InstallDir); return Ssh.ServerVersion(); });
@@ -805,6 +1033,108 @@ namespace OpenSSHServerPNManager
                 if (plain.Encrypted || KeyGen.IsEncrypted(plain.PrivatePath)) throw new Exception("key without passphrase is encrypted");
                 try { KeyGen.Generate(KeyGen.Types[0], plain.PrivatePath, "x", null); throw new Exception("an existing key was overwritten"); } catch (ConfigException) { }
                 return (n + 1) + " keys in " + sw.Elapsed.TotalSeconds.ToString("0.0") + " s";
+            });
+            test("key generator: change, add and remove a passphrase (ssh-keygen -p through SSH_ASKPASS)", () =>
+            {
+                var res = KeyGen.Generate(KeyGen.Types[0], Path.Combine(tmpDir, "pass-change"), "selftest passphrase", "Selftest-Old-1");
+                var before = File.ReadAllBytes(res.PrivatePath);
+                try { KeyGen.ChangePassphrase(res.PrivatePath, "Selftest-Wrong-1", "Selftest-New-2"); throw new Exception("changed with a wrong passphrase"); } catch (WrongPassphraseException) { }
+                if (!KeyFormats.Equal(File.ReadAllBytes(res.PrivatePath), before)) throw new Exception("a wrong passphrase changed the file");
+                KeyGen.ChangePassphrase(res.PrivatePath, "Selftest-Old-1", "Selftest-New-2");
+                if (Keys.Blob(KeyGen.DerivePublic(res.PrivatePath, "Selftest-New-2")) != Keys.Blob(res.PublicKey)) throw new Exception("after the change, another key");
+                try { KeyGen.DerivePublic(res.PrivatePath, "Selftest-Old-1"); throw new Exception("the old passphrase still opens the key"); } catch (WrongPassphraseException) { }
+                KeyGen.ChangePassphrase(res.PrivatePath, "Selftest-New-2", null);
+                if (KeyGen.IsEncrypted(res.PrivatePath)) throw new Exception("the passphrase was not removed");
+                KeyGen.ChangePassphrase(res.PrivatePath, null, "Selftest-New-3");
+                if (!KeyGen.IsEncrypted(res.PrivatePath) || !KeyGen.PrivateKeyAclOk(res.PrivatePath, WindowsIdentity.GetCurrent().User)) throw new Exception("the passphrase was not set, or the file is readable by others");
+                var info = KeyGen.Inspect(res.PrivatePath);
+                if (!info.Encrypted || info.Format != "OpenSSH" || info.Comment != "selftest passphrase" || Keys.Blob(info.PublicLine) != Keys.Blob(res.PublicKey)) throw new Exception("read back: " + info.Format + ", " + info.Comment);
+                return "changed, removed, set";
+            });
+            test("key generator: export in every format, import from .ppk, read a PEM key", () =>
+            {
+                var me = WindowsIdentity.GetCurrent().User; var now = new DateTime(2026, 9, 27, 12, 0, 0); var done = new List<string>();
+                foreach (var t in KeyGen.Types.Where(x => KeyFormats.PuttyCanUse(x.PublicType) && x.Bits != 4096))
+                {
+                    var name = t.Type + (t.Bits > 0 ? t.Bits.ToString() : "");
+                    var res = KeyGen.Generate(t, Path.Combine(tmpDir, "exp-" + name), "selftest export " + name, "Selftest-Export-1");
+                    var info = KeyGen.Inspect(res.PrivatePath);
+                    var ppk = Path.Combine(tmpDir, "exp-" + name + ".ppk");
+                    KeyGen.Export(info, KeyExportFormat.PuttyV3, ppk, "Selftest-Export-1", "Selftest-Ppk-2", now);
+                    if (!KeyGen.PrivateKeyAclOk(ppk, me)) throw new Exception(name + ": the .ppk file is readable by others");
+                    var back = KeyGen.ImportPuttyKey(ppk, "Selftest-Ppk-2", Path.Combine(tmpDir, "imp-" + name), "Selftest-Import-3", now);
+                    if (Keys.Blob(KeyGen.DerivePublic(back.PrivatePath, "Selftest-Import-3")) != Keys.Blob(res.PublicKey)) throw new Exception(name + ": the key converted back from .ppk is another key");
+                    var copy = Path.Combine(tmpDir, "copy-" + name);
+                    KeyGen.Export(info, KeyExportFormat.OpenSshPrivate, copy, "Selftest-Export-1", null, now);
+                    if (KeyGen.IsEncrypted(copy) || Keys.Blob(KeyGen.DerivePublic(copy, null)) != Keys.Blob(res.PublicKey) || !KeyGen.PrivateKeyAclOk(copy, me)) throw new Exception(name + ": the OpenSSH copy without a passphrase");
+                    done.Add(KeyFormats.Describe(Convert.FromBase64String(Keys.Blob(res.PublicKey))));
+                }
+                var ed = KeyGen.Inspect(Path.Combine(tmpDir, "exp-ed25519"));
+                var v2 = Path.Combine(tmpDir, "exp-ed25519-v2.ppk");
+                KeyGen.Export(ed, KeyExportFormat.PuttyV2, v2, "Selftest-Export-1", "Selftest-Export-1", now);
+                if (PpkFile.Parse(File.ReadAllBytes(v2)).Version != 2) throw new Exception("not a .ppk file of version 2");
+                var rfc = Path.Combine(tmpDir, "exp-ed25519-rfc4716.pub");
+                KeyGen.Export(ed, KeyExportFormat.Rfc4716Public, rfc, null, null, now);
+                if (!File.ReadAllText(rfc).Contains("---- BEGIN SSH2 PUBLIC KEY ----")) throw new Exception("RFC 4716: " + File.ReadAllText(rfc));
+                var pub = Path.Combine(tmpDir, "exp-ed25519-public.pub");
+                KeyGen.Export(ed, KeyExportFormat.OpenSshPublic, pub, null, null, now);
+                var moved = KeyGen.Export(ed, KeyExportFormat.OpenSshPublic, pub, null, null, now).MovedAside;
+                if (Keys.Blob(File.ReadAllText(pub).Trim()) != Keys.Blob(ed.PublicLine) || moved.Count != 1 || !File.Exists(moved[0])) throw new Exception("the public key, or the backup of the file it replaced");
+                try { KeyGen.Export(ed, KeyExportFormat.PuttyV3, Path.Combine(tmpDir, "wrong.ppk"), "Selftest-Wrong-1", null, now); throw new Exception("exported with a wrong passphrase"); } catch (WrongPassphraseException) { }
+                if (File.Exists(Path.Combine(tmpDir, "wrong.ppk"))) throw new Exception("a failed export left a file");
+                // The older PEM format (ssh-keygen -m PEM): read through a copy that ssh-keygen rewrites in the OpenSSH format.
+                var pem = Path.Combine(tmpDir, "pem-rsa");
+                var r = Proc.Run(Ssh.Exe("ssh-keygen.exe"), "-q -t rsa -b 2048 -m PEM -N Selftest-Pem-4 -C selftest-pem -f " + Proc.Quote(pem), 60000);
+                if (!r.Ok) throw new Exception("ssh-keygen -m PEM: " + r.Output);
+                try { KeyGen.Inspect(pem); throw new Exception("an encrypted PEM key was shown without its passphrase (from its .pub file)"); } catch (WrongPassphraseException) { }
+                var pi = KeyGen.Inspect(pem, "Selftest-Pem-4");
+                if (!pi.Format.StartsWith("PEM") || !pi.Encrypted || pi.Comment != "selftest-pem") throw new Exception("PEM key read as " + pi.Format + (pi.Encrypted ? "" : ", without a passphrase") + ", comment " + pi.Comment);
+                var pk = KeyGen.ReadPrivate(pem, "Selftest-Pem-4");
+                if (Convert.ToBase64String(pk.PublicBlob) != Keys.Blob(pi.PublicLine)) throw new Exception("the PEM key read in memory is another key");
+                var pemCopy = Path.Combine(tmpDir, "pem-rsa-openssh");
+                KeyGen.Export(pi, KeyExportFormat.OpenSshPrivate, pemCopy, "Selftest-Pem-4", "Selftest-Pem-4", now);
+                if (!OpenSshKeyFile.IsOpenSsh(File.ReadAllText(pemCopy)) || Keys.Blob(KeyGen.DerivePublic(pemCopy, "Selftest-Pem-4")) != Keys.Blob(pi.PublicLine)) throw new Exception("the PEM key exported as an OpenSSH key");
+                return string.Join(", ", done) + "; .ppk 2 and 3, RFC 4716, PEM";
+            });
+            test("key dialogs: create a key, change its passphrase and export it as a user would, refusals included", () =>
+            {
+                var dir = Path.Combine(tmpDir, "dialogs"); Directory.CreateDirectory(dir);
+                var path = Path.Combine(dir, "id_dialog");
+                Action<Form> place = f => { f.StartPosition = FormStartPosition.Manual; f.Location = new Point(-20000, -20000); f.ShowInTaskbar = false; f.Show(); Application.DoEvents(); };
+                KeyGenResult made = null;
+                using (var d = new NewKeyDialog(x => made = KeyGen.GenerateReplacing(x.KeyType, x.PrivatePath, x.Comment, x.Passphrase, DateTime.Now)))
+                {
+                    place(d);
+                    d.TypeForTest("Private key file", path); d.TypeForTest("Passphrase", "Dialog-pass-1"); d.TypeForTest("Confirm passphrase", "Dialog-pass-X");
+                    d.OkForTest();
+                    if (made != null || d.LastError == null || !d.LastError.Contains("do not match")) throw new Exception("two different passphrases: " + (d.LastError ?? "accepted"));
+                    d.TypeForTest("Confirm passphrase", "Dialog-pass-1"); d.OkForTest();
+                    if (made == null || d.DialogResult != DialogResult.OK) throw new Exception("not created: " + d.LastError);
+                }
+                var info = KeyGen.Inspect(path);
+                using (var d = new PassphraseChangeDialog(info, x => KeyGen.ChangePassphrase(info.Path, x.OldPassphrase, x.NewPassphrase)))
+                {
+                    place(d);
+                    d.TypeForTest("Current passphrase", "Dialog-wrong-1"); d.TypeForTest("New passphrase", "Dialog-pass-2"); d.TypeForTest("Confirm the new passphrase", "Dialog-pass-2");
+                    d.OkForTest();
+                    if (d.DialogResult == DialogResult.OK || d.LastError != "Wrong passphrase.") throw new Exception("a wrong current passphrase: " + (d.LastError ?? "accepted"));
+                    d.TypeForTest("Current passphrase", "Dialog-pass-1"); d.OkForTest();
+                    if (d.DialogResult != DialogResult.OK) throw new Exception("not changed: " + d.LastError);
+                }
+                KeyGen.DerivePublic(path, "Dialog-pass-2");
+                var ppk = Path.Combine(dir, "id_dialog.ppk");
+                using (var d = new KeyExportDialog(info, x => KeyGen.Export(info, x.Format, x.Target, x.CurrentPassphrase, x.NewPassphrase, DateTime.Now)))
+                {
+                    place(d);
+                    d.TickForTest("PuTTY private key, .ppk version 3"); d.TypeForTest("File to export to", ppk);
+                    d.OkForTest();
+                    if (d.DialogResult == DialogResult.OK || d.LastError == null || !d.LastError.StartsWith("Enter the current passphrase")) throw new Exception("no current passphrase: " + (d.LastError ?? "accepted"));
+                    d.TypeForTest("Current passphrase of the key", "Dialog-pass-2"); d.OkForTest();
+                    if (d.DialogResult != DialogResult.OK) throw new Exception("not exported: " + d.LastError);
+                }
+                var k = PpkFile.Parse(File.ReadAllBytes(ppk)).Decrypt("Dialog-pass-2"); // "The same as the key's", the default
+                if (Convert.ToBase64String(k.PublicBlob) != Keys.Blob(made.PublicKey)) throw new Exception("the .ppk file holds another key");
+                return null;
             });
             test("host key listing", () => { var l = HostKeys.List(); return l.Count + " key(s)"; });
             test("service status", () => { var s = Services.Status("sshd"); if (!s.Exists) throw new Exception("sshd service not installed"); return s.Status + "/" + s.StartMode; });
