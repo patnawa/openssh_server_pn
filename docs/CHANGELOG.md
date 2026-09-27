@@ -38,7 +38,9 @@ its own, `manager-v2.0.0` (the same executable).
 Product codes: x64 `{3D8F440D-091D-4408-957A-C916E4335059}`, x86
 `{705D2AD7-117F-4D56-AA7A-2FD651890EA4}`, ARM64 `{EAC16FF5-B702-428F-A72E-F0353B76461A}`. The
 x64 `libcrypto.dll` of the release (artifact `bin-x64` of the run) encrypts with AES-128-GCM at
-4.66 GB/s (`openssl speed -evp aes-128-gcm`, 16 KB blocks, Windows 11 Pro 26200).
+4.66 GB/s (`openssl speed -evp aes-128-gcm`, 16 KB blocks, Windows 11 Pro 26200). The owner
+installed the release package on Windows Server 2008 R2 (the machine of the 10.5.1.0 hang report),
+Windows Server 2019, Windows Server 2025 and Windows 11, and it passed on each (2026-09-27).
 
 LibreSSL:
 

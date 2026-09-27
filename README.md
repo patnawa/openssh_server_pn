@@ -196,9 +196,10 @@ known limitations.
   uninstall, firewall profiles and rejected property values. After each install: automatic
   service start, public-key login, and recovery after `Restart-Service sshd` and after a forced
   kill of `sshd.exe`.
-- The owner installed 10.5.2.0 on the Windows Server 2008 R2 machine where the installation had
-  hung, and it passed (2026-09-26); 10.5.3.0 has the same installer.
-- Not tested: Windows 7, 8.1 and Windows Server 2012 to 2019 themselves, a restart with the new
+- The owner installed the release package on Windows Server 2008 R2 (the machine where the
+  installation of 10.5.1.0 had hung), Windows Server 2019, Windows Server 2025 and Windows 11, and
+  it passed on each (2026-09-27), as 10.5.2.0 had on the Windows Server 2008 R2 machine.
+- Not tested: Windows 7, 8.1 and Windows Server 2012 and 2016 themselves, a restart with the new
   package installed, and Kerberos logins.
 
 The full record, including what could not be tested here, is in [docs/CHANGELOG.md](docs/CHANGELOG.md).
