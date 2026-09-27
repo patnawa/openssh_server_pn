@@ -2,6 +2,8 @@
 
 All builds of this project, newest first. Each entry lists the source, the library versions,
 every change to the packaging, and how the result was verified. Published as GitHub releases:
+[v10.5.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.3.0) (with OpenSSH
+Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.0.0),
 [v10.5.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.2.0) (with Manager
 1.6.0), [manager-v1.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.6.0),
 [v10.5.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.1.0) (with Manager
@@ -16,9 +18,27 @@ The build that makes SFTP with AES about 3.5 times as fast on x64, with OpenSSH 
 the ARM64 workaround. The pull request's CI (run 36303283512) built x64, x86 and ARM64 and passed
 the unit tests and the install tests on Windows Server 2022 and 2025, on Windows 11 on ARM64, and
 on Windows Server 2022 with the PowerShell 2.0 engine, with the elevated `--selftest` (96 of 96), `--keytest` and
-`--authtest` (including the four SFTP settings) of the new manager. The CI builds, tests and
-packages the release from the tag `v10.5.3.0`; the hashes of the published files follow in the
-README and in the release.
+`--authtest` (including the four SFTP settings) of the new manager. Built, tested and packaged by
+the CI from the tag `v10.5.3.0` (`.github/workflows/openssh.yml`, run 36304755653), which also
+created the draft release with `SHA256SUMS.txt`, the SBOM and the attestations: 767 unit tests on
+x64, x86 and ARM64; on each of the four machines 209 install and manager checks, 213 with
+PowerShell 2.0, none failed (`--selftest` 96, `--keytest`, `--authtest` with the SFTP settings);
+Pester E2E 159 passed, 0 failed, 1 skipped. OpenSSH Server PN Manager 2.0.0 also has a release of
+its own, `manager-v2.0.0` (the same executable).
+
+| File | Size | SHA-256 |
+|---|---|---|
+| `OpenSSH-Win64-v10.5.3.0.msi` | 6,922,240 bytes | `ABE05A74E68C76ED051CABB7E86A8209F61770384431B4494FEBA45C76C0E920` |
+| `OpenSSH-Win32-v10.5.3.0.msi` | 6,144,000 bytes | `C6C3645808FFA49455A9FA6C1FE488AFC1A838D8CC0D28DCDE496C85296BBAA6` |
+| `OpenSSH-ARM64-v10.5.3.0.msi` | 6,660,096 bytes | `C8255A5A0A91FC26E49A29528606E56744570BE319830A55C58C461575BA5E3C` |
+| `OpenSSH-Server-PN-v10.5.3.0.cdx.json` | 14,382 bytes | `8BD8FA26D0EB2E20BC1327984B773929F43438B5EA0C8C8700AC37B698AD76E8` |
+| `OpenSSHServerPNManager.exe` (2.0.0) | 891,904 bytes | `E6CDF9BF6DA7A958731E498372CBBE1F84426B3EE96B6D0A47713C8672C968F8` |
+| `OpenSSHServerPNManager.exe.config` | 371 bytes | `38607418BB4655C3C736572F52DA1F35D926CCBF91AD1102F0DCDA164E798451` |
+
+Product codes: x64 `{3D8F440D-091D-4408-957A-C916E4335059}`, x86
+`{705D2AD7-117F-4D56-AA7A-2FD651890EA4}`, ARM64 `{EAC16FF5-B702-428F-A72E-F0353B76461A}`. The
+x64 `libcrypto.dll` of the release (artifact `bin-x64` of the run) encrypts with AES-128-GCM at
+4.66 GB/s (`openssl speed -evp aes-128-gcm`, 16 KB blocks, Windows 11 Pro 26200).
 
 LibreSSL:
 

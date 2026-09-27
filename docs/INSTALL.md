@@ -19,8 +19,8 @@ Download the package and `SHA256SUMS.txt` from the latest release on the
 [Releases](https://github.com/patnawa/openssh_server_pn/releases) page, for example:
 
 ```powershell
-$base = 'https://github.com/patnawa/openssh_server_pn/releases/download/v10.5.2.0'
-Invoke-WebRequest "$base/OpenSSH-Win64-v10.5.2.0.msi" -OutFile .\OpenSSH-Win64-v10.5.2.0.msi
+$base = 'https://github.com/patnawa/openssh_server_pn/releases/download/v10.5.3.0'
+Invoke-WebRequest "$base/OpenSSH-Win64-v10.5.3.0.msi" -OutFile .\OpenSSH-Win64-v10.5.3.0.msi
 Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile .\SHA256SUMS.txt
 ```
 
@@ -28,8 +28,8 @@ The packages are unsigned, so verify the download first. The hash must match the
 `SHA256SUMS.txt` (and the value in the README):
 
 ```powershell
-$line = Select-String -Path .\SHA256SUMS.txt -Pattern 'OpenSSH-Win64-v10.5.2.0.msi' -SimpleMatch
-(Get-FileHash .\OpenSSH-Win64-v10.5.2.0.msi -Algorithm SHA256).Hash -eq $line.Line.Split(' ')[0]   # must print True
+$line = Select-String -Path .\SHA256SUMS.txt -Pattern 'OpenSSH-Win64-v10.5.3.0.msi' -SimpleMatch
+(Get-FileHash .\OpenSSH-Win64-v10.5.3.0.msi -Algorithm SHA256).Hash -eq $line.Line.Split(' ')[0]   # must print True
 ```
 
 ## 2. Install
@@ -38,7 +38,7 @@ Interactive (double-click) and silent installs both work. The MSI has no user in
 run it from an elevated prompt for a log:
 
 ```powershell
-msiexec /i .\OpenSSH-Win64-v10.5.2.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
+msiexec /i .\OpenSSH-Win64-v10.5.3.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
 ```
 
 | Property | Default | Effect |
@@ -61,9 +61,9 @@ LocalSystem.
 Examples:
 
 ```powershell
-msiexec /i .\OpenSSH-Win64-v10.5.2.0.msi ADDLOCAL=Client /qn          # workstation, client only
-msiexec /i .\OpenSSH-Win64-v10.5.2.0.msi ADDLOCAL=Server ADD_PATH=0 /qn  # server, no PATH change
-msiexec /i .\OpenSSH-Win64-v10.5.2.0.msi REMOVE=Server /qn            # drop the server feature later
+msiexec /i .\OpenSSH-Win64-v10.5.3.0.msi ADDLOCAL=Client /qn          # workstation, client only
+msiexec /i .\OpenSSH-Win64-v10.5.3.0.msi ADDLOCAL=Server ADD_PATH=0 /qn  # server, no PATH change
+msiexec /i .\OpenSSH-Win64-v10.5.3.0.msi REMOVE=Server /qn            # drop the server feature later
 ```
 
 What the installer configures:
@@ -350,7 +350,7 @@ Clients connect with `Enter-PSSession -HostName server -UserName user`.
 ## 7. Uninstall
 
 ```powershell
-msiexec /x .\OpenSSH-Win64-v10.5.2.0.msi /qn
+msiexec /x .\OpenSSH-Win64-v10.5.3.0.msi /qn
 ```
 
 or through *Apps & features* / `Programs and Features`. The uninstaller ends open sessions and

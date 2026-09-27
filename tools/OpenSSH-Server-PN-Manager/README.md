@@ -231,7 +231,9 @@ Download: the executable and its `.exe.config` (keep both in one folder) are att
 product releases and to releases of their own (tags `manager-v<version>`), each with `SHA256SUMS.txt`.
 Up to [manager-v1.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.6.0) and
 [v10.5.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.2.0), the files are
-`OpenSSHServerManager.exe` and `OpenSSHServerManager.exe.config`; from 2.0.0 on,
+`OpenSSHServerManager.exe` and `OpenSSHServerManager.exe.config`; from
+[manager-v2.0.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.0.0) and
+[v10.5.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.3.0) on,
 `OpenSSHServerPNManager.exe` and `OpenSSHServerPNManager.exe.config`.
 
 The built `bin\OpenSSHServerPNManager.exe` and its `.exe.config` are committed. After a change,
