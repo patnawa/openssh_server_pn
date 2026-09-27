@@ -194,6 +194,33 @@
         <SetProperty Id="OpenSSHSshdPort" Sequence="execute" Before="OpenSSHSshdPort" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' port -SshdPort '[SSHD_PORT]'&quot;" />
         <CustomAction Id="OpenSSHSshdPort" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
 
+        <!-- OpenSSH Server PN Manager (server.wxs) needs .NET Framework 4.5 or later, whose setup writes this value. Without it
+             the two manager steps below are skipped: the manager cannot start, so nothing can have set up its tasks, and the
+             start would only show the message of the .NET Framework - for the uninstall step, which runs as LocalSystem where
+             no one can close that window, a wait without end. -->
+        <Property Id="NETFX45_RELEASE">
+            <RegistrySearch Id="NetFx45Release" Root="HKLM" Key="SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" Name="Release" Type="raw" />
+        </Property>
+
+        <!-- When the Server feature is removed (an uninstall or REMOVE=Server; not the removal of this package by an upgrade
+             or by the package of another architecture), the manager (its agent job "uninstall") deletes the scheduled tasks of
+             its Alerts tab, which run it from the install folder every minute as LocalSystem. Its settings and history in
+             %ProgramData%\ssh\manager stay, like sshd_config. Deferred, as LocalSystem, before OpenSSHPreInstall ends the
+             runs of those tasks still going and before the files are removed. [INSTALLFOLDER], not [#file]: that one is
+             empty for a component being removed. -->
+        <SetProperty Id="OpenSSHManagerUninstall" Sequence="execute" Before="OpenSSHManagerUninstall" Value="&quot;[INSTALLFOLDER]OpenSSHServerPNManager.exe&quot; --agent uninstall" />
+        <CustomAction Id="OpenSSHManagerUninstall" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
+
+        <!-- After a first installation of the Server feature run with its window (double-click, msiexec /i; not /quiet,
+             /passive or /qb, not an upgrade, a downgrade or a repair), the manager opens its setup wizard: the Start-menu
+             shortcut "OpenSSH Server PN setup wizard" (server.wxs) is started through the shell as the installing user; the
+             manager asks for administrator rights as at every start. OPEN_WIZARD=0 turns it off. Starting it
+             never fails the installation (Return="ignore"). -->
+        <Property Id="OPEN_WIZARD" Value="1" Secure="yes" />
+        <SetProperty Id="OpenSSHFirstInstall" Value="1" Sequence="execute" After="FindRelatedProducts"><![CDATA[NOT (Installed OR OPENSSH_PREVIOUS_INSTALLED OR OPENSSH_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchA)_INSTALLED OR OPENSSH_$(var.OtherArchA)_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchB)_INSTALLED OR OPENSSH_$(var.OtherArchB)_NEWER_INSTALLED)]]></SetProperty>
+        <Property Id="WixShellExecTarget" Value="[ProgramMenuFolder]OpenSSH Server PN setup wizard.lnk" />
+        <CustomAction Id="OpenSSHOpenWizard" BinaryKey="WixCA" DllEntry="WixShellExec" Execute="immediate" Return="ignore" Impersonate="yes" />
+
         <!-- OpenSSHPreInstall (and with ACTIVE_SESSIONS=abort, OpenSSHCheckSessions) runs for a first install or upgrade, a
              repair (files are rewritten) and any removal; it is skipped for a maintenance run that only adds features, which
              replaces no file and must not end open sessions. The firewall steps run whenever the Server feature is installed
@@ -209,6 +236,8 @@
             <Custom Action="OpenSSHFirewallProfiles" After="$(var.FirewallSchedAction)"><![CDATA[&Server = 3]]></Custom>
             <Custom Action="OpenSSHFirewallCommit" After="OpenSSHFirewallProfiles"><![CDATA[&Server = 3]]></Custom>
             <Custom Action="OpenSSHSshdPort" After="StartServices"><![CDATA[SSHD_PORT AND &Server = 3]]></Custom>
+            <Custom Action="OpenSSHManagerUninstall" Before="OpenSSHPreInstall"><![CDATA[&Server = 2 AND NOT UPGRADINGPRODUCTCODE AND NETFX45_RELEASE]]></Custom>
+            <Custom Action="OpenSSHOpenWizard" After="InstallFinalize"><![CDATA[OPEN_WIZARD = "1" AND UILevel >= 4 AND &Server = 3 AND NETFX45_RELEASE AND OpenSSHFirstInstall]]></Custom>
         </InstallExecuteSequence>
 
         <!-- assume user wants path to be updated when client binaries are installed, can be overridden during install with ADD_PATH=0 -->
@@ -225,6 +254,8 @@
             <Directory Id="$(var.ProgramFilesFolder)" Name="Program Files">
                 <Directory Id="INSTALLFOLDER" Name="OpenSSH" />
             </Directory>
+            <!-- The Start-menu shortcuts of the manager (server.wxs); per machine: %ProgramData%\Microsoft\Windows\Start Menu\Programs -->
+            <Directory Id="ProgramMenuFolder" />
         </Directory>
     </Product>
 </Wix>

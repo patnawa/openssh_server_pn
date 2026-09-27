@@ -1667,13 +1667,21 @@ namespace OpenSSHServerPNManager
                 });
                 return null;
             });
-            test("window: no clipped text at 100% and 150%", () =>
+            test("window: no clipped text at 100% and 150% on a 1024 x 768 screen", () =>
             {
+                // Windows keeps a window within the screen: on the smallest screen the window is narrower than its minimum size.
                 var report = new List<string>();
                 foreach (var s in new[] { 1f, 1.5f })
                 {
                     var old = Ui.Scale; Ui.Scale = s;
-                    try { WithTestWindow(tmpDir, "Port 22\n", f => report.AddRange(f.ClippedTextForTest().Select(x => (int)(s * 100) + "%: " + x))); }
+                    try
+                    {
+                        WithTestWindow(tmpDir, "Port 22\n", f =>
+                        {
+                            f.MinimumSize = Size.Empty; f.Size = new Size(1024, 768); Application.DoEvents();
+                            report.AddRange(f.ClippedTextForTest().Select(x => (int)(s * 100) + "%: " + x));
+                        });
+                    }
                     finally { Ui.Scale = old; }
                 }
                 if (report.Count > 0) throw new Exception(report.Count + " place(s): " + string.Join(" | ", report.Take(15)) + (report.Count > 15 ? " | ..." : ""));

@@ -125,6 +125,35 @@ $secure = @($props['SecureCustomProperties'] -split ';')
 foreach ($p in @('SSHD_PORT', 'ACTIVE_SESSIONS', 'FIREWALL_PROFILES', 'KEEP_INBOX_OPENSSH', 'ALLOWDOWNGRADE')) { Check ($p + ' is a secure property') ($secure -contains $p) }
 Check 'ACTIVE_SESSIONS defaults to close' ($props['ACTIVE_SESSIONS'] -eq 'close')
 
+# OpenSSH Server PN Manager: files and shortcuts in the Server feature, the uninstall step, the wizard after installing
+function LongName([string]$n) { $i = $n.IndexOf('|'); if ($i -ge 0) { return $n.Substring($i + 1) } return $n }
+$fileComp = @{}
+foreach ($r in (Rows 'SELECT `FileName`, `Component_` FROM `File`')) { $fileComp[(LongName $r[0])] = $r[1] }
+$serverComps = @((Rows 'SELECT `Component_` FROM `FeatureComponents` WHERE `Feature_` = ''Server''') | ForEach-Object { $_[0] })
+foreach ($f in @('OpenSSHServerPNManager.exe', 'OpenSSHServerPNManager.exe.config')) {
+    Check ($f + ' is installed with the Server feature') ($fileComp.ContainsKey($f) -and $serverComps -contains $fileComp[$f])
+}
+$shortcuts = @{}
+foreach ($r in (Rows 'SELECT `Shortcut`, `Directory_`, `Name`, `Component_`, `Target`, `Arguments` FROM `Shortcut`')) { $shortcuts[$r[0]] = $r }
+foreach ($s in @(@('ManagerShortcut', 'OpenSSH Server PN Manager', ''), @('WizardShortcut', 'OpenSSH Server PN setup wizard', '--wizard'))) {
+    $r = $shortcuts[$s[0]]
+    Check ('Start-menu shortcut "' + $s[1] + '"') ($r -and $r[1] -eq 'ProgramMenuFolder' -and (LongName $r[2]) -eq $s[1] -and $r[4] -eq '[INSTALLFOLDER]OpenSSHServerPNManager.exe' -and $r[5] -eq $s[2] -and $serverComps -contains $r[3]) $(if ($r) { $r -join ' | ' } else { 'missing' })
+}
+$keyPath = @(Rows 'SELECT `Root`, `Key`, `Name` FROM `Registry`, `Component` WHERE `Component`.`KeyPath` = `Registry`.`Registry` AND `Component`.`Component` = ''ManagerShortcuts''')
+Check 'the shortcuts: a per-machine registry key path (HKMU, root -1)' ($keyPath.Count -eq 1 -and $keyPath[0][0] -eq '-1') $(if ($keyPath.Count) { $keyPath[0] -join ' ' })
+Before 'OpenSSHManagerUninstall' 'OpenSSHPreInstall'
+Before 'OpenSSHManagerUninstall' 'RemoveFiles'
+Before 'RemoveExistingProducts' 'OpenSSHManagerUninstall'
+Check 'OpenSSHManagerUninstall: deferred, no impersonation, exit code ignored' (($type['OpenSSHManagerUninstall'] -band 0xF40) -eq 0xC40) ([string]$type['OpenSSHManagerUninstall'])
+Check 'OpenSSHManagerUninstall: only when the Server feature is removed, not by an upgrade' ($cond['OpenSSHManagerUninstall'] -eq '&Server = 2 AND NOT UPGRADINGPRODUCTCODE AND NETFX45_RELEASE') $cond['OpenSSHManagerUninstall']
+Check 'OpenSSHManagerUninstall runs the manager from the install folder' ($target['SetOpenSSHManagerUninstall'] -eq '"[INSTALLFOLDER]OpenSSHServerPNManager.exe" --agent uninstall') $target['SetOpenSSHManagerUninstall']
+Before 'InstallFinalize' 'OpenSSHOpenWizard'
+Check 'OpenSSHOpenWizard: immediate, as the user, exit code ignored' (($type['OpenSSHOpenWizard'] -band 0xC40) -eq 0x40) ([string]$type['OpenSSHOpenWizard'])
+Check 'OpenSSHOpenWizard opens the wizard shortcut' ($props['WixShellExecTarget'] -eq ('[ProgramMenuFolder]' + (LongName $shortcuts['WizardShortcut'][2]) + '.lnk')) $props['WixShellExecTarget']
+Check 'OPEN_WIZARD defaults to 1 and is a secure property' ($props['OPEN_WIZARD'] -eq '1' -and $secure -contains 'OPEN_WIZARD')
+Before 'FindRelatedProducts' 'SetOpenSSHFirstInstall'
+Check 'a first installation: the condition of the fresh firewall step' ($cond['SetOpenSSHFirstInstall'] -eq $cond['SetOpenSSHFirewallSaveFresh']) $cond['SetOpenSSHFirstInstall']
+
 # launch conditions, evaluated by Windows Installer
 $launch = Rows 'SELECT `Condition`, `Description` FROM `LaunchCondition`'
 $portCond = ($launch | Where-Object { $_[1] -like 'SSHD_PORT*' } | Select-Object -First 1)
@@ -153,6 +182,17 @@ SetP $session 'Property' @('ACTIVE_SESSIONS', 'Abort')
 Check 'OpenSSHCheckSessions condition true for ACTIVE_SESSIONS=Abort on a first install' ([int](Invoke $session 'EvaluateCondition' @($cond['OpenSSHCheckSessions'])) -eq 1)
 SetP $session 'Property' @('ACTIVE_SESSIONS', 'close')
 Check 'OpenSSHCheckSessions condition false for close' ([int](Invoke $session 'EvaluateCondition' @($cond['OpenSSHCheckSessions'])) -eq 0)
+# The wizard after installing; the feature state is not costed in this session, so "&Server = 3" counts as true.
+$wizardCond = $cond['OpenSSHOpenWizard'].Replace('&Server = 3', '1')
+Check 'OpenSSHOpenWizard condition names the Server feature' ($cond['OpenSSHOpenWizard'] -match '&Server = 3') $cond['OpenSSHOpenWizard']
+foreach ($c in @(@('first install, full window', '1', '5', '#528040', '1', 1), @('reduced window (/qr)', '1', '4', '#528040', '1', 1),
+                 @('/passive or /qb', '1', '3', '#528040', '1', 0), @('/quiet', '1', '2', '#528040', '1', 0), @('OPEN_WIZARD=0', '0', '5', '#528040', '1', 0),
+                 @('no .NET Framework 4.5', '1', '5', '', '1', 0), @('an upgrade or a repair', '1', '5', '#528040', '', 0))) {
+    SetP $session 'Property' @('OPEN_WIZARD', $c[1]); SetP $session 'Property' @('UILevel', $c[2])
+    SetP $session 'Property' @('NETFX45_RELEASE', $c[3]); SetP $session 'Property' @('OpenSSHFirstInstall', $c[4])
+    $got = [int](Invoke $session 'EvaluateCondition' @($wizardCond))
+    Check ('the wizard opens: ' + $c[0] + ' -> ' + $(if ($c[5] -eq 1) { 'yes' } else { 'no' })) ($got -eq $c[5]) ('EvaluateCondition=' + $got)
+}
 [System.Runtime.InteropServices.Marshal]::ReleaseComObject($session) | Out-Null
 
 Write-Output ''

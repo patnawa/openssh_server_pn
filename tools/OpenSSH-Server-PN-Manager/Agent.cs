@@ -252,11 +252,16 @@ namespace OpenSSHServerPNManager
         public static readonly TimeSpan[] BlockTimes = { TimeSpan.FromHours(1), TimeSpan.FromHours(24), TimeSpan.FromDays(7) };
         public static readonly TimeSpan UploadBatch = TimeSpan.FromMinutes(5);
 
-        /// <summary>--agent watch | daily | test: what the scheduled tasks run. Returns the exit code.</summary>
+        /// <summary>
+        /// --agent watch | daily: what the scheduled tasks run; --agent uninstall: what the MSI runs (as SYSTEM) before it
+        /// removes the program files. Returns the exit code.
+        /// </summary>
         public static int Run(string job)
         {
+            if (job == "uninstall") return Uninstall();
             try
             {
+                if (job == "watch") MoveToInstalled();
                 var s = AlertSettings.Load(); var st = AgentState.Load();
                 if (job == "watch") Watch(s, st, DateTime.Now);
                 else if (job == "daily") Daily(s, st, DateTime.Now);
@@ -598,7 +603,7 @@ namespace OpenSSHServerPNManager
         {
             var installed = Ssh.Exe("OpenSSHServerPNManager.exe");
             if (File.Exists(installed)) return installed;
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "OpenSSH Server PN Manager");
+            var dir = PortableDir;
             var exe = Path.Combine(dir, "OpenSSHServerPNManager.exe");
             var me = System.Windows.Forms.Application.ExecutablePath;
             if (!string.Equals(Path.GetFullPath(me), exe, StringComparison.OrdinalIgnoreCase))
@@ -637,10 +642,63 @@ namespace OpenSSHServerPNManager
 
         public static void RemoveTasks()
         {
-            SystemTasks.Delete(WatchTask); SystemTasks.Delete(DailyTask);
+            SystemTasks.Delete(WatchTask); SystemTasks.Delete(DailyTask); DeleteTaskFolder();
             Note("tasks removed");
         }
 
+        /// <summary>The folder of the two tasks in Task Scheduler, once it is empty (schtasks cannot delete folders).</summary>
+        private static void DeleteTaskFolder()
+        {
+            try
+            {
+                dynamic service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
+                service.Connect();
+                service.GetFolder("\\").DeleteFolder(TaskFolder, 0);
+            }
+            catch { } // gone already, or not empty
+        }
+
         public static bool TasksInstalled() { return SystemTasks.Exists(WatchTask) && SystemTasks.Exists(DailyTask); }
+
+        private static string PortableDir { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "OpenSSH Server PN Manager"); } }
+
+        /// <summary>
+        /// Tasks set up by the portable manager run its copy in %ProgramFiles%\OpenSSH Server PN Manager. Once a package has
+        /// installed the manager next to sshd.exe, the next Watch run points both tasks at that one, which later packages keep
+        /// up to date; the copy is removed by the uninstall step.
+        /// </summary>
+        private static void MoveToInstalled()
+        {
+            var installed = Ssh.Exe("OpenSSHServerPNManager.exe");
+            var me = Path.GetFullPath(System.Windows.Forms.Application.ExecutablePath);
+            if (!File.Exists(installed) || string.Equals(me, Path.GetFullPath(installed), StringComparison.OrdinalIgnoreCase)) return;
+            if (!string.Equals(Path.GetDirectoryName(me), PortableDir, StringComparison.OrdinalIgnoreCase) || !TasksInstalled()) return;
+            InstallTasks();
+        }
+
+        /// <summary>
+        /// --agent uninstall: the package is being removed (not upgraded). Deletes the two tasks, which would otherwise start a
+        /// missing program every minute, and the copy the portable manager made for them. Settings, state, the log and the
+        /// transfer archive stay in %ProgramData%\ssh\manager, like sshd_config; ticking the box on the Alerts tab of a later
+        /// installation sets the tasks up again with them.
+        /// </summary>
+        private static int Uninstall()
+        {
+            try
+            {
+                bool any = false;
+                foreach (var t in new[] { WatchTask, DailyTask }) if (SystemTasks.Exists(t)) { any = true; if (!SystemTasks.Delete(t)) throw new Exception("schtasks /Delete " + t + " failed"); }
+                DeleteTaskFolder();
+                if (any) Note("OpenSSH Server PN is being uninstalled: tasks removed");
+                foreach (var f in new[] { "OpenSSHServerPNManager.exe.config", "OpenSSHServerPNManager.exe" })
+                {
+                    var p = Path.Combine(PortableDir, f);
+                    if (File.Exists(p)) try { File.Delete(p); } catch (Exception ex) { Note("could not remove " + p + ": " + ex.Message); }
+                }
+                if (Directory.Exists(PortableDir) && !Directory.EnumerateFileSystemEntries(PortableDir).Any()) Directory.Delete(PortableDir);
+                return 0;
+            }
+            catch (Exception ex) { Note("the uninstall step failed: " + ex.Message); return 1; }
+        }
     }
 }

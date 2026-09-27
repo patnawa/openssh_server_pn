@@ -12,8 +12,9 @@
         <!-- preinstall.wxi is generated into the intermediate folder by EncodePreInstallScript below -->
         <IncludeSearchPaths>$([System.IO.Path]::Combine($(MSBuildProjectDirectory), $(IntermediateOutputPath)))</IncludeSearchPaths>
         <!-- ICE61 warns that the Upgrade table covers the package's own version; that is intended (a rebuilt package
-             replaces the installed one). -->
-        <SuppressIces>ICE61</SuppressIces>
+             replaces the installed one). ICE57 takes the Start-menu folder for per-user data; in this per-machine package
+             it is the Start menu of all users (server.wxs, ManagerShortcuts). -->
+        <SuppressIces>ICE61;ICE57</SuppressIces>
         <!-- CNDL1077: the PreInstallCommand property holds PowerShell type names in square brackets; they are literal text, not property references -->
         <SuppressSpecificWarnings>1077</SuppressSpecificWarnings>
         <DefineConstants>
@@ -37,6 +38,8 @@
 
     <ItemGroup>
         <BindInputPaths Include="..\..\..\bin\$(Platform)\$(Configuration)" />
+        <!-- OpenSSH Server PN Manager (server.wxs): the committed build, the same file for every platform -->
+        <BindInputPaths Include="..\..\..\..\tools\OpenSSH-Server-PN-Manager\bin" />
     </ItemGroup>
 
     <ItemGroup>

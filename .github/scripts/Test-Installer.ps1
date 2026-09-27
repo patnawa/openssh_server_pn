@@ -7,7 +7,8 @@
 
     | Scenario  | Does                                                                                   |
     |-----------|----------------------------------------------------------------------------------------|
-    | Install   | installs the release MSI; checks services, version, banner on 22, firewall defaults    |
+    | Install   | installs the release MSI; checks services, version, banner on 22, firewall defaults,   |
+    |           | the manager and its Start-menu shortcuts; the silent install opens no setup wizard    |
     | Upgrade   | sets the firewall rule to port 2222 and Private only, installs the upgrade-test MSI    |
     |           | (third version field + 1), checks that the rule kept both                              |
     | Repair    | msiexec /fa of the installed package; the rule still has port 2222 and Private         |
@@ -19,7 +20,10 @@
     |           | still Private only                                                                     |
     | Sessions  | opens a key login, installs the upgrade-test MSI with ACTIVE_SESSIONS=abort (refused,  |
     |           | session alive) and ACTIVE_SESSIONS=close (installed, session ended)                   |
-    | Uninstall | msiexec /x; services, rule and program files gone, %ProgramData%\ssh kept              |
+    | Uninstall | sets up the manager's two scheduled tasks (as its Alerts tab does), msiexec /x;        |
+    |           | services, rule, program files, shortcuts and the tasks gone, %ProgramData%\ssh kept    |
+    | FirstRun  | on the machine Uninstall left, installs the release MSI with a window (/qr): the       |
+    |           | manager's setup wizard opens (it is ended), then uninstalls silently                   |
 
     ADJUST: firewall preservation, SSHD_PORT and ACTIVE_SESSIONS are being implemented in the
     installer in parallel with this workflow. Their checks follow the modes in the environment
@@ -35,7 +39,7 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('Install', 'Upgrade', 'Repair', 'Rollback', 'Downgrade', 'Sessions', 'Uninstall')][string]$Scenario,
+    [Parameter(Mandatory = $true)][ValidateSet('Install', 'Upgrade', 'Repair', 'Rollback', 'Downgrade', 'Sessions', 'Uninstall', 'FirstRun')][string]$Scenario,
     [string]$MsiDir = $env:MSI_DIR,
     [string]$Msi = $env:MSI,
     [string]$UpgradeMsi = $env:UPGRADE_MSI,
@@ -51,6 +55,7 @@ $CustomFirewallPort = '2222'        # set on the rule before the upgrade; upgrad
 $CustomFirewallProfileMask = 2      # Private only (1 Domain, 2 Private, 4 Public, 0 all)
 $SshdPortValue = 2200               # SSHD_PORT=<n> given to the downgrade install
 $AbortExitCodes = @(1602, 1603)     # what msiexec may return when ACTIVE_SESSIONS=abort refuses the install
+$ManagerTaskPath = '\OpenSSH Server PN Manager\'    # Agent.TaskFolder in tools/OpenSSH-Server-PN-Manager/Agent.cs (Uninstall)
 # -----------------------------------------------------------------------------------------------------------
 
 foreach ($name in 'MsiDir', 'Msi', 'UpgradeMsi', 'Version', 'UpgradeVersion', 'LogDir') {
@@ -66,8 +71,8 @@ Write-Host "Scenario $Scenario; FIREWALL_PRESERVATION_CHECK=$preservation SSHD_P
 
 function Q([string]$Path) { '"' + $Path + '"' }
 
-function Invoke-Install([string[]]$Arguments, [string]$Log, [int[]]$Allowed = @(0, 3010)) {
-    $code = Invoke-Msiexec -Arguments $Arguments -LogPath (Join-Path $LogDir $Log) -AllowedExitCodes $Allowed
+function Invoke-Install([string[]]$Arguments, [string]$Log, [int[]]$Allowed = @(0, 3010), [string]$Ui = '/qn') {
+    $code = Invoke-Msiexec -Arguments $Arguments -LogPath (Join-Path $LogDir $Log) -AllowedExitCodes $Allowed -Ui $Ui
     if ($code -eq 3010) { Write-Annotation warning "msiexec $($Arguments[0]) returned 3010 (restart required)" 'Restart required' }
     $code
 }
@@ -84,6 +89,8 @@ switch ($Scenario) {
         Invoke-Install @('/i', (Q $releaseMsi)) '1-install.log' | Out-Null
         Test-MsiLog (Join-Path $LogDir '1-install.log') -RequirePreinstall
         Test-OpenSSHInstallation -ProductVersion $Version -FileVersion $Version
+        $wizard = @(Get-ManagerProcess '--wizard')
+        Test-Check 'A silent installation opens no setup wizard' ($wizard.Count -eq 0) (($wizard | ForEach-Object { $_.CommandLine }) -join '; ') | Out-Null
         Complete-Checks 'Install'
     }
 
@@ -234,6 +241,14 @@ switch ($Scenario) {
     'Uninstall' {
         $product = Get-InstalledOpenSSHProduct
         if (-not $product) { throw 'Nothing to uninstall: OpenSSH Server PN is not installed.' }
+        # The Alerts tab of the manager has set up its scheduled tasks, which run the installed manager as SYSTEM; the
+        # uninstall step of the package removes them. Their trigger is a year away, so they do not run in between.
+        $manager = Get-ManagerPath
+        foreach ($t in @(@('Watch', '--agent watch'), @('Daily', '--agent daily'))) {
+            Register-ScheduledTask -TaskName $t[0] -TaskPath $ManagerTaskPath -Action (New-ScheduledTaskAction -Execute $manager -Argument $t[1]) `
+                -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(1)) -Principal (New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -RunLevel Highest) -Force | Out-Null
+        }
+        Write-Host ("Scheduled tasks before the uninstall: " + ((@(Get-ScheduledTask -TaskPath $ManagerTaskPath -ErrorAction SilentlyContinue) | ForEach-Object { $_.TaskPath + $_.TaskName }) -join ', '))
         Invoke-Install @('/x', $product.ProductCode) '8-uninstall.log' | Out-Null
         $dir = Get-OpenSSHInstallDir
         Test-Check 'Product removed from Apps & features' ($null -eq (Get-InstalledOpenSSHProduct)) | Out-Null
@@ -242,6 +257,42 @@ switch ($Scenario) {
         Test-Check 'Firewall rule removed' (@(Get-SshdFirewallRule).Count -eq 0) | Out-Null
         Test-Check 'Program files removed' (-not (Test-Path -LiteralPath (Join-Path $dir 'sshd.exe'))) | Out-Null
         Test-Check '%ProgramData%\ssh kept (configuration and host keys)' (Test-Path -LiteralPath (Join-Path $env:ProgramData 'ssh\sshd_config')) | Out-Null
+        Test-Check 'OpenSSH Server PN Manager removed' (-not (Test-Path -LiteralPath $manager)) | Out-Null
+        foreach ($s in Get-ManagerShortcut) { Test-Check "Start-menu shortcut '$($s.Name)' removed" (-not (Test-Path -LiteralPath $s.Path)) | Out-Null }
+        $left = @(Get-ScheduledTask -TaskPath $ManagerTaskPath -ErrorAction SilentlyContinue | ForEach-Object { $_.TaskName })
+        Test-Check "The manager's scheduled tasks removed by the uninstall step" ($left.Count -eq 0) ($left -join ', ') | Out-Null
+        $scheduler = New-Object -ComObject Schedule.Service
+        $scheduler.Connect()
+        $folderLeft = $true
+        try { $null = $scheduler.GetFolder($ManagerTaskPath.TrimEnd('\')) } catch { $folderLeft = $false }
+        Test-Check 'Their Task Scheduler folder removed' (-not $folderLeft) $ManagerTaskPath | Out-Null
+        $agentLog = Join-Path $env:ProgramData 'ssh\manager\agent.log'
+        $line = if (Test-Path -LiteralPath $agentLog) { Select-String -LiteralPath $agentLog -Pattern 'being uninstalled' | Select-Object -Last 1 } else { $null }
+        Test-Check 'The agent log records the uninstall step' ($null -ne $line) "$(if ($line) { $line.Line } else { 'no such line in ' + $agentLog })" | Out-Null
         Complete-Checks 'Uninstall'
+    }
+
+    'FirstRun' {
+        # The first installation run with a window (here /qr, the reduced window, which asks nothing) opens the manager's
+        # setup wizard through its Start-menu shortcut; the silent installations of the other scenarios do not.
+        if (Get-InstalledOpenSSHProduct) { throw 'FirstRun needs a machine without the package: run it after Uninstall.' }
+        Invoke-Install @('/i', (Q $releaseMsi)) '9-first-run.log' -Ui '/qr' | Out-Null
+        Test-MsiLog (Join-Path $LogDir '9-first-run.log') -RequirePreinstall
+        $wizard = @()
+        $deadline = (Get-Date).AddSeconds(60)
+        while ($wizard.Count -eq 0 -and (Get-Date) -lt $deadline) {
+            $wizard = @(Get-ManagerProcess '--wizard')
+            if ($wizard.Count -eq 0) { Start-Sleep -Seconds 2 }
+        }
+        $log = Get-Content -LiteralPath (Join-Path $LogDir '9-first-run.log') -Raw
+        $ran = [regex]::Match($log, 'Action ended [\d:]+: OpenSSHOpenWizard\. Return value (\d+)')
+        Test-Check 'MSI log: the step that opens the wizard ran' $ran.Success "$(if ($ran.Success) { 'return value ' + $ran.Groups[1].Value } else { 'no OpenSSHOpenWizard in the log' })" | Out-Null
+        Test-Check 'The setup wizard of the manager opens after a first installation with a window' ($wizard.Count -gt 0) "$(if ($wizard.Count) { $wizard[0].CommandLine } else { 'no OpenSSHServerPNManager.exe --wizard within 60 s' })" | Out-Null
+        # Its window waits for someone to answer it: end it, then leave the machine as Uninstall did.
+        foreach ($p in Get-ManagerProcess) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+        $product = Get-InstalledOpenSSHProduct
+        if ($product) { Invoke-Install @('/x', $product.ProductCode) '10-first-run-uninstall.log' | Out-Null }
+        Test-Check 'Product removed again' ($null -eq (Get-InstalledOpenSSHProduct)) | Out-Null
+        Complete-Checks 'First installation with a window opens the setup wizard'
     }
 }

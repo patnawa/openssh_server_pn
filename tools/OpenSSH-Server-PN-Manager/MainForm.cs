@@ -487,6 +487,42 @@ namespace OpenSSHServerPNManager
         /// <summary>The window's font in bold. A new control has the system default font until it is placed in the window, so a font derived from it would be smaller than the window's.</summary>
         private static Font BoldFont() { return new Font("Segoe UI", Ui.Pt(9.5f), FontStyle.Bold); }
         private static FlowLayoutPanel Flow() { return new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, Dock = DockStyle.Top, Padding = new Padding(4) }; }
+
+        /// <summary>
+        /// Keeps the rows of a top-down panel within its width, whatever the screen and the scale: long labels and check
+        /// boxes wrap, and a row of controls goes on on the next line. The width left for a vertical scroll bar is kept
+        /// free, so the layout does not change when one appears.
+        /// </summary>
+        private static void FitRows(FlowLayoutPanel root)
+        {
+            var own = new Dictionary<Control, int>(); // a text's own width limit, kept where it is the smaller one
+            Action<Control, int> limit = (c, width) =>
+            {
+                int o; if (!own.TryGetValue(c, out o)) own[c] = o = c.MaximumSize.Width;
+                c.MaximumSize = new Size(o > 0 ? Math.Min(o, width) : width, 0);
+            };
+            Action fit = () =>
+            {
+                int w = root.Width - SystemInformation.VerticalScrollBarWidth - root.Padding.Horizontal - Ui.Px(4);
+                if (w < Ui.Px(240)) return;
+                root.SuspendLayout();
+                foreach (Control c in root.Controls)
+                {
+                    int cw = w - c.Margin.Horizontal;
+                    var row = c as FlowLayoutPanel;
+                    if (row != null)
+                    {
+                        row.WrapContents = true; row.AutoSizeMode = AutoSizeMode.GrowAndShrink; row.MaximumSize = new Size(cw, 0);
+                        foreach (Control inner in row.Controls)
+                            if (inner is Label || inner is CheckBox) limit(inner, Math.Max(Ui.Px(120), cw - row.Padding.Horizontal - inner.Margin.Horizontal));
+                    }
+                    else if (c is Label || c is CheckBox) limit(c, cw);
+                }
+                root.ResumeLayout(true);
+            };
+            root.SizeChanged += (s, e) => fit();
+            fit();
+        }
         private static ListView Lv(params string[] cols)
         {
             var lv = new ListView { View = View.Details, FullRowSelect = true, GridLines = true, Dock = DockStyle.Fill, HideSelection = false, MultiSelect = false };
@@ -2356,6 +2392,7 @@ namespace OpenSSHServerPNManager
             bar.Controls.Add(_alResult);
             root.Controls.Add(bar);
             page.Controls.Add(root);
+            FitRows(root);
             return page;
         }
 

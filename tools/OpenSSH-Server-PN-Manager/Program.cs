@@ -3,12 +3,13 @@
 // OpenSSH server on Windows: service control, sshd_config editing with validation and rollback, login
 // methods (Windows authentication, public key, Kerberos; per user and group), SFTP (the subsystem,
 // transfer logging, SFTP-only accounts confined to a folder), authorized keys, keys for you (create,
-// load, change the passphrase, convert to and from PuTTY .ppk, export), SFTP partner accounts, a setup
+// load, change the passphrase, convert to and from PuTTY .ppk, export), SFTP partner accounts with a
+// transfer history, alerts by e-mail or webhook with automatic blocking of attacking addresses, a setup
 // wizard, host keys, default shell, Windows Firewall rule, event log viewer and a hardening check.
 // Copyright (c) 2026 patnawa. BSD-style licence, like OpenSSH: see LICENSE.txt of the package.
 //
 // Source: one file per area in this folder (Program, SelfTest, Platform, Ssh, SshdConfig, Keys,
-// KeyGen, KeyFiles, KeyDialogs, Auth, AuthTest, Sftp, Partners, PartnerDialogs, WindowsSettings,
+// KeyGen, KeyFiles, KeyDialogs, Auth, AuthTest, Sftp, Partners, PartnerDialogs, Transfers, Agent, WindowsSettings,
 // Hardening, Sessions, Client, MainForm, Dialogs, Wizard, Theme, Widgets, Prefs), compiled into one
 // executable by build.ps1 (the Roslyn C# compiler from Visual Studio Build Tools). Runs elevated
 // (see app.manifest).
@@ -22,6 +23,8 @@
 //                a temporary sshd on 127.0.0.1 and a temporary local account; both are removed at the end
 //   --screenshot <folder> [--ui-scale 1.5] [--theme dark|light]   every tab rendered off-screen to PNG files
 //   --wizard     opens the window and starts the setup wizard at once
+//   --agent watch|daily   the scheduled tasks of the Alerts tab (as SYSTEM); --agent uninstall: what the MSI runs
+//                when the package is removed (deletes those tasks)
 
 using System;
 using System.Collections.Generic;
@@ -101,7 +104,7 @@ namespace OpenSSHServerPNManager
                 if (ki >= 0) { Unattended = true; return KeyGen.RunKeyTest(ki + 1 < args.Length ? args[ki + 1] : null); }
                 int ai = Array.FindIndex(args, a => a.Equals("--authtest", StringComparison.OrdinalIgnoreCase));
                 if (ai >= 0) { Unattended = true; return AuthTest.Run(ai + 1 < args.Length ? args[ai + 1] : null); }
-                // The scheduled tasks of the Alerts tab (as SYSTEM): --agent watch (every minute), --agent daily (each night).
+                // The scheduled tasks of the Alerts tab (as SYSTEM): --agent watch (every minute), --agent daily (each night); --agent uninstall (the MSI, as SYSTEM, when the package is removed).
                 int gi = Array.FindIndex(args, a => a.Equals("--agent", StringComparison.OrdinalIgnoreCase));
                 if (gi >= 0) { Unattended = true; return Agent.Run(gi + 1 < args.Length ? args[gi + 1].ToLowerInvariant() : ""); }
             }

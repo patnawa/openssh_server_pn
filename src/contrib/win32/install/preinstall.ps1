@@ -652,6 +652,9 @@ foreach ($name in @('sshd', 'ssh-agent')) {
 $serverExes = @('sshd.exe', 'sshd-session.exe', 'sshd-auth.exe', 'sftp-server.exe', 'ssh-shellhost.exe')
 $clientExes = @('ssh.exe', 'sftp.exe', 'ssh-add.exe', 'ssh-keyscan.exe', 'ssh-sk-helper.exe', 'ssh-pkcs11-helper.exe')
 $sharedExes = @('ssh-agent.exe', 'scp.exe', 'ssh-keygen.exe')
+# OpenSSH Server PN Manager (Server feature): only the runs of its scheduled tasks ("--agent watch" every minute, as
+# SYSTEM), which would hold the file; a window an administrator has open is left alone.
+$managerExe = 'OpenSSHServerPNManager.exe'
 $all = @(Get-WmiObject -Class Win32_Process -ErrorAction SilentlyContinue)
 if ($all.Count -eq 0) { Log "warning: process list unavailable; files held open by running OpenSSH processes are replaced at the next restart" }
 $keep = Get-KeepSet $all
@@ -663,13 +666,15 @@ foreach ($p in $all) {
     $isServer = ($serverExes -contains $name)
     $isClient = ($clientExes -contains $name)
     $isShared = ($sharedExes -contains $name)
-    if ((-not $isServer -and -not $isClient -and -not $isShared) -or $path -eq '') { continue }
+    $isAgent = ($name -eq $managerExe -and [string]$p.CommandLine -match '\s--agent\s')
+    if ((-not $isServer -and -not $isClient -and -not $isShared -and -not $isAgent) -or $path -eq '') { continue }
     $dir = (Split-Path -Path $path -Parent).TrimEnd('\')
     $inFolder = ($folder -ne '' -and [string]::Equals($dir, $folder, [StringComparison]::OrdinalIgnoreCase))
     $target = $false
     if ($isServer -and $touchServer -and (Test-InDirs $dir $serverDirs)) { $target = $true }
     if ($isClient -and $touchClient -and $inFolder) { $target = $true }
     if ($isShared -and $touchShared -and $inFolder) { $target = $true }
+    if ($isAgent -and $touchServer -and $inFolder) { $target = $true }
     if (-not $target) { continue }
     $id = [int]$p.ProcessId
     if ($keep[$id]) {

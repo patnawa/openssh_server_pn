@@ -444,7 +444,7 @@ namespace OpenSSHServerPNManager
         /// </summary>
         private static int AgentTests(StringBuilder sb, string dir, string partner)
         {
-            int failed = 0;
+            int failed = 0; string uninstalled = null;
             Action<string, Func<string>> step = (name, body) =>
             {
                 try { sb.AppendLine("PASS  " + name + ": " + body()); }
@@ -478,7 +478,7 @@ namespace OpenSSHServerPNManager
                 try
                 {
                     var records = Transfers.Read(DateTime.Today, DateTime.Now.AddMinutes(1), CancellationToken.None).Where(r => r.User.Equals(partner, StringComparison.OrdinalIgnoreCase)).ToList();
-                    if (!records.Any(r => r.Action == TransferRecord.Upload && r.File == "/in.bin" && r.Bytes == 1 << 20)) throw new Exception("the event log has no upload of /in.bin by " + partner + ": " + string.Join("; ", records.Select(r => r.Action + " " + r.File)));
+                    if (!records.Any(r => r.Action == TransferRecord.Upload && r.File.TrimStart('/') == "in.bin" && r.Bytes == 1 << 20)) throw new Exception("the event log has no upload of in.bin (1 MiB) by " + partner + ": " + string.Join("; ", records.Select(r => r.Action + " " + r.File + " " + r.Bytes)));
                     int n = Agent.Archive(records);
                     int again = Agent.Archive(records);
                     var back = TransferArchive.Read(DateTime.Today, DateTime.Now.AddMinutes(1));
@@ -508,10 +508,22 @@ namespace OpenSSHServerPNManager
                 }
                 finally
                 {
-                    Agent.RemoveTasks();
+                    // What the MSI runs when the package is removed; checked by the next step.
+                    int code = Agent.Run("uninstall");
+                    var left = new[] { Agent.WatchTask, Agent.DailyTask }.Where(SystemTasks.Exists).ToList();
+                    if (copied && File.Exists(exe)) left.Add(exe);
+                    try { dynamic ts = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service")); ts.Connect(); ts.GetFolder("\\" + Agent.TaskFolder); left.Add("the task folder"); } catch { }
+                    uninstalled = code == 0 && left.Count == 0 ? "both tasks and their folder removed" + (copied ? ", and the copy " + exe : "") : "exit code " + code + "; left behind: " + string.Join(", ", left);
+                    if (left.Count > 0) Agent.RemoveTasks();
                     try { snapshot.Restore(); } catch { }
                     if (copied) try { Directory.Delete(Path.GetDirectoryName(exe), true); } catch { }
                 }
+            });
+            step("Agent: the uninstall step (--agent uninstall) removes what it set up", () =>
+            {
+                if (uninstalled == null) return "skipped: the tasks are set up on this computer";
+                if (!uninstalled.StartsWith("both", StringComparison.Ordinal)) throw new Exception(uninstalled);
+                return uninstalled;
             });
             return failed;
         }

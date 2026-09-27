@@ -8,6 +8,7 @@
         <!-- KeyPath is necessary for multi-file components to identify the key file - preferrably versioned. -->
         <ComponentGroup Id="Server" Directory="INSTALLFOLDER">
             <ComponentGroupRef Id="Shared" />
+            <ComponentGroupRef Id="ManagerShortcuts" />
             <Component>
                 <File Name="sftp-server.exe" KeyPath="yes" />
             </Component>
@@ -69,12 +70,34 @@
                     <PermissionEx Sddl="O:BAG:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)" />
                 </File>
             </Component>
+            <!-- OpenSSH Server PN Manager, the management console: the committed build in tools\OpenSSH-Server-PN-Manager\bin
+                 (openssh.wixproj binds that folder; manager.yml checks that it is the build of the source). One program for
+                 every platform (.NET Framework 4.5 or later, any CPU). The scheduled tasks of its Alerts tab run it from here.
+                 Two Start-menu shortcuts for all users: the manager, and the manager opening its setup wizard. -->
+            <Component>
+                <File Id="OpenSSHServerPNManager.exe" Name="OpenSSHServerPNManager.exe" KeyPath="yes" />
+            </Component>
+            <Component>
+                <File Name="OpenSSHServerPNManager.exe.config" KeyPath="yes" />
+            </Component>
             <!-- Permanent registry component - will persist through uninstall -->
             <Component Id="SSHDInstallFlagComponent" Guid="*" Permanent="yes">
                 <Condition><![CDATA[NOT SSHDREGKEYEXISTS]]></Condition>
                     <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sshd.exe" ForceCreateOnInstall="yes">
                         <RegistryValue Name="MitigationOptions" Type="binary" Value="00000000000000000000000000000000000010" KeyPath="yes" />
                     </RegistryKey>
+            </Component>
+        </ComponentGroup>
+
+        <!-- The Start-menu shortcuts of the manager. Shortcuts that are not advertised need a registry key path (ICE43); HKMU
+             is HKLM in this per-machine package, where ProgramMenuFolder is the Start menu of all users (ICE57, which takes
+             that folder for per-user data, is suppressed in openssh.wixproj). Not advertised: starting an advertised shortcut
+             checks the whole feature and may start a repair, which restarts sshd. -->
+        <ComponentGroup Id="ManagerShortcuts" Directory="ProgramMenuFolder">
+            <Component Id="ManagerShortcuts">
+                <Shortcut Id="ManagerShortcut" Name="OpenSSH Server PN Manager" Description="Manage the OpenSSH server: service, logins, SFTP, partners, keys, firewall, logs and alerts" Target="[INSTALLFOLDER]OpenSSHServerPNManager.exe" WorkingDirectory="INSTALLFOLDER" />
+                <Shortcut Id="WizardShortcut" Name="OpenSSH Server PN setup wizard" Description="Set up the OpenSSH server step by step" Target="[INSTALLFOLDER]OpenSSHServerPNManager.exe" Arguments="--wizard" WorkingDirectory="INSTALLFOLDER" />
+                <RegistryValue Root="HKMU" Key="SOFTWARE\OpenSSH" Name="ManagerShortcuts" Type="integer" Value="1" KeyPath="yes" />
             </Component>
         </ComponentGroup>
 

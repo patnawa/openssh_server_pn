@@ -18,12 +18,14 @@ on:
       - '.github/workflows/openssh.yml'
       - '.github/scripts/**'
       - 'tools/release/**'
+      - 'tools/OpenSSH-Server-PN-Manager/bin/**'   # the MSI installs the committed manager
   pull_request:
     paths:
       - 'src/**'
       - '.github/workflows/openssh.yml'
       - '.github/scripts/**'
       - 'tools/release/**'
+      - 'tools/OpenSSH-Server-PN-Manager/bin/**'   # the MSI installs the committed manager
   workflow_dispatch:
 
 permissions:
@@ -565,8 +567,15 @@ jobs:
         run: ./.github/scripts/Test-Installer.ps1 -Scenario Sessions
 
       - name: Uninstall
+        id: uninstall
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: ./.github/scripts/Test-Installer.ps1 -Scenario Uninstall
+
+      # A first installation with a window (msiexec /qr) opens the manager's setup wizard; the step ends it and
+      # uninstalls again.
+      - name: First installation with a window opens the setup wizard
+        if: ${{ !cancelled() && steps.uninstall.outcome == 'success' }}
+        run: ./.github/scripts/Test-Installer.ps1 -Scenario FirstRun
 
       # When the installation failed: what the Service Control Manager and the applications logged, what is left in
       # %ProgramData%\ssh, and the crypto probes on the package's own binaries (extracted with an administrative

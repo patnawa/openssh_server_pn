@@ -226,8 +226,9 @@ function Get-MsiTableRows {
 
 function Invoke-Msiexec {
     <#
-      Runs msiexec silently with a verbose log and returns its exit code. -Arguments are the action and
-      properties, e.g. '/i', '"C:\x.msi"', 'ALLOWDOWNGRADE=1'. Exit codes outside -AllowedExitCodes throw.
+      Runs msiexec silently (-Ui /qn; /qr: the reduced window, which asks nothing) with a verbose log and returns its
+      exit code. -Arguments are the action and properties, e.g. '/i', '"C:\x.msi"', 'ALLOWDOWNGRADE=1'. Exit codes
+      outside -AllowedExitCodes throw.
       1618 (another installation is in progress) is retried for up to five minutes.
       An installation still running after -TimeoutMinutes has hung in a custom action: the PowerShell processes are
       listed and then ended until msiexec finishes (as docs/INSTALL.md tells an administrator to do), and it throws.
@@ -236,9 +237,10 @@ function Invoke-Msiexec {
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$LogPath,
         [int[]]$AllowedExitCodes = @(0),
-        [int]$TimeoutMinutes = 20
+        [int]$TimeoutMinutes = 20,
+        [ValidateSet('/qn', '/qr')][string]$Ui = '/qn'
     )
-    $line = (@($Arguments) + @('/qn', '/norestart', '/l*v', ('"' + $LogPath + '"'))) -join ' '
+    $line = (@($Arguments) + @($Ui, '/norestart', '/l*v', ('"' + $LogPath + '"'))) -join ' '
     $deadline = (Get-Date).AddMinutes(5)
     while ($true) {
         Write-Host "msiexec $line"
@@ -444,6 +446,34 @@ function Test-OpenSSHInstallation {
         Test-Check "Firewall rule port $FirewallPort" ($r.LocalPort -eq $FirewallPort) "port $($r.LocalPort)" -Mode $FirewallPortMode | Out-Null
         Test-Check "Firewall rule profile mask $FirewallProfileMask" ($r.ProfileMask -eq $FirewallProfileMask) "profile $($r.Profile) ($($r.ProfileMask))" -Mode $FirewallProfileMode | Out-Null
     }
+
+    # OpenSSH Server PN Manager: the committed build (the job's sparse checkout has it) and its two Start-menu shortcuts
+    $manager = Get-ManagerPath
+    $committed = Join-Path $PSScriptRoot '..\..\tools\OpenSSH-Server-PN-Manager\bin\OpenSSHServerPNManager.exe'
+    $installedHash = if (Test-Path -LiteralPath $manager) { (Get-FileHash -LiteralPath $manager -Algorithm SHA256).Hash } else { 'missing' }
+    $committedHash = if (Test-Path -LiteralPath $committed) { (Get-FileHash -LiteralPath $committed -Algorithm SHA256).Hash } else { 'not in the checkout' }
+    Test-Check 'OpenSSH Server PN Manager installed: the committed build' ($installedHash -eq $committedHash) "installed $installedHash, committed $committedHash" | Out-Null
+    Test-Check 'OpenSSHServerPNManager.exe.config installed' (Test-Path -LiteralPath ($manager + '.config')) | Out-Null
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($s in Get-ManagerShortcut) {
+        $sc = if (Test-Path -LiteralPath $s.Path) { $shell.CreateShortcut($s.Path) } else { $null }
+        Test-Check "Start-menu shortcut '$($s.Name)'" ($sc -and $sc.TargetPath -eq $manager -and $sc.Arguments -eq $s.Arguments) "$(if ($sc) { "$($sc.TargetPath) $($sc.Arguments)".Trim() } else { "missing: $($s.Path)" })" | Out-Null
+    }
+}
+
+function Get-ManagerPath { Join-Path (Get-OpenSSHInstallDir) 'OpenSSHServerPNManager.exe' }
+
+function Get-ManagerShortcut {
+    <# The Start-menu shortcuts that the Server feature installs (server.wxs, ManagerShortcuts): path and arguments. #>
+    $dir = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'
+    [pscustomobject]@{ Name = 'OpenSSH Server PN Manager'; Path = (Join-Path $dir 'OpenSSH Server PN Manager.lnk'); Arguments = '' }
+    [pscustomobject]@{ Name = 'OpenSSH Server PN setup wizard'; Path = (Join-Path $dir 'OpenSSH Server PN setup wizard.lnk'); Arguments = '--wizard' }
+}
+
+function Get-ManagerProcess {
+    <# Running OpenSSHServerPNManager.exe processes whose command line matches -Pattern. #>
+    param([string]$Pattern = '.')
+    @(Get-CimInstance Win32_Process -Filter "Name = 'OpenSSHServerPNManager.exe'" | Where-Object { [string]$_.CommandLine -match $Pattern })
 }
 
 function Test-MsiLog {
@@ -553,4 +583,4 @@ function Start-TestSshSession {
 Export-ModuleMember -Function Write-Annotation, Invoke-Native, Get-MsiInfo, New-FailingMsi, Set-MsiPowerShellArguments, Get-MsiTableRows, Invoke-Msiexec, Get-InstalledOpenSSHProduct,
     Get-SshBanner, Get-SshdListenPort, Get-SshdFirewallRule, Get-DefaultFirewallProfileMask, Reset-Checks, Test-Check,
     Complete-Checks, Get-CheckMode, Test-OpenSSHInstallation, Test-MsiLog, Invoke-ManagerTest, New-AdminTestKey,
-    Start-TestSshSession, Get-OpenSSHInstallDir
+    Start-TestSshSession, Get-OpenSSHInstallDir, Get-ManagerPath, Get-ManagerShortcut, Get-ManagerProcess
