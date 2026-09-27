@@ -257,7 +257,8 @@ The client chooses the cipher, and the cipher decides the speed. On x64, from th
 `chacha20-poly1305@openssh.com`, the first choice of OpenSSH clients: add
 `-c aes128-gcm@openssh.com` to `sftp` and `scp`, or `Ciphers aes128-gcm@openssh.com,...` to the
 client's `ssh_config`. WinSCP and FileZilla use AES by default. Compression (`-C`) slows transfers
-down on a fast network.
+down on a fast network. [SFTP-PERFORMANCE.md](SFTP-PERFORMANCE.md) has the measurements, the
+settings for each client, a server option that makes every client use AES, and a speed test.
 
 ### Default shell
 

@@ -151,7 +151,8 @@ Match all
   `aes128-gcm@openssh.com` and `aes256-gcm@openssh.com` move files over SFTP about 3.5 times as fast
   as with the 10.5.2.0 packages, and up to twice as fast as `chacha20-poly1305@openssh.com`, the first
   choice of OpenSSH clients. WinSCP and FileZilla use AES by default; with `sftp` and `scp`, add
-  `-c aes128-gcm@openssh.com`. docs/CHANGELOG.md has the measurements.
+  `-c aes128-gcm@openssh.com`. [docs/SFTP-PERFORMANCE.md](../../docs/SFTP-PERFORMANCE.md) has the measurements, the
+  settings for each client and a speed test.
 
 ## Safety design
 

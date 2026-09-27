@@ -41,8 +41,9 @@ two interleaved rounds):
 | `chacha20-poly1305@openssh.com` | 296 / 280 | 291 / 325 |
 
 WinSCP and FileZilla use AES by default, so they gain without a change. OpenSSH clients choose
-`chacha20-poly1305@openssh.com` first; `-c aes128-gcm@openssh.com` makes them use AES. The
-management console is now **OpenSSH Server PN Manager 2.0.0**, with an SFTP tab (see below). The
+`chacha20-poly1305@openssh.com` first; `-c aes128-gcm@openssh.com` makes them use AES.
+[docs/SFTP-PERFORMANCE.md](docs/SFTP-PERFORMANCE.md) has the settings for each client and a test
+for your own server. The management console is now **OpenSSH Server PN Manager 2.0.0**, with an SFTP tab (see below). The
 installer is the one of 10.5.2.0, which repaired the ARM64 package and the installation on Windows 7
 and Windows Server 2008 R2 of 10.5.1.0 and earlier
 ([docs/INSTALL.md](docs/INSTALL.md#a-hung-installation) says how to end such an installation).
@@ -215,6 +216,7 @@ The full record, including what could not be tested here, is in [docs/CHANGELOG.
 | [packaging/intune/README.md](packaging/intune/README.md) | Deploying with Intune or Configuration Manager: commands, detection rule, return codes |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Every build: changes and verification |
 | [docs/COMPARISON-BITVISE.md](docs/COMPARISON-BITVISE.md) | Feature audit against Bitvise SSH Server and other commercial servers |
+| [docs/SFTP-PERFORMANCE.md](docs/SFTP-PERFORMANCE.md) | SFTP speed: what 10.5.3.0 changed, the fastest client settings, how to measure your server |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Planned improvements |
 | [tools/OpenSSH-Server-PN-Manager/README.md](tools/OpenSSH-Server-PN-Manager/README.md) | The management console |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to propose changes |
