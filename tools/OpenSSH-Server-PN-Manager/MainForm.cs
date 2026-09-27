@@ -35,6 +35,14 @@ namespace OpenSSHServerPNManager
         public static int Px(int n) { return (int)Math.Round(n * Scale); }
         /// <summary>A font size in points: Windows scales points to the system DPI already; only a test scale adds to it.</summary>
         public static float Pt(float pt) { return pt * Scale / SystemScale; }
+        /// <summary>A size for people: "812 bytes", "3.4 MB", "1.2 GB" (1 MB = 1024 × 1024 bytes).</summary>
+        public static string Bytes(long n)
+        {
+            if (n < 1024) return n + " bytes";
+            string[] units = { "KB", "MB", "GB", "TB" }; double v = n; int u = -1;
+            while (v >= 1024 && u < units.Length - 1) { v /= 1024; u++; }
+            return v.ToString(v < 10 ? "0.0" : "0", System.Globalization.CultureInfo.InvariantCulture) + " " + units[u];
+        }
 
         private static Icon _appIcon; private static bool _appIconRead;
         /// <summary>The program icon with all its sizes (app.ico, embedded by build.ps1), or null in a build without it.</summary>
@@ -133,6 +141,7 @@ namespace OpenSSHServerPNManager
             _tabs.TabPages.Add(_pgSettings = BuildSettings());
             _tabs.TabPages.Add(_pgAuth = BuildAuthentication());
             _tabs.TabPages.Add(_pgSftp = BuildSftp());
+            _tabs.TabPages.Add(_pgPartners = BuildPartners());
             _tabs.TabPages.Add(_pgRaw = BuildRawEditor());
             _tabs.TabPages.Add(_pgKeys = BuildKeys());
             _tabs.TabPages.Add(_pgKeyGen = BuildKeyGen());
@@ -212,6 +221,7 @@ namespace OpenSSHServerPNManager
                         else if (tab == _pgHardening) Safe(RunChecks);
                         else if (tab == _pgKeys) Safe(LoadKeys);
                         else if (tab == _pgFirewall) Safe(LoadFirewall);
+                        else if (tab == _pgPartners) Safe(LoadPartners);
                         else if (tab == _pgClient) Safe(LoadClient);
                         else return base.ProcessCmdKey(ref msg, keyData);
                         return true;
@@ -251,6 +261,21 @@ namespace OpenSSHServerPNManager
         /// <summary>--screenshot: SFTP with transfer logging and two example SFTP-only accounts, in the window only (nothing is saved).</summary>
         /// <summary>--screenshot: drops the example rules of the Authentication tab, as its Undo changes does.</summary>
         public void UndoAuthForTest() { LoadAuth(); }
+        /// <summary>--screenshot: the Partners tab, set up, with example partners (in the window only; nothing is read or written).</summary>
+        public void ShowPartnersExampleForTest()
+        {
+            _ptSetupState = new PartnerSetupState { Root = @"D:\SFTP" };
+            var today = DateTime.Today;
+            _partners = new List<PartnerAccount>
+            {
+                new PartnerAccount { Name = "acme", FullName = "Somchai K.", Company = "ACME Logistics Co., Ltd.", LastLogon = today.AddHours(9.5), KeyCount = 1 },
+                new PartnerAccount { Name = "globex-audit", FullName = "Jane Doe", Company = "Globex Audit", ReadOnly = true, Expires = today.AddDays(46), LastLogon = today.AddDays(-3).AddHours(14) },
+                new PartnerAccount { Name = "initech", FullName = "Peter G.", Company = "Initech", KeyOnly = true, KeyCount = 2, LastLogon = today.AddDays(-1).AddHours(8) },
+                new PartnerAccount { Name = "umbrella", FullName = "", Company = "Umbrella Trading", Disabled = true, LastLogon = today.AddDays(-40) },
+            };
+            _ptLoaded = true;
+            FillPartners("acme");
+        }
         /// <summary>--screenshot: the Key generator tab showing an example key, as after Load key (the SFTP example is dropped first).</summary>
         public void ShowKeyExampleForTest(KeyFileInfo key) { LoadSftp(); ShowKey(key, "Loaded " + key.FileName + ".", true, Theme.Text); }
         public void ShowSftpExampleForTest()
@@ -495,6 +520,7 @@ namespace OpenSSHServerPNManager
             else if (tab == _pgLogs) { if (_lvEvents.Items.Count == 0) LoadLogs(); }
             else if (tab == _pgHardening) { if (_lvChecks.Items.Count == 0) RunChecks(); }
             else if (tab == _pgClient) { if (!_clientLoaded) LoadClient(); }
+            else if (tab == _pgPartners) { if (!_ptLoaded) LoadPartners(); }
         }
 
         // ---------------- Dashboard ----------------
@@ -1309,6 +1335,8 @@ namespace OpenSSHServerPNManager
             if (!SftpEdited() || !SameSftp(sftpFromFile, _sfFile)) { bool lost = SftpEdited(); LoadSftp(); if (lost) Status("sshd_config changed: the SFTP changes not applied yet were replaced by the file"); }
             else { _sfFile = sftpFromFile; FillSftpRules(); UpdateSftpUi(); }
             _lvChecks.Items.Clear(); // run again from the new configuration when the tab is opened
+            _ptLoaded = false; // the partner setup depends on sshd_config: read again when the tab is opened
+            if (_pgPartners != null && _tabs.SelectedTab == _pgPartners) Safe(LoadPartners, false);
         }
 
         private static bool SameAuth(AuthState a, AuthState b)
@@ -1856,7 +1884,9 @@ namespace OpenSSHServerPNManager
                 var sid = Acl.SidOfAccount(r.Name);
                 if (r.IsGroup && (r.Folder.Contains("%u") || r.Folder.Contains("%h")))
                 {
-                    l.Add(new FolderStep { Text = who + ": one folder per member, " + r.Folder + " (not created here: add a rule for each user, or create the folders)" });
+                    var partners = PartnerGroups.Default;
+                    bool partnerGroup = r.Name == PartnerGroups.Sshd(partners.Full) || r.Name == PartnerGroups.Sshd(partners.ReadOnly);
+                    l.Add(new FolderStep { Text = who + ": one folder per member, " + r.Folder + (partnerGroup ? " (the Partners tab makes the folder of each partner)" : " (not created here: add a rule for each user, or create the folders)") });
                     continue;
                 }
                 var path = r.IsGroup ? SftpConfig.ExpandFolder(r.Folder, "", null) : SftpConfig.ExpandFolder(r.Folder, r.Name, Accounts.ProfileDir(sid));
@@ -1967,6 +1997,259 @@ namespace OpenSSHServerPNManager
                 text = sb.ToString();
             }
             _sfResult.Text = text; _sfResult.ForeColor = color;
+        }
+
+        // ---------------- Partners (SFTP partner accounts) ----------------
+        private TabPage _pgPartners; private ListView _lvPartners; private Label _ptState, _ptResult; private Button _ptSetup; private Button[] _ptButtons;
+        private bool _ptLoaded; private PartnerSetupState _ptSetupState = new PartnerSetupState(); private List<PartnerAccount> _partners = new List<PartnerAccount>();
+
+        private TabPage BuildPartners()
+        {
+            var page = new TabPage("Partners");
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(8) };
+            for (int i = 0; i < 5; i++) root.RowStyles.Add(i == 1 ? new RowStyle(SizeType.Percent, 100) : new RowStyle(SizeType.AutoSize));
+            var head = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Dock = DockStyle.Top };
+            var title = Flow(); title.Padding = new Padding(0);
+            title.Controls.Add(Lbl("SFTP partners", true));
+            _ptSetup = Btn("Set up partner accounts...", (s, e) => Safe(SetUpPartners), 200);
+            title.Controls.Add(_ptSetup);
+            head.Controls.Add(title);
+            _ptState = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(8, 0, 4, 6), ForeColor = Theme.Muted, Text = "..." };
+            head.Controls.Add(_ptState);
+            root.Controls.Add(head, 0, 0);
+            _lvPartners = Lv("Account|120", "Contact|130", "Company|170", "Access|150", "Login|150", "Status|85", "Last day|90", "Last logon|125");
+            _lvPartners.AccessibleName = "SFTP partners";
+            _lvPartners.ItemActivate += (s, e) => Safe(EditPartner);
+            _lvPartners.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Safe(DeletePartner); } };
+            _lvPartners.SelectedIndexChanged += (s, e) => UpdatePartnerButtons();
+            root.Controls.Add(_lvPartners, 0, 1);
+            var bar = Flow();
+            _ptButtons = new[]
+            {
+                Btn("New partner...", (s, e) => Safe(NewPartner), 130),
+                Btn("Edit...", (s, e) => Safe(EditPartner), 90),
+                Btn("Reset password...", (s, e) => Safe(ResetPartnerPassword), 150),
+                Btn("Disable", (s, e) => Safe(TogglePartner), 100),
+                Btn("Unlock", (s, e) => Safe(UnlockPartner), 90),
+                Btn("Keys...", (s, e) => Safe(PartnerKeys), 90),
+                Btn("Delete...", (s, e) => Safe(DeletePartner), 100),
+                Btn("Open folder", (s, e) => Safe(OpenPartnerFolder), 120),
+                Btn("Refresh", (s, e) => Safe(LoadPartners), 100),
+            };
+            foreach (var b in _ptButtons) bar.Controls.Add(b);
+            root.Controls.Add(bar, 0, 2);
+            _ptResult = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(8, 2, 4, 4), ForeColor = Theme.Muted };
+            root.Controls.Add(_ptResult, 0, 3);
+            root.Controls.Add(new Label
+            {
+                AutoSize = true, ForeColor = Theme.Muted, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(8, 4, 4, 4),
+                Text = "Partners are local accounts of people outside the company who exchange files over SFTP and do nothing else: no shell, commands, terminal or forwarding, each confined to a folder of its own that it sees as /. " +
+                       "Adding, changing or removing a partner does not change sshd_config or restart sshd. Passwords are generated, shown once and not stored; the last day decides until when an account can log in. Disabling or deleting a partner ends its open sessions."
+            }, 0, 4);
+            page.Controls.Add(root);
+            return page;
+        }
+
+        private string PartnerRoot { get { return _ptSetupState.Root ?? PartnerSetup.DefaultRoot; } }
+        private PartnerAccount SelectedPartner() { return _lvPartners.SelectedItems.Count > 0 ? (PartnerAccount)_lvPartners.SelectedItems[0].Tag : null; }
+
+        private void LoadPartners()
+        {
+            var g = PartnerGroups.Default; var cfg = _cfg;
+            PartnerSetupState st = null; List<PartnerAccount> list = null;
+            Bg("Reading the partner accounts...", () => { st = PartnerSetup.Check(cfg, g); list = Partners.List(g); });
+            _ptSetupState = st; _partners = list; _ptLoaded = true;
+            FillPartners();
+        }
+
+        private void FillPartners(string select = null)
+        {
+            select = select ?? (SelectedPartner() == null ? null : SelectedPartner().Name);
+            _lvPartners.BeginUpdate(); _lvPartners.Items.Clear();
+            foreach (var p in _partners)
+            {
+                var last = LocalAccounts.LastDay(p.Expires);
+                var item = new ListViewItem(new[] { p.Name, p.FullName, p.Company, p.Access, p.Login, p.Status, last == null ? "" : last.Value.ToString("yyyy-MM-dd"),
+                    p.LastLogon == null ? "never" : p.LastLogon.Value.ToString("yyyy-MM-dd HH:mm") }) { Tag = p };
+                if (!p.Active) item.ForeColor = p.Disabled ? Theme.Muted : Orange;
+                else if (p.KeyOnly && p.KeyCount == 0) item.ForeColor = Orange;
+                _lvPartners.Items.Add(item);
+                if (string.Equals(p.Name, select, StringComparison.OrdinalIgnoreCase)) item.Selected = true;
+            }
+            _lvPartners.EndUpdate();
+            var st = _ptSetupState; var lines = new List<string>();
+            if (!st.Complete)
+            {
+                lines.Add("Not set up yet: " + (st.MissingGroups.Count > 0 ? "the partner groups do not exist" : "sshd_config lacks " + st.Missing[0] + (st.Missing.Count > 1 ? ", and " + (st.Missing.Count - 1) + " more" : "")) +
+                          ". \"Set up partner accounts\" adds what is missing, once.");
+            }
+            else
+            {
+                int active = _partners.Count(p => p.Active), off = _partners.Count - active;
+                lines.Add(_partners.Count + " partner(s)" + (_partners.Count > 0 ? ": " + active + " active" + (off > 0 ? ", " + off + " disabled, expired or locked out" : "") : "") +
+                          ". Folders under " + PartnerRoot + "; file transfers are logged in the OpenSSH event log.");
+                var noKey = _partners.Where(p => p.KeyOnly && p.KeyCount == 0).Select(p => p.Name).ToList();
+                if (noKey.Count > 0) lines.Add("Key only, without a key yet (they cannot log in): " + string.Join(", ", noKey) + ".");
+            }
+            if (st.Problems.Count > 0) lines.Add("Note: " + string.Join("; ", st.Problems) + ".");
+            _ptState.Text = string.Join("\n", lines);
+            _ptState.ForeColor = !st.Complete || st.Problems.Count > 0 || lines.Count > 1 ? Orange : Theme.Muted;
+            _ptSetup.Visible = !st.Complete;
+            UpdatePartnerButtons();
+        }
+
+        private void UpdatePartnerButtons()
+        {
+            var p = SelectedPartner(); bool ready = _ptSetupState.Complete;
+            _ptButtons[0].Enabled = ready;
+            for (int i = 1; i <= 7; i++) _ptButtons[i].Enabled = p != null;
+            _ptButtons[3].Text = p != null && p.Disabled ? "Enable" : "Disable";
+            _ptButtons[4].Enabled = p != null && p.LockedOut;
+        }
+
+        private void SetUpPartners()
+        {
+            var g = PartnerGroups.Default; var cfg = _cfg;
+            var st = Bg("Checking what partner accounts need...", () => PartnerSetup.Check(cfg, g));
+            string root = null;
+            using (var d = new PartnerSetupDialog(st, g, dlg => root = dlg.Root))
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+            var cand = _cfg.Copy();
+            PartnerSetup.Apply(cand, g, root);
+            string backup = null; bool running = true;
+            if (cand.Text != _cfg.Text) backup = SaveConfig(cand, "Set up SFTP partner accounts: rules for the groups " + string.Join(", ", g.All.Select(PartnerGroups.Sshd)) + ", folders under " + root + ", file transfers logged.", "Save and restart");
+            List<string> made = null;
+            Bg("Creating the partner groups and folders...", () =>
+            {
+                made = PartnerSetup.CreateGroups(g);
+                if (!Directory.Exists(g.KeysDir)) Acl.CreatePrivateFolder(g.KeysDir);
+                if (!Directory.Exists(root)) Acl.CreatePrivateFolder(root);
+            });
+            if (backup != null) { UseConfig(cand); running = RestartWithRollback(backup); }
+            _ptLoaded = false; LoadPartners();
+            _ptResult.Text = running
+                ? "Partner accounts are set up" + (made.Count > 0 ? " (groups " + string.Join(", ", made) + " created)" : "") + ". New partner... adds one; sshd is not restarted for that."
+                : "sshd did not keep the new settings: the previous sshd_config is back. The partner groups exist; set up again once the problem is solved.";
+            _ptResult.ForeColor = running ? Green : Red;
+            Status(running ? "Partner accounts set up" : "Partner setup not applied");
+        }
+
+        private static string ServerName() { try { return System.Net.Dns.GetHostEntry("").HostName; } catch { return Environment.MachineName; } }
+
+        private void ShowPartnerPassword(string name, string password, string what)
+        {
+            int port = _cfg == null ? 22 : _cfg.EffectivePort;
+            var server = Bg("Looking up this computer's name...", () => ServerName());
+            using (var d = new PasswordShownDialog(name, password, server, port, what)) d.ShowDialog(this);
+        }
+
+        private void NewPartner()
+        {
+            var g = PartnerGroups.Default; var root = PartnerRoot; string password = null, name = null; bool keyOnly = false;
+            using (var d = new PartnerDialog(null, root, dlg =>
+            {
+                var n = dlg.AccountName; var fn = dlg.FullName; var co = dlg.Company; var ro = dlg.ReadOnlyAccess; var ko = dlg.KeyOnly; var last = dlg.LastDay;
+                password = Bg("Creating the partner " + n + "...", () => Partners.Create(g, root, n, fn, co, ro, ko, last));
+                name = n; keyOnly = ko;
+            }))
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+            LoadPartners(); FillPartners(name);
+            _ptResult.Text = "Created the partner " + name + ", with the folder " + Partners.FolderOf(root, name) + "."; _ptResult.ForeColor = Green;
+            Status("Partner created: " + name);
+            if (keyOnly)
+            {
+                password = null;
+                MessageBox.Show(this, name + " logs in with a public key only. Add the partner's public key (its .pub file) now.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                PartnerKeys();
+            }
+            else ShowPartnerPassword(name, password, "The partner " + name + " can log in now, with this password, to its folder only.");
+        }
+
+        private void EditPartner()
+        {
+            var p = SelectedPartner(); if (p == null) return;
+            var g = PartnerGroups.Default; var root = PartnerRoot;
+            using (var d = new PartnerDialog(p, root, dlg =>
+            {
+                var fn = dlg.FullName; var co = dlg.Company; var ro = dlg.ReadOnlyAccess; var ko = dlg.KeyOnly; var last = dlg.LastDay;
+                Bg("Saving " + p.Name + "...", () => Partners.Update(g, root, p, fn, co, ro, ko, last));
+            }))
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+            LoadPartners();
+            _ptResult.Text = "Saved " + p.Name + ". The changes apply from its next login."; _ptResult.ForeColor = Green;
+            Status("Partner saved: " + p.Name);
+        }
+
+        private void ResetPartnerPassword()
+        {
+            var p = SelectedPartner(); if (p == null) return;
+            if (MessageBox.Show(this, "Give " + p.Name + " a new password? The current one stops working at once." + (p.KeyOnly ? "\n\n" + p.Name + " logs in with a key only, so the password is refused anyway." : ""),
+                    Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            var password = Bg("Setting a new password...", () => Partners.ResetPassword(p.Name));
+            LoadPartners();
+            ShowPartnerPassword(p.Name, password, "The new password of " + p.Name + ". The previous one no longer works.");
+            Status("New password for " + p.Name);
+        }
+
+        private void TogglePartner()
+        {
+            var p = SelectedPartner(); if (p == null) return;
+            bool disable = !p.Disabled; int port = _cfg.EffectivePort; int ended = 0;
+            if (disable && MessageBox.Show(this, "Disable " + p.Name + "? It can no longer log in, and its open sessions end now. Its folder, keys and settings stay.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            Bg((disable ? "Disabling " : "Enabling ") + p.Name + "...", () => { Partners.SetDisabled(p.Name, disable); if (disable) ended = Partners.Disconnect(p.Name, port); });
+            LoadPartners();
+            _ptResult.Text = (disable ? "Disabled " + p.Name + (ended > 0 ? "; " + ended + " open session(s) ended" : "") : "Enabled " + p.Name) + "."; _ptResult.ForeColor = Green;
+            Status(_ptResult.Text);
+        }
+
+        private void UnlockPartner()
+        {
+            var p = SelectedPartner(); if (p == null || !p.LockedOut) return;
+            Bg("Unlocking " + p.Name + "...", () => Partners.Unlock(p.Name));
+            LoadPartners();
+            _ptResult.Text = "Unlocked " + p.Name + ": Windows had locked it after too many wrong passwords (the lockout policy)."; _ptResult.ForeColor = Green;
+        }
+
+        private void PartnerKeys()
+        {
+            var p = SelectedPartner(); if (p == null) return;
+            var g = PartnerGroups.Default;
+            var file = Bg("Opening the partner's keys...", () => Partners.EnsureKeysFile(g, p.Name));
+            using (var d = new PartnerKeysDialog(p, file)) d.ShowDialog(this);
+            LoadPartners();
+        }
+
+        private void DeletePartner()
+        {
+            var p = SelectedPartner(); if (p == null) return;
+            var g = PartnerGroups.Default; var root = PartnerRoot; var folder = Partners.FolderOf(root, p.Name); int port = _cfg.EffectivePort;
+            var size = Bg("Looking at the partner's folder...", () =>
+            {
+                if (!Directory.Exists(folder)) return null;
+                try { var files = new DirectoryInfo(folder).GetFiles("*", SearchOption.AllDirectories); return files.Length + " file(s), " + Ui.Bytes(files.Sum(f => f.Length)); }
+                catch (Exception ex) { return "not readable: " + ex.Message; }
+            });
+            string problems = null, note = null; bool deleted = false; int ended = 0;
+            using (var d = new PartnerDeleteDialog(p, folder, size, dlg =>
+            {
+                var withFiles = dlg.DeleteFiles;
+                Bg("Deleting " + p.Name + "...", () => { ended = Partners.Disconnect(p.Name, port); problems = Partners.Delete(g, root, p, withFiles, out note); });
+                deleted = true;
+            }))
+                d.ShowDialog(this);
+            if (!deleted) return;
+            LoadPartners();
+            _ptResult.Text = "Deleted " + p.Name + (ended > 0 ? "; " + ended + " open session(s) ended" : "") + (note != null ? "; " + note : "") + "." + (problems != null ? " Not done: " + problems + "." : "");
+            _ptResult.ForeColor = problems == null ? Green : Orange;
+            Status("Partner deleted: " + p.Name);
+        }
+
+        private void OpenPartnerFolder()
+        {
+            var p = SelectedPartner(); if (p == null) return;
+            var folder = Partners.FolderOf(PartnerRoot, p.Name);
+            if (!Directory.Exists(folder)) throw new ConfigException("The folder " + folder + " does not exist.");
+            Proc.OpenExternal("explorer.exe", "\"" + folder + "\"");
         }
 
         // ---------------- Raw editor ----------------

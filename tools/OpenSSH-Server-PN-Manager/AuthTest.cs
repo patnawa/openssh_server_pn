@@ -33,9 +33,6 @@ namespace OpenSSHServerPNManager
     {
         private const string Marker = "OSM-AUTH-LOGIN-OK";
 
-        [DllImport("netapi32.dll", CharSet = CharSet.Unicode)] private static extern int NetUserAdd(string server, int level, ref Accounts.USER_INFO_1 info, out int parmError);
-        [DllImport("netapi32.dll", CharSet = CharSet.Unicode)] private static extern int NetUserDel(string server, string user);
-        [DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool DeleteProfile(string sid, string profilePath, string computer);
         [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr OpenSCManager(string machine, string database, uint access);
         [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr CreateService(IntPtr scm, string name, string display, uint access, uint type, uint start, uint errorControl, string path, string group, IntPtr tag, string dependencies, string account, string password);
         [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr OpenService(IntPtr scm, string name, uint access);
@@ -140,6 +137,8 @@ namespace OpenSSHServerPNManager
                         sb.AppendLine(LogTail(logPath, 12));
                     }
                 }
+                int partnerFailures = PartnerTests(sb, dir, id, baseCfg, cfgPath, service, port, key, knownHosts, authorizedKeys);
+                if (partnerFailures > 0) { failed += partnerFailures; try { StopTestService(service); } catch { } sb.AppendLine(LogTail(logPath, 20)); }
             }
             catch (Exception ex) { failed++; sb.AppendLine("FAIL  " + ex.Message); }
             finally
@@ -152,7 +151,7 @@ namespace OpenSSHServerPNManager
                 if (accountCreated)
                 {
                     string note;
-                    var e = RemoveAccount(user, sid, out note);
+                    var e = LocalAccounts.DeleteUser(user, sid, out note);
                     if (e == null) sb.AppendLine("removed the temporary account " + user + (note != null ? "; " + note : ""));
                     else { failed++; sb.AppendLine("FAIL  cleanup, account " + user + ": " + e); }
                 }
@@ -308,6 +307,152 @@ namespace OpenSSHServerPNManager
             };
         }
 
+        // ---------------- SFTP partners ----------------
+
+        /// <summary>
+        /// SFTP partners as the Partners tab makes them, against the test sshd, with partner groups and a keys folder of this
+        /// test: a partner with a password (upload and download) and one with a key only (download only); disabling, the
+        /// last day, a new password, a change of access, and removal. Partners are in their groups only, not in Users, as the
+        /// tab makes them. Everything the test makes is removed at the end. Returns the number of failures.
+        /// </summary>
+        private static int PartnerTests(StringBuilder sb, string dir, string id, SshdConfig baseCfg, string cfgPath, string service, int port, KeyGenResult key, string knownHosts, string authorizedKeys)
+        {
+            int failed = 0;
+            var g = new PartnerGroups { Full = "osmtest-p-" + id, ReadOnly = "osmtest-pr-" + id, KeyOnly = "osmtest-pk-" + id, KeysDir = Path.Combine(dir, "partner_keys") };
+            var root = Path.Combine(dir, "partners");
+            string a = "osmta" + id, b = "osmtb" + id;
+            var made = new List<string>();
+            var s = new SftpRun { Dir = dir, Port = port, Key = key.PrivatePath, KnownHosts = knownHosts };
+            Action<string, Func<string>> step = (name, body) =>
+            {
+                try { sb.AppendLine("PASS  " + name + ": " + body()); }
+                catch (Exception ex) { failed++; sb.AppendLine("FAIL  " + name + ": " + Short(ex.Message)); }
+            };
+            Func<string, PartnerAccount> find = n => Partners.List(g).FirstOrDefault(x => x.Name.Equals(n, StringComparison.OrdinalIgnoreCase));
+            try
+            {
+                PartnerSetup.CreateGroups(g);
+                Acl.CreatePrivateFolder(g.KeysDir);
+                var cfg = new SshdConfig { Lines = baseCfg.Lines.ToList(), NewLine = baseCfg.NewLine, Path = cfgPath };
+                AuthConfig.Apply(cfg, M(false, true, false, false), new List<AuthRule>()); // everyone else: a key only; the partner rules allow passwords
+                if (SftpConfig.Read(cfg).RulesProblem != null) throw new Exception("the live sshd_config has a hand-edited section of SFTP-only accounts");
+                PartnerSetup.Apply(cfg, g, root);
+                var st = PartnerSetup.Check(cfg, g);
+                if (!st.Complete) throw new Exception("after the setup: " + string.Join("; ", st.MissingGroups.Concat(st.Missing)));
+                Serve(cfg, cfgPath, service, port, authorizedKeys);
+                string pwA = null;
+                step("SFTP partner with a password, upload and download (" + a + ")", () =>
+                {
+                    pwA = Partners.Create(g, root, a, "Test contact", "Test company", false, false, DateTime.Today.AddDays(30)); made.Add(a);
+                    var p = find(a);
+                    if (p == null || p.ReadOnly || p.KeyOnly || !p.Active || p.Company != "Test company" || p.FullName != "Test contact" || LocalAccounts.LastDay(p.Expires) != DateTime.Today.AddDays(30))
+                        throw new Exception("listed as " + (p == null ? "missing" : p.Access + ", " + p.Login + ", " + p.Status + ", " + p.Company + ", last day " + LocalAccounts.LastDay(p.Expires)));
+                    if (!Authenticated(a, port, knownHosts, null, pwA)) throw new Exception("the password was refused");
+                    if (Authenticated(a, port, knownHosts, key.PrivatePath, null)) throw new Exception("a key that is not the partner's logged in");
+                    var cmd = Login(a, port, knownHosts, null, pwA);
+                    if (cmd.StdOut.Contains(Marker)) throw new Exception("a command ran for a partner");
+                    var up = s.MakeFile("partner-up.bin", 1 << 20);
+                    var r = Scp(a, port, knownHosts, pwA, up, "in.bin");
+                    if (!SameBytes(up, Path.Combine(Partners.FolderOf(root, a), "in.bin"))) throw new Exception("the upload with the password is not in the partner's folder: " + Short(r.Output));
+                    return "created; its password logs in, a key that is not its own does not, commands do not run; an upload (scp over SFTP) lands in " + Partners.FolderOf(root, a);
+                });
+                step("SFTP partner with a key only, download only (" + b + ")", () =>
+                {
+                    var pwB = Partners.Create(g, root, b, "", "", true, true, null); made.Add(b);
+                    Keys.AddLines(Partners.EnsureKeysFile(g, b), new[] { key.PublicKey }, null);
+                    var src = s.MakeFile("partner-report.bin", 64 << 10);
+                    File.Copy(src, Path.Combine(Partners.FolderOf(root, b), "report.bin"));
+                    var p = find(b);
+                    if (p == null || !p.ReadOnly || !p.KeyOnly || p.KeyCount != 1) throw new Exception("listed as " + (p == null ? "missing" : p.Access + ", " + p.Login));
+                    s.User = b;
+                    var back = Path.Combine(dir, "partner-report-back.bin");
+                    s.Works(s.Batch("get report.bin " + SftpPath(back)), "a download with the key");
+                    if (!SameBytes(src, back)) throw new Exception("the file came back different");
+                    s.Refused(s.Batch("put " + SftpPath(src) + " up.bin"), "an upload");
+                    s.Refused(s.Batch("cd .."), "cd .. above the folder");
+                    if (Authenticated(b, port, knownHosts, null, pwB)) throw new Exception("the password of a key-only partner logged in");
+                    return "its key downloads; an upload, leaving the folder and its password are refused";
+                });
+                step("Disable and enable, the last day, a new password (" + a + ")", () =>
+                {
+                    Partners.SetDisabled(a, true);
+                    if (Authenticated(a, port, knownHosts, null, pwA)) throw new Exception("a disabled partner logged in");
+                    Partners.SetDisabled(a, false);
+                    if (!Authenticated(a, port, knownHosts, null, pwA)) throw new Exception("a partner enabled again was refused");
+                    LocalAccounts.SetExpiry(a, DateTime.Today.AddDays(-1));
+                    if (Authenticated(a, port, knownHosts, null, pwA)) throw new Exception("a partner logged in after its last day");
+                    if (find(a).Status != "expired") throw new Exception("not listed as expired: " + find(a).Status);
+                    LocalAccounts.SetExpiry(a, null);
+                    var pw2 = Partners.ResetPassword(a);
+                    if (Authenticated(a, port, knownHosts, null, pwA)) throw new Exception("the old password still logs in");
+                    if (!Authenticated(a, port, knownHosts, null, pw2)) throw new Exception("the new password was refused");
+                    pwA = pw2;
+                    return "refused while disabled and after its last day, back afterwards; after a new password the old one is refused";
+                });
+                step("Access changed to download only (" + a + ")", () =>
+                {
+                    var p = find(a);
+                    Partners.Update(g, root, p, p.FullName, p.Company, true, false, null);
+                    var folder = Partners.FolderOf(root, a);
+                    var rights = Directory.GetAccessControl(folder).GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().Where(x => p.Sid.Equals(x.IdentityReference)).ToList();
+                    if (rights.Count != 1 || (rights[0].FileSystemRights & FileSystemRights.WriteData) != 0) throw new Exception("the folder still lets it write: " + string.Join(", ", rights.Select(x => x.FileSystemRights)));
+                    var up = s.MakeFile("partner-up2.bin", 4096);
+                    Scp(a, port, knownHosts, pwA, up, "in2.bin");
+                    if (File.Exists(Path.Combine(folder, "in2.bin"))) throw new Exception("an upload worked after the access became download only");
+                    if (!find(a).ReadOnly) throw new Exception("not listed as download only");
+                    return "its upload is refused and the folder gives it read rights only";
+                });
+                step("Delete: the account goes, its folder stays unless asked", () =>
+                {
+                    string note;
+                    var e = Partners.Delete(g, root, find(a), false, out note); if (e != null) throw new Exception(e);
+                    made.Remove(a);
+                    if (Acl.SidOfAccount(a) != null) throw new Exception("the account " + a + " still exists");
+                    if (!File.Exists(Path.Combine(Partners.FolderOf(root, a), "in.bin"))) throw new Exception("the folder of " + a + " was deleted without being asked");
+                    e = Partners.Delete(g, root, find(b), true, out note); if (e != null) throw new Exception(e);
+                    made.Remove(b);
+                    if (Directory.Exists(Partners.FolderOf(root, b))) throw new Exception("the folder of " + b + " was asked to go and is still there");
+                    if (File.Exists(Partners.KeysFileOf(g, b))) throw new Exception("the keys of " + b + " are still there");
+                    if (Partners.List(g).Count != 0) throw new Exception("partners are still listed");
+                    return "both accounts removed, the first folder kept, the second deleted with its keys" + (note != null ? "; " + note : "");
+                });
+            }
+            catch (Exception ex) { failed++; sb.AppendLine("FAIL  SFTP partners: " + Short(ex.Message)); }
+            finally
+            {
+                foreach (var n in made)
+                {
+                    string note; var e = LocalAccounts.DeleteUser(n, Acl.SidOfAccount(n), out note);
+                    try { LocalAccounts.HideFromSignIn(n, false); } catch { }
+                    if (e != null) { failed++; sb.AppendLine("FAIL  cleanup, partner " + n + ": " + e); } else sb.AppendLine("removed the test partner " + n + (note != null ? "; " + note : ""));
+                }
+                var left = g.All.Select(x => new { Group = x, Error = LocalAccounts.DeleteGroup(x) }).Where(x => x.Error != null).ToList();
+                foreach (var x in left) { failed++; sb.AppendLine("FAIL  cleanup, group " + x.Group + ": " + x.Error); }
+                sb.AppendLine("removed the test groups " + string.Join(", ", g.All));
+            }
+            return failed;
+        }
+
+        /// <summary>Whether one login with only the given key, or only the given password, gets through authentication (ssh -v: "Authenticated to").</summary>
+        private static bool Authenticated(string user, int port, string knownHosts, string key, string password)
+        {
+            var args = "-v -F none -T -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + Proc.Quote(knownHosts) + " -o GlobalKnownHostsFile=" + Proc.Quote(knownHosts) +
+                       " -o ConnectTimeout=15 -o IdentityAgent=none -o IdentitiesOnly=yes -o KbdInteractiveAuthentication=no -o NumberOfPasswordPrompts=1" +
+                       (key != null ? " -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o BatchMode=yes -i " + Proc.Quote(key) : " -o PreferredAuthentications=password -o PubkeyAuthentication=no") +
+                       " -p " + port + " -l " + Proc.Quote(user) + " 127.0.0.1 exit";
+            var r = Proc.Run(Ssh.Exe("ssh.exe"), args, 90000, null, password != null ? KeyGen.PasswordAskpassEnvironment(password) : new Dictionary<string, string> { { "SSH_ASKPASS_REQUIRE", "never" } });
+            return r.Output.Contains("Authenticated to 127.0.0.1");
+        }
+
+        /// <summary>An upload with scp (the SFTP protocol since OpenSSH 9) and a password: sftp -b refuses passwords, scp does not.</summary>
+        private static RunResult Scp(string user, int port, string knownHosts, string password, string local, string remote)
+        {
+            var args = "-F none -o StrictHostKeyChecking=yes -o UserKnownHostsFile=" + Proc.Quote(knownHosts) + " -o GlobalKnownHostsFile=" + Proc.Quote(knownHosts) +
+                       " -o ConnectTimeout=15 -o IdentityAgent=none -o PubkeyAuthentication=no -o KbdInteractiveAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1" +
+                       " -P " + port + " " + Proc.Quote(local) + " " + Proc.Quote(user + "@127.0.0.1:" + remote);
+            return Proc.Run(Ssh.Exe("scp.exe"), args, 90000, null, KeyGen.PasswordAskpassEnvironment(password));
+        }
+
         private static string RunCase(Case c, SshdConfig baseCfg, string cfgPath, string service, int port, string user, string password, string key, string knownHosts, string authorizedKeys)
         {
             var cfg = new SshdConfig { Lines = baseCfg.Lines.ToList(), NewLine = baseCfg.NewLine, Path = cfgPath };
@@ -420,58 +565,13 @@ namespace OpenSSHServerPNManager
 
         private static void CreateAccount(string name, string password)
         {
-            var info = new Accounts.USER_INFO_1
-            {
-                Name = name, Password = password, Priv = 1 /*USER_PRIV_USER*/,
-                Comment = "Temporary account of OpenSSH Server PN Manager --authtest, deleted when the test ends",
-                Flags = 0x0001 /*UF_SCRIPT*/ | 0x10000 /*UF_DONT_EXPIRE_PASSWD*/,
-            };
-            int parm;
-            int rc = NetUserAdd(null, 1, ref info, out parm);
-            if (rc != 0) throw new Exception("could not create the temporary account " + name + " (NetUserAdd error " + rc + (rc == 2245 ? ": the password does not meet the password policy" : "") + ")");
+            LocalAccounts.CreateUser(name, password, "Temporary account of OpenSSH Server PN Manager --authtest, deleted when the test ends", LocalAccounts.UF_DONT_EXPIRE_PASSWD);
         }
-
-        [StructLayout(LayoutKind.Sequential)] private struct LOCALGROUP_MEMBERS_INFO_0 { public IntPtr Sid; }
-        [DllImport("netapi32.dll", CharSet = CharSet.Unicode)] private static extern int NetLocalGroupAddMembers(string server, string group, int level, ref LOCALGROUP_MEMBERS_INFO_0 members, int count);
 
         private static void AddToUsers(SecurityIdentifier sid)
         {
             var users = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null).Translate(typeof(NTAccount)).Value; // BUILTIN\Users in the system language
-            var bytes = new byte[sid.BinaryLength]; sid.GetBinaryForm(bytes, 0);
-            var p = Marshal.AllocHGlobal(bytes.Length);
-            try
-            {
-                Marshal.Copy(bytes, 0, p, bytes.Length);
-                var m = new LOCALGROUP_MEMBERS_INFO_0 { Sid = p };
-                int rc = NetLocalGroupAddMembers(null, users.Substring(users.IndexOf('\\') + 1), 0, ref m, 1);
-                if (rc != 0 && rc != 1378 /*ERROR_MEMBER_IN_ALIAS*/) throw new Exception("could not add the temporary account to " + users + " (error " + rc + ")");
-            }
-            finally { Marshal.FreeHGlobal(p); }
-        }
-
-        /// <summary>
-        /// Deletes the account and its profile. sshd loads the profile at login and never unloads it (win32_usertoken_utils.c),
-        /// so Windows keeps it loaded, and undeletable, until the next restart: then a one-time startup task deletes it.
-        /// </summary>
-        private static string RemoveAccount(string name, SecurityIdentifier sid, out string note)
-        {
-            note = null;
-            var problems = new List<string>();
-            var profile = Accounts.ProfileDir(sid);
-            bool profileGone = profile == null || DeleteProfile(sid.Value, null, null) || Accounts.ProfileDir(sid) == null;
-            int rc = NetUserDel(null, name);
-            if (rc != 0 && rc != 2221 /*NERR_UserNotFound*/) problems.Add("NetUserDel error " + rc);
-            if (!profileGone)
-            {
-                try
-                {
-                    var task = SystemTasks.ScheduleProfileRemoval(sid, name);
-                    note = "Windows keeps its profile " + profile + " loaded (sshd does not unload profiles), so the one-time task \"" + task + "\" deletes it at the next restart";
-                }
-                catch (Exception ex) { problems.Add("the profile " + profile + " is still loaded and its removal could not be scheduled: " + ex.Message); }
-            }
-            else if (profile != null) note = "its profile " + profile + " is deleted";
-            return problems.Count == 0 ? null : string.Join("; ", problems);
+            LocalAccounts.AddToGroup(users.Substring(users.IndexOf('\\') + 1), sid);
         }
 
         private static string RemoveFolder(string dir)

@@ -3,14 +3,15 @@
 // OpenSSH server on Windows: service control, sshd_config editing with validation and rollback, login
 // methods (Windows authentication, public key, Kerberos; per user and group), SFTP (the subsystem,
 // transfer logging, SFTP-only accounts confined to a folder), authorized keys, keys for you (create,
-// load, change the passphrase, convert to and from PuTTY .ppk, export), a setup wizard, host keys,
-// default shell, Windows Firewall rule, event log viewer and a hardening check.
+// load, change the passphrase, convert to and from PuTTY .ppk, export), SFTP partner accounts, a setup
+// wizard, host keys, default shell, Windows Firewall rule, event log viewer and a hardening check.
 // Copyright (c) 2026 patnawa. BSD-style licence, like OpenSSH: see LICENSE.txt of the package.
 //
 // Source: one file per area in this folder (Program, SelfTest, Platform, Ssh, SshdConfig, Keys,
-// KeyGen, KeyFiles, KeyDialogs, Auth, AuthTest, Sftp, WindowsSettings, Hardening, Sessions, Client,
-// MainForm, Dialogs, Wizard, Theme, Widgets, Prefs), compiled into one executable by build.ps1 (the
-// Roslyn C# compiler from Visual Studio Build Tools). Runs elevated (see app.manifest).
+// KeyGen, KeyFiles, KeyDialogs, Auth, AuthTest, Sftp, Partners, PartnerDialogs, WindowsSettings,
+// Hardening, Sessions, Client, MainForm, Dialogs, Wizard, Theme, Widgets, Prefs), compiled into one
+// executable by build.ps1 (the Roslyn C# compiler from Visual Studio Build Tools). Runs elevated
+// (see app.manifest).
 //
 // Command line (an optional file name receives the report):
 //   --unittest   tests of the program logic alone: no sshd, no service, no administrator rights
@@ -48,9 +49,9 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Management console of OpenSSH Server PN: service, configuration, login methods, SFTP, keys, firewall, logs and hardening")]
 [assembly: System.Reflection.AssemblyCompany(OpenSSHServerPNManager.Program.Publisher)]
 [assembly: System.Reflection.AssemblyCopyright(OpenSSHServerPNManager.Program.Copyright)]
-[assembly: System.Reflection.AssemblyVersion("2.1.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.1.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("2.1.0")]
+[assembly: System.Reflection.AssemblyVersion("2.2.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.2.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("2.2.0")]
 
 namespace OpenSSHServerPNManager
 {
@@ -60,7 +61,7 @@ namespace OpenSSHServerPNManager
     internal static class Program
     {
         public const string AppName = "OpenSSH Server PN Manager";
-        public const string AppVersion = "2.1.0";
+        public const string AppVersion = "2.2.0";
         public const string Publisher = "patnawa";
         public const string Copyright = "Copyright © 2026 patnawa";
         public const string Website = "https://github.com/patnawa/openssh_server_pn";
@@ -247,6 +248,18 @@ namespace OpenSSHServerPNManager
                         f.DrawToBitmap(bmp, new Rectangle(0, 0, f.Width, f.Height));
                         bmp.Save(Path.Combine(dir, "keygen-example.png"), System.Drawing.Imaging.ImageFormat.Png);
                     }
+                    // The Partners tab with example partners, the partner dialog and a password shown once (examples: nothing is created).
+                    for (int i = 0; i < n; i++) if (f.TabName(i) == "Partners") f.SelectTabForTest(i);
+                    f.ShowPartnersExampleForTest();
+                    Application.DoEvents();
+                    using (var bmp = new Bitmap(f.Width, f.Height))
+                    {
+                        f.DrawToBitmap(bmp, new Rectangle(0, 0, f.Width, f.Height));
+                        bmp.Save(Path.Combine(dir, "partners-example.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    var samplePartner = new PartnerAccount { Name = "globex-audit", FullName = "Jane Doe", Company = "Globex Audit", ReadOnly = true, Expires = DateTime.Today.AddDays(47) };
+                    using (var d = new PartnerDialog(samplePartner, @"D:\SFTP", x => { })) shot(d, "dialog-partner");
+                    using (var d = new PasswordShownDialog("acme", "Example-Only-7kQ#2mZ", "sftp.example.com", 22, "The partner acme can log in now, with this password, to its folder only.")) shot(d, "dialog-partner-password");
                     f.Close();
                 }
                 return 0;

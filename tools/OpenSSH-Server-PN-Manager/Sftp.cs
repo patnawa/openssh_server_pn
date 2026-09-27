@@ -26,9 +26,11 @@ namespace OpenSSHServerPNManager
         public string Folder;
         /// <summary>Downloads only: sftp-server -R refuses every request that would change a file or a folder.</summary>
         public bool ReadOnly;
+        /// <summary>AuthorizedKeysFile for the accounts of the rule (the partner groups: keys that only administrators change), or null for the usual file.</summary>
+        public string KeysFile;
         public string Kind { get { return IsGroup ? "Group" : "User"; } }
-        public SftpRule Clone() { return new SftpRule { IsGroup = IsGroup, Name = Name, Folder = Folder, ReadOnly = ReadOnly }; }
-        public bool SameAs(SftpRule o) { return o != null && IsGroup == o.IsGroup && Name == o.Name && Folder == o.Folder && ReadOnly == o.ReadOnly; }
+        public SftpRule Clone() { return new SftpRule { IsGroup = IsGroup, Name = Name, Folder = Folder, ReadOnly = ReadOnly, KeysFile = KeysFile }; }
+        public bool SameAs(SftpRule o) { return o != null && IsGroup == o.IsGroup && Name == o.Name && Folder == o.Folder && ReadOnly == o.ReadOnly && KeysFile == o.KeysFile; }
         public string Describe()
         {
             return (ReadOnly ? "download only" : "upload and download") + ", " + (Folder == null ? "not confined to a folder" : "confined to " + Folder);
@@ -69,6 +71,8 @@ namespace OpenSSHServerPNManager
         /// <summary>What an SFTP-only account may not do besides SFTP. Each rule writes every one of them, so the first rule that matches decides.</summary>
         internal static readonly string[] Locks = { "PermitTTY", "AllowTcpForwarding", "AllowAgentForwarding", "AllowStreamLocalForwarding", "PermitTunnel", "X11Forwarding" };
         private static readonly string[] RuleKeywords = new[] { "ForceCommand", "ChrootDirectory" }.Concat(Locks).ToArray();
+        /// <summary>Settings a rule may have besides those every rule writes.</summary>
+        private static readonly string[] OptionalKeywords = { "AuthorizedKeysFile" };
         private static readonly string[] SftpKeywords = { "ForceCommand", "ChrootDirectory" };
 
         public static SftpState Read(SshdConfig cfg)
@@ -174,7 +178,7 @@ namespace OpenSSHServerPNManager
                 bool matchAll = Regex.IsMatch(t, @"^Match\s+all$", RegexOptions.IgnoreCase);
                 if (m.Success || matchAll)
                 {
-                    if (cur != null && seen.Count != RuleKeywords.Length) { problem = incomplete() + " (before line " + (i + 1) + ")"; break; }
+                    if (cur != null && !RuleKeywords.All(seen.Contains)) { problem = incomplete() + " (before line " + (i + 1) + ")"; break; }
                     cur = null;
                     if (matchAll) { closed = true; continue; }
                     cur = new SftpRule { IsGroup = m.Groups[1].Value.Equals("Group", StringComparison.OrdinalIgnoreCase), Name = names[0] };
@@ -185,7 +189,7 @@ namespace OpenSSHServerPNManager
                 if (cur == null) { problem = at + "a setting outside a rule"; break; }
                 string k, v;
                 if (!SshdConfig.Split(t, out k, out v)) { problem = at + "unreadable line"; break; }
-                var kw = RuleKeywords.FirstOrDefault(x => x.Equals(k, StringComparison.OrdinalIgnoreCase));
+                var kw = RuleKeywords.Concat(OptionalKeywords).FirstOrDefault(x => x.Equals(k, StringComparison.OrdinalIgnoreCase));
                 if (kw == null) { problem = at + k + " is not a setting of an SFTP-only account"; break; }
                 if (!seen.Add(kw)) { problem = at + kw + " appears twice in one rule"; break; }
                 if (kw == "ForceCommand")
@@ -200,9 +204,15 @@ namespace OpenSSHServerPNManager
                     if (folder == null || folder.Count != 1) { problem = at + "ChrootDirectory must name one folder"; break; }
                     cur.Folder = folder[0].Equals("none", StringComparison.OrdinalIgnoreCase) ? null : folder[0];
                 }
+                else if (kw == "AuthorizedKeysFile")
+                {
+                    var files = SshdArgs.Split(v, out argError);
+                    if (files == null || files.Count != 1) { problem = at + "AuthorizedKeysFile must name one file"; break; }
+                    cur.KeysFile = files[0];
+                }
                 else if (!v.Equals("no", StringComparison.OrdinalIgnoreCase)) { problem = at + kw + " must be no"; break; }
             }
-            if (problem == null && cur != null && !closed && seen.Count != RuleKeywords.Length) problem = incomplete();
+            if (problem == null && cur != null && !closed && !RuleKeywords.All(seen.Contains)) problem = incomplete();
             if (problem == null && !closed) problem = "the section does not end with \"Match all\"";
             return problem == null ? rules : null;
         }
@@ -307,6 +317,7 @@ namespace OpenSSHServerPNManager
                 block.Add("Match " + r.Kind + " " + SshdArgs.Quote(r.Name));
                 block.Add("\tForceCommand " + force + (r.ReadOnly ? " -R" : ""));
                 block.Add("\tChrootDirectory " + (r.Folder == null ? "none" : SshdArgs.Quote(r.Folder)));
+                if (r.KeysFile != null) block.Add("\tAuthorizedKeysFile " + SshdArgs.Quote(r.KeysFile));
                 foreach (var k in Locks) block.Add("\t" + k + " no");
             }
             block.Add("Match all");

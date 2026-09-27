@@ -1,0 +1,266 @@
+// OpenSSH Server PN Manager: partner dialogs
+
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Windows.Forms;
+
+namespace OpenSSHServerPNManager
+{
+    // ------------------------------------------------------------------------------------------
+    // Dialogs of the Partners tab: a partner's settings, a password shown once, its keys, deleting it
+    // ------------------------------------------------------------------------------------------
+
+    /// <summary>A new partner, or the settings of one (its name cannot change: it names the folder and the keys file).</summary>
+    internal sealed class PartnerDialog : KeyTaskDialog
+    {
+        private readonly PartnerAccount _existing;
+        private readonly TextBox _name, _fullName, _company;
+        private readonly RadioButton _full, _readOnly, _password, _keyOnly;
+        private readonly CheckBox _expires;
+        private readonly DateTimePicker _lastDay;
+        private readonly Action<PartnerDialog> _run;
+
+        public string AccountName { get { return _existing != null ? _existing.Name : _name.Text.Trim(); } }
+        public string FullName { get { return _fullName.Text.Trim(); } }
+        public string Company { get { return _company.Text.Trim(); } }
+        public bool ReadOnlyAccess { get { return _readOnly.Checked; } }
+        public bool KeyOnly { get { return _keyOnly.Checked; } }
+        /// <summary>The last day the partner may log in, or null.</summary>
+        public DateTime? LastDay { get { return _expires.Checked ? (DateTime?)_lastDay.Value.Date : null; } }
+
+        public PartnerDialog(PartnerAccount existing, string root, Action<PartnerDialog> run)
+            : base(existing == null ? "New SFTP partner" : "SFTP partner " + existing.Name, existing == null ? "Create partner" : "Save")
+        {
+            _existing = existing; _run = run;
+            Body.Controls.Add(Caption(existing == null
+                ? "A local account that can only transfer files over SFTP, in a folder of its own under " + root + ". Its password is generated and shown once."
+                : "Folder " + Partners.FolderOf(root, existing.Name) + ". Changes take effect at the partner's next login; sshd is not restarted."));
+            _name = new TextBox { Width = Ui.Px(260), AccessibleName = "Account name", Margin = new Padding(12, 2, 3, 2) };
+            if (existing == null)
+            {
+                Body.Controls.Add(Caption("Account name (the partner logs in with it; letters, digits, - _ and ., at most 20):"));
+                Body.Controls.Add(_name);
+            }
+            _fullName = new TextBox { Width = Ui.Px(430), AccessibleName = "Contact name", Margin = new Padding(12, 2, 3, 2), Text = existing == null ? "" : existing.FullName };
+            _company = new TextBox { Width = Ui.Px(430), AccessibleName = "Company", Margin = new Padding(12, 2, 3, 2), Text = existing == null ? "" : existing.Company };
+            Body.Controls.Add(Caption("Contact name:")); Body.Controls.Add(_fullName);
+            Body.Controls.Add(Caption("Company:")); Body.Controls.Add(_company);
+            Body.Controls.Add(Caption("Access to its folder:"));
+            _full = new RadioButton { Text = "Upload and download", AutoSize = true, Margin = new Padding(12, 2, 3, 2), Checked = existing == null || !existing.ReadOnly };
+            _readOnly = new RadioButton { Text = "Download only: no upload, rename, removal or new folders", AutoSize = true, Margin = new Padding(12, 2, 3, 2), Checked = existing != null && existing.ReadOnly };
+            Body.Controls.Add(Row(_full)); Body.Controls.Add(Row(_readOnly));
+            Body.Controls.Add(Caption("Login:"));
+            _password = new RadioButton { Text = "Password (a public key can be added as well, with Keys...)", AutoSize = true, Margin = new Padding(12, 2, 3, 2), Checked = existing == null || !existing.KeyOnly };
+            _keyOnly = new RadioButton { Text = "Public key only: the password is refused", AutoSize = true, Margin = new Padding(12, 2, 3, 2), Checked = existing != null && existing.KeyOnly };
+            Body.Controls.Add(Row(_password)); Body.Controls.Add(Row(_keyOnly));
+            _expires = new CheckBox { Text = "Can log in until the end of", AutoSize = true, Margin = new Padding(3, 12, 3, 2) };
+            _lastDay = new DateTimePicker { Format = DateTimePickerFormat.Long, Width = Ui.Px(220), AccessibleName = "Last day the partner can log in", Margin = new Padding(3, 9, 3, 2) };
+            var lastDay = existing == null ? null : LocalAccounts.LastDay(existing.Expires);
+            _expires.Checked = lastDay != null;
+            _lastDay.Value = lastDay ?? DateTime.Today.AddMonths(12);
+            _lastDay.Enabled = _expires.Checked;
+            _expires.CheckedChanged += (s, e) => _lastDay.Enabled = _expires.Checked;
+            Body.Controls.Add(Row(_expires, _lastDay));
+            Body.Controls.Add(Note("The password never expires and the partner cannot change it (over SFTP it could not anyway); the date above decides until when the account can log in. The account is hidden from the Windows sign-in screen and cannot use a shell, commands or forwarding."));
+        }
+
+        protected override void Work()
+        {
+            if (_existing == null) { var e = Partners.NameError(AccountName); if (e != null) { _name.Focus(); throw new ConfigException(e); } }
+            if (FullName.Any(char.IsControl) || Company.Any(char.IsControl) || FullName.Length > 100 || Company.Length > 100) throw new ConfigException("The contact name and the company are one line each, at most 100 characters.");
+            if (LastDay != null && LastDay.Value < DateTime.Today) throw new ConfigException("The last day to log in is in the past. Choose a later date, or disable the partner instead.");
+            _run(this);
+        }
+    }
+
+    /// <summary>A generated password, shown once: it is not stored anywhere.</summary>
+    internal sealed class PasswordShownDialog : ThemedForm
+    {
+        public PasswordShownDialog(string account, string password, string server, int port, string what)
+        {
+            Text = "Password of " + account; StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
+            MinimizeBox = MaximizeBox = false; ShowInTaskbar = false; AutoSize = true; AutoSizeMode = AutoSizeMode.GrowAndShrink; Padding = new Padding(Ui.Px(10)); Font = new Font("Segoe UI", Ui.Pt(9.5f));
+            var p = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Dock = DockStyle.Fill };
+            p.Controls.Add(new Label { Text = what, AutoSize = true, MaximumSize = new Size(Ui.Px(520), 0), Margin = new Padding(3, 3, 3, 8) });
+            var details = "Server: " + server + (port == 22 ? "" : "\r\nPort: " + port) + "\r\nProtocol: SFTP\r\nAccount: " + account;
+            p.Controls.Add(new TextBox { Text = details, Multiline = true, ReadOnly = true, Width = Ui.Px(520), Height = Ui.Px(port == 22 ? 58 : 76), Font = new Font("Consolas", Ui.Pt(10f)), AccessibleName = "Login details", Margin = new Padding(3, 2, 3, 6) });
+            p.Controls.Add(new Label { Text = "Password:", AutoSize = true, Margin = new Padding(3, 4, 3, 2) });
+            var pw = new TextBox { Text = password, ReadOnly = true, Width = Ui.Px(520), Font = new Font("Consolas", Ui.Pt(12f)), AccessibleName = "Password" };
+            p.Controls.Add(pw);
+            p.Controls.Add(new Label
+            {
+                Text = "The password is not stored anywhere: copy it now. Give it to the partner in a safe way, for example by phone or in a message separate from the login details. Reset password makes a new one.",
+                AutoSize = true, MaximumSize = new Size(Ui.Px(520), 0), ForeColor = Theme.Muted, Margin = new Padding(3, 8, 3, 4)
+            });
+            var bar = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
+            var copyPw = new Button { Text = "Copy password", AutoSize = true, MinimumSize = new Size(Ui.Px(130), Ui.Px(30)) };
+            var copyDetails = new Button { Text = "Copy login details", AutoSize = true, MinimumSize = new Size(Ui.Px(150), Ui.Px(30)) };
+            var close = new Button { Text = "Close", AutoSize = true, MinimumSize = new Size(Ui.Px(100), Ui.Px(30)), DialogResult = DialogResult.OK };
+            copyPw.Click += (s, e) => { try { Clipboard.SetText(password); copyPw.Text = "Copied"; } catch (Exception ex) { MessageBox.Show(this, ex.Message, Program.AppName); } };
+            copyDetails.Click += (s, e) => { try { Clipboard.SetText(details); copyDetails.Text = "Copied"; } catch (Exception ex) { MessageBox.Show(this, ex.Message, Program.AppName); } };
+            bar.Controls.Add(copyPw); bar.Controls.Add(copyDetails); bar.Controls.Add(close);
+            p.Controls.Add(bar);
+            Controls.Add(p);
+            AcceptButton = close; CancelButton = close;
+            Shown += (s, e) => { pw.Focus(); pw.SelectAll(); };
+            FormClosed += (s, e) => pw.Text = "";
+        }
+    }
+
+    /// <summary>The public keys a partner may log in with, in its keys file (administrators only).</summary>
+    internal sealed class PartnerKeysDialog : ThemedForm
+    {
+        private readonly ListView _list;
+        private readonly string _file;
+
+        public PartnerKeysDialog(PartnerAccount partner, string file)
+        {
+            _file = file;
+            Text = "Keys of " + partner.Name; StartPosition = FormStartPosition.CenterParent; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
+            Size = new Size(Ui.Px(820), Ui.Px(420)); MinimumSize = new Size(Ui.Px(600), Ui.Px(320)); MinimizeBox = false; ShowInTaskbar = false; Font = new Font("Segoe UI", Ui.Pt(9.5f)); Padding = new Padding(Ui.Px(8));
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.Controls.Add(new Label
+            {
+                AutoSize = true, MaximumSize = new Size(Ui.Px(780), 0), Margin = new Padding(3, 3, 3, 6),
+                Text = "Public keys " + partner.Name + " may log in with (" + file + "; only administrators can change the file, the partner cannot)." +
+                       (partner.KeyOnly ? " The partner logs in with a key only." : " The partner can log in with its password as well.") + " Ask the partner for the public key (.pub) only, never the private key."
+            }, 0, 0);
+            _list = new ListView { View = View.Details, FullRowSelect = true, GridLines = true, Dock = DockStyle.Fill, HideSelection = false, MultiSelect = false, AccessibleName = "Public keys of the partner" };
+            _list.Columns.Add("Type", Ui.Px(180)); _list.Columns.Add("Comment", Ui.Px(200)); _list.Columns.Add("SHA256 fingerprint", Ui.Px(380));
+            root.Controls.Add(_list, 0, 1);
+            var bar = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 6, 0, 0) };
+            Func<string, EventHandler, Button> btn = (t, h) => { var b = new Button { Text = t, AutoSize = true, MinimumSize = new Size(Ui.Px(110), Ui.Px(30)) }; b.Click += h; bar.Controls.Add(b); return b; };
+            btn("Add from file...", (s, e) => Guard(AddFromFile));
+            btn("Paste key...", (s, e) => Guard(Paste));
+            btn("Remove selected", (s, e) => Guard(Remove));
+            var close = btn("Close", (s, e) => Close()); close.DialogResult = DialogResult.OK;
+            root.Controls.Add(bar, 0, 2);
+            Controls.Add(root);
+            CancelButton = close;
+            _list.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Guard(Remove); } };
+            Load += (s, e) => Guard(Fill);
+        }
+
+        private void Guard(Action a)
+        {
+            try { a(); }
+            catch (ConfigException ex) { MessageBox.Show(this, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            catch (Exception ex) { Log.Error(Text, ex, false); MessageBox.Show(this, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        }
+
+        private void Fill()
+        {
+            _list.BeginUpdate(); _list.Items.Clear();
+            foreach (var k in Keys.Read(_file)) _list.Items.Add(new ListViewItem(new[] { k.Type, k.Comment, k.Fingerprint }) { Tag = k.Line });
+            _list.EndUpdate();
+        }
+
+        private void AddLines(IEnumerable<string> lines)
+        {
+            var clean = lines.Select(l => (l ?? "").Trim()).Where(l => l.Length > 0 && !l.StartsWith("#")).ToList();
+            if (clean.Any(l => l.IndexOf("PRIVATE KEY", StringComparison.OrdinalIgnoreCase) >= 0 || PpkFile.IsPpk(l)))
+                throw new ConfigException("That is a private key. Ask the partner for the public key: the .pub file, or the line that starts with ssh-ed25519, ecdsa-sha2 or ssh-rsa.");
+            var r = Keys.AddLines(_file, clean, null); // SYSTEM and Administrators only, like administrators_authorized_keys
+            Fill();
+            if (r[0] == 0 && r[1] > 0) MessageBox.Show(this, "The key is there already.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private void AddFromFile()
+        {
+            using (var d = new OpenFileDialog { Title = "The partner's public key", Filter = "Public keys (*.pub)|*.pub|All files (*.*)|*.*" })
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                if (new FileInfo(d.FileName).Length > KeyGen.MaxKeyFileSize) throw new ConfigException("This file is too large for a public key.");
+                AddLines(File.ReadAllLines(d.FileName));
+            }
+        }
+
+        private void Paste()
+        {
+            using (var d = new TextDialog("Paste the partner's public key (one per line)")) { if (d.ShowDialog(this) == DialogResult.OK) AddLines(d.Value.Split('\n')); }
+        }
+
+        private void Remove()
+        {
+            if (_list.SelectedItems.Count == 0) return;
+            var line = (string)_list.SelectedItems[0].Tag;
+            if (MessageBox.Show(this, "Remove this key? The partner can no longer log in with it.\n\n" + line, Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            Keys.RemoveKey(_file, line, null);
+            Fill();
+        }
+
+        // --screenshot and --selftest
+        internal int KeyCountForTest { get { return _list.Items.Count; } }
+        internal void AddForTest(string line) { AddLines(new[] { line }); }
+    }
+
+    /// <summary>The one-time setup of partner accounts: the folder under which partners get theirs, and what changes.</summary>
+    internal sealed class PartnerSetupDialog : KeyTaskDialog
+    {
+        private readonly TextBox _root;
+        private readonly Action<PartnerSetupDialog> _run;
+        public string Root { get { return _root.Text.Trim().TrimEnd('\\'); } }
+
+        public PartnerSetupDialog(PartnerSetupState st, PartnerGroups g, Action<PartnerSetupDialog> run) : base("Set up SFTP partners", "Set up")
+        {
+            _run = run;
+            Body.Controls.Add(Caption("Once this is set up, adding, changing or removing a partner no longer changes sshd_config or restarts sshd.", true));
+            Body.Controls.Add(Caption("Each partner gets a folder of its own under:"));
+            _root = new TextBox { Width = Ui.Px(430), AccessibleName = "Folder of the partners' folders", Margin = new Padding(12, 2, 3, 2), Text = st.Root ?? PartnerSetup.DefaultRoot };
+            var browse = new Button { Text = "Browse...", AutoSize = true, MinimumSize = new Size(Ui.Px(90), Ui.Px(28)), Margin = new Padding(3, 0, 3, 2) };
+            browse.Click += (s, e) =>
+            {
+                using (var d = new FolderBrowserDialog { Description = "The folder under which each partner gets a folder of its own", ShowNewFolderButton = true })
+                {
+                    if (Directory.Exists(Root)) d.SelectedPath = Root;
+                    if (d.ShowDialog(this) == DialogResult.OK) _root.Text = d.SelectedPath;
+                }
+            };
+            Body.Controls.Add(Row(_root, browse));
+            var steps = new List<string>();
+            if (st.MissingGroups.Count > 0) steps.Add("Create the local groups " + string.Join(", ", st.MissingGroups) + ".");
+            steps.AddRange(st.Missing.Select(m => "sshd_config: " + m + "."));
+            steps.Add("sshd_config is shown before it is saved, backed up, and sshd restarts once; you confirm the result.");
+            Body.Controls.Add(Caption("What happens:"));
+            Body.Controls.Add(new Label { Text = string.Join("\n", steps.Select(x => "- " + x)), AutoSize = true, MaximumSize = new Size(Ui.Px(Wide), 0), Margin = new Padding(12, 2, 3, 2) });
+            if (st.Problems.Count > 0)
+                Body.Controls.Add(new Label { Text = "Note: " + string.Join("; ", st.Problems) + ".", AutoSize = true, MaximumSize = new Size(Ui.Px(Wide), 0), ForeColor = Theme.Warn, Margin = new Padding(3, 10, 3, 2) });
+            Body.Controls.Add(Note("Partners are in " + g.Full + " (upload and download) or " + g.ReadOnly + " (download only), and also in " + g.KeyOnly + " when they log in with a key only. Their keys are in " + g.KeysDir + ", which only administrators change."));
+        }
+
+        protected override void Work()
+        {
+            var e = SftpConfig.FolderError(Root + "\\%u");
+            if (e != null) { _root.Focus(); throw new ConfigException(e.Replace("%u", "<account>")); }
+            _run(this);
+        }
+    }
+
+    /// <summary>Confirms the removal of a partner, with the choice to keep its folder (the default) or delete its files as well.</summary>
+    internal sealed class PartnerDeleteDialog : KeyTaskDialog
+    {
+        private readonly CheckBox _files;
+        private readonly Action<PartnerDeleteDialog> _run;
+        public bool DeleteFiles { get { return _files.Checked; } }
+
+        public PartnerDeleteDialog(PartnerAccount p, string folder, string folderSize, Action<PartnerDeleteDialog> run) : base("Delete SFTP partner " + p.Name, "Delete partner")
+        {
+            _run = run;
+            Body.Controls.Add(Caption("Delete the account " + p.Name + (p.Company.Length > 0 ? " (" + p.Company + ")" : "") + "? Its open sessions end, and it can no longer log in. Its keys are removed.", true));
+            _files = new CheckBox { Text = "Also delete its folder " + folder + (folderSize == null ? "" : " (" + folderSize + ")"), AutoSize = true, Margin = new Padding(3, 10, 3, 2), Enabled = folderSize != null };
+            Body.Controls.Add(_files);
+            Body.Controls.Add(Note("Without the tick, the folder stays with its files, for administrators only; a partner created again with the same name gets it back."));
+        }
+
+        protected override void Work()
+        {
+            if (_files.Checked && !Program.Unattended && MessageBox.Show(this, "Delete the folder and every file in it? This cannot be undone.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                throw new OperationCanceledException();
+            _run(this);
+        }
+    }
+}

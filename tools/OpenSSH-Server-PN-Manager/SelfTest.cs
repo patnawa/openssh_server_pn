@@ -602,6 +602,7 @@ namespace OpenSSHServerPNManager
             });
             UnitSince20(test);
             UnitSince21(test, tmpDir);
+            UnitSince22(test);
         }
 
         /// <summary>The configuration of a default installation, with the rules section of the Authentication tab when auth is given.</summary>
@@ -889,6 +890,105 @@ namespace OpenSSHServerPNManager
                 var names = new[] { KeyExportFormat.OpenSshPrivate, KeyExportFormat.PuttyV3, KeyExportFormat.PuttyV2, KeyExportFormat.OpenSshPublic, KeyExportFormat.Rfc4716Public }.Select(f => KeyGen.ExportFileName(key, f)).ToList();
                 if (names.Distinct(StringComparer.OrdinalIgnoreCase).Count() != 5 || names.Contains("id_ed25519") || names.Contains("id_ed25519.pub")) throw new Exception(string.Join(", ", names));
                 return string.Join(", ", names);
+            });
+        }
+
+        /// <summary>Unit tests of what manager 2.2.0 added: SFTP partners.</summary>
+        private static void UnitSince22(Action<string, Func<string>> test)
+        {
+            test("partners: generated passwords have 20 characters of every kind and none that is easy to confuse", () =>
+            {
+                var seen = new HashSet<string>(); var chars = new HashSet<char>();
+                for (int i = 0; i < 2000; i++)
+                {
+                    var p = Partners.NewPassword();
+                    if (p.Length != Partners.PasswordLength || !p.Any(char.IsUpper) || !p.Any(char.IsLower) || !p.Any(char.IsDigit) || p.All(char.IsLetterOrDigit)) throw new Exception("not every kind of character: " + p);
+                    if (p.IndexOfAny("Il1O0o \"'`\\".ToCharArray()) >= 0 || p.Any(c => c > 126)) throw new Exception("a character that is easy to confuse or hard to type: " + p);
+                    if (!seen.Add(p)) throw new Exception("the same password twice");
+                    foreach (var c in p) chars.Add(c);
+                }
+                if (chars.Count < 60) throw new Exception("only " + chars.Count + " different characters in 2000 passwords");
+                return chars.Count + " different characters";
+            });
+            test("partners: account names", () =>
+            {
+                foreach (var good in new[] { "acme", "Acme-Logistics", "p_01", "a.b", "x" })
+                    if (Partners.NameError(good) != null) throw new Exception("refused [" + good + "]: " + Partners.NameError(good));
+                var users = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null).Translate(typeof(NTAccount)).Value;
+                foreach (var bad in new[] { "", "a b", "-acme", ".acme", "acme.", "a\"b", "a%b", "a@b", "a/b", "abcdefghijklmnopqrstu", "ก", users.Substring(users.IndexOf('\\') + 1) })
+                    if (Partners.NameError(bad) == null) throw new Exception("accepted [" + bad + "]");
+                return null;
+            });
+            test("partners: the setup writes the SFTP and login-method rules first, once, and keeps the others", () =>
+            {
+                var g = new PartnerGroups { KeysDir = @"C:\ProgramData\ssh\partner_keys" };
+                var c = DefaultLike(AuthConfig.RegionBegin);
+                SftpConfig.Apply(c, true, false, new List<SftpRule> { new SftpRule { Name = "carol", Folder = @"C:\SFTP\%u" } });
+                PartnerSetup.Apply(c, g, @"D:\Partners");
+                var sftp = SftpConfig.Read(c); var auth = AuthConfig.Read(c);
+                if (sftp.RulesProblem != null || auth.RulesProblem != null) throw new Exception("a section is not readable: " + (sftp.RulesProblem ?? auth.RulesProblem));
+                if (!sftp.LogTransfers) throw new Exception("file transfers are not logged");
+                var names = sftp.Rules.Select(r => r.Kind + " " + r.Name).ToList();
+                if (string.Join(", ", names) != "Group sftp-partners-readonly, Group sftp-partners, User carol") throw new Exception("SFTP rules: " + string.Join(", ", names));
+                if (sftp.Rules[0].Folder != @"D:\Partners\%u" || !sftp.Rules[0].ReadOnly || sftp.Rules[1].ReadOnly || sftp.Rules[0].KeysFile != "__PROGRAMDATA__/ssh/partner_keys/%u") throw new Exception("partner SFTP rule: " + sftp.Rules[0].Describe() + ", keys " + sftp.Rules[0].KeysFile);
+                var auths = auth.Rules.Select(r => r.Name + ":" + (r.Methods.Password ? "p" : "") + (r.Methods.PublicKey ? "k" : "")).ToList();
+                if (string.Join(", ", auths.Take(3)) != "sftp-partners-keyonly:k, sftp-partners:pk, sftp-partners-readonly:pk" || auths.Count != 4) throw new Exception("login-method rules: " + string.Join(", ", auths));
+                if (!c.Lines.Contains("\tAuthorizedKeysFile __PROGRAMDATA__/ssh/partner_keys/%u")) throw new Exception("no AuthorizedKeysFile line:\n" + c.Text);
+                var st = PartnerSetup.Check(c, g);
+                if (st.Missing.Count != 0 || st.Root != @"D:\Partners") throw new Exception("after the setup, still missing: " + string.Join("; ", st.Missing) + ", root " + st.Root);
+                var once = c.Text; PartnerSetup.Apply(c, g, @"D:\Partners");
+                if (c.Text != once) throw new Exception("a second setup changed the file");
+                if (PartnerSetup.Check(DefaultLike(), g).Missing.Count < 5) throw new Exception("a configuration without the setup is reported as set up");
+                return st.MissingGroups.Count + " group(s) not on this computer (created by the setup)";
+            });
+            test("partners: AllowGroups gets the partner groups, AllowUsers and a hand-edited section are reported", () =>
+            {
+                var g = new PartnerGroups();
+                var c = DefaultLike(); c.Set("AllowGroups", "administrators \"openssh users\"");
+                if (!PartnerSetup.Check(c, g).Missing.Any(m => m.Contains("AllowGroups"))) throw new Exception("AllowGroups without the partner groups is not reported");
+                PartnerSetup.Apply(c, g, @"C:\SFTP");
+                string err; var allow = c.GetCombinedArgs("AllowGroups", out err);
+                if (!allow.Contains("administrators") || !allow.Contains("openssh users") || !allow.Contains("sftp-partners") || !allow.Contains("sftp-partners-readonly")) throw new Exception("AllowGroups " + SshdArgs.FormatTyped(allow));
+                if (PartnerSetup.Check(c, g).Missing.Count != 0) throw new Exception("still missing: " + string.Join("; ", PartnerSetup.Check(c, g).Missing));
+                c.Set("AllowUsers", "admin");
+                if (!PartnerSetup.Check(c, g).Problems.Any(p => p.Contains("AllowUsers"))) throw new Exception("AllowUsers is not reported");
+                var h = DefaultLike(); SftpConfig.Apply(h, true, false, new List<SftpRule> { new SftpRule { Name = "carol", Folder = @"C:\SFTP\%u" } });
+                h.Lines.Insert(h.Lines.IndexOf("Match all"), "\tPasswordAuthentication no");
+                try { PartnerSetup.Apply(h, g, @"C:\SFTP"); throw new Exception("rules were written over a hand-edited section"); } catch (ConfigException) { }
+                return null;
+            });
+            test("partners: SFTP rules with and without AuthorizedKeysFile are read back as written", () =>
+            {
+                var c = DefaultLike();
+                var rules = new List<SftpRule> { new SftpRule { IsGroup = true, Name = "sftp-partners", Folder = @"C:\SFTP\%u", KeysFile = "C:/Keys dir/%u" }, new SftpRule { Name = "bob", Folder = @"C:\SFTP\%u" } };
+                SftpConfig.Apply(c, true, true, rules);
+                var back = SftpConfig.Read(c);
+                if (back.RulesProblem != null || back.Rules.Count != 2 || !back.Rules[0].SameAs(rules[0]) || !back.Rules[1].SameAs(rules[1])) throw new Exception("read back: " + (back.RulesProblem ?? string.Join("; ", back.Rules.Select(r => r.Name + " " + r.KeysFile))));
+                if (!c.Lines.Contains("\tAuthorizedKeysFile \"C:/Keys dir/%u\"")) throw new Exception("the path with a space is not quoted:\n" + c.Text);
+                return null;
+            });
+            test("partners: the partner dialog refuses a bad name before anything is made, and passes the choices on", () =>
+            {
+                bool ran = false;
+                using (var d = new PartnerDialog(null, @"C:\SFTP", x => ran = true))
+                {
+                    d.StartPosition = FormStartPosition.Manual; d.Location = new Point(-20000, -20000); d.ShowInTaskbar = false; d.Show(); Application.DoEvents();
+                    d.TypeForTest("Account name", "bad name"); d.OkForTest();
+                    if (ran || d.LastError == null || !d.LastError.StartsWith("Use letters")) throw new Exception("a name with a space: " + (d.LastError ?? "accepted"));
+                    d.TypeForTest("Account name", "osm-dialog-test"); d.TypeForTest("Company", "ACME"); d.TickForTest("Download only"); d.TickForTest("Public key only");
+                    d.OkForTest();
+                    if (!ran || d.DialogResult != DialogResult.OK) throw new Exception("valid input was refused: " + d.LastError);
+                    if (d.AccountName != "osm-dialog-test" || d.Company != "ACME" || !d.ReadOnlyAccess || !d.KeyOnly || d.LastDay != null) throw new Exception("the choices did not come through");
+                }
+                return null;
+            });
+            test("partners: the last day an account can log in, and sizes for people", () =>
+            {
+                if (LocalAccounts.LastDay(new DateTime(2026, 10, 1, 0, 0, 0)) != new DateTime(2026, 9, 30)) throw new Exception("LastDay of midnight");
+                if (LocalAccounts.LastDay(null) != null) throw new Exception("LastDay of never");
+                var sizes = new[] { Ui.Bytes(0), Ui.Bytes(1023), Ui.Bytes(1536), Ui.Bytes(10L << 20), Ui.Bytes(3L << 30) };
+                if (string.Join("|", sizes) != "0 bytes|1023 bytes|1.5 KB|10 MB|3.0 GB") throw new Exception(string.Join("|", sizes));
+                return null;
             });
         }
 
