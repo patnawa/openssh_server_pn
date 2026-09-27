@@ -193,6 +193,12 @@ and log in with it to prove it works. Give other servers the `.pub` file, never 
 ML-DSA-44+Ed25519 is experimental in OpenSSH 10.5: the server and the client must both list it
 in `PubkeyAcceptedAlgorithms`. The generator offers to enable it on this server.
 
+The same tab loads a key you already have (OpenSSH, PuTTY `.ppk` or PEM), changes or removes its
+passphrase, and exports it: as a `.ppk` file for PuTTY, WinSCP and FileZilla on the computer you
+connect from, or as an OpenSSH key. A `.ppk` key is converted to an OpenSSH key file when it is
+loaded. In the setup wizard, *Create a key for me* makes a key, allows it to log in as you and
+offers the export straight away.
+
 By hand:
 
 - Standard users: `%UserProfile%\.ssh\authorized_keys` on the server, one public key per line.

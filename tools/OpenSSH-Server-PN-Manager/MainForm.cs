@@ -251,6 +251,8 @@ namespace OpenSSHServerPNManager
         /// <summary>--screenshot: SFTP with transfer logging and two example SFTP-only accounts, in the window only (nothing is saved).</summary>
         /// <summary>--screenshot: drops the example rules of the Authentication tab, as its Undo changes does.</summary>
         public void UndoAuthForTest() { LoadAuth(); }
+        /// <summary>--screenshot: the Key generator tab showing an example key, as after Load key (the SFTP example is dropped first).</summary>
+        public void ShowKeyExampleForTest(KeyFileInfo key) { LoadSftp(); ShowKey(key, "Loaded " + key.FileName + ".", true, Theme.Text); }
         public void ShowSftpExampleForTest()
         {
             if (_sfFile.RulesProblem != null) return;
@@ -2197,13 +2199,14 @@ namespace OpenSSHServerPNManager
         // ---------------- Key generator ----------------
         private ComboBox _kgType; private TextBox _kgPath, _kgComment, _kgPass1, _kgPass2, _kgPublic; private CheckBox _kgNoPass, _kgAuthorize;
         private Label _kgResult; private string _kgDefaultShown;
+        /// <summary>The key the tab shows (generated, loaded or converted here); the buttons of the second row act on it.</summary>
+        private KeyFileInfo _kgKey; private bool? _kgAllowed; private readonly List<Button> _kgKeyButtons = new List<Button>();
 
         private TabPage BuildKeyGen()
         {
             var page = new TabPage("Key generator");
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(8) };
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(8) };
+            for (int i = 0; i < 6; i++) root.RowStyles.Add(i == 4 ? new RowStyle(SizeType.Percent, 100) : new RowStyle(SizeType.AutoSize));
 
             var grid = new TableLayoutPanel { AutoSize = true, ColumnCount = 3, Dock = DockStyle.Top };
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -2237,24 +2240,226 @@ namespace OpenSSHServerPNManager
 
             var bar = Flow();
             bar.Controls.Add(Btn("Generate key pair", (s, e) => Safe(GenerateKey), 170));
-            bar.Controls.Add(Btn("Test login with this key", (s, e) => Safe(TestKeyLogin), 190));
-            bar.Controls.Add(Btn("Copy public key", (s, e) => Safe(() => { if (_kgPublic.Text.Length > 0) { Clipboard.SetText(_kgPublic.Text); Status("Public key copied"); } }), 140));
-            bar.Controls.Add(Btn("Open folder", (s, e) => Safe(() => { var p = _kgPath.Text.Trim(); if (File.Exists(p)) Proc.OpenExternal("explorer.exe", "/select,\"" + p + "\""); else if (Directory.Exists(Path.GetDirectoryName(p))) Proc.OpenExternal("explorer.exe", "\"" + Path.GetDirectoryName(p) + "\""); }), 120));
+            bar.Controls.Add(Btn("Load key...", (s, e) => Safe(LoadKey), 120));
+            bar.Controls.Add(Btn("Setup wizard...", (s, e) => Safe(RunWizard), 130));
             root.Controls.Add(bar, 0, 1);
 
-            _kgResult = new Label { AutoSize = true, Margin = new Padding(6, 6, 6, 2), MaximumSize = new Size(Ui.Px(980), 0), ForeColor = Theme.Muted, Text = "The public key appears below after generation." };
+            _kgResult = new Label { AutoSize = true, Margin = new Padding(6, 6, 6, 2), MaximumSize = new Size(Ui.Px(980), 0), ForeColor = Theme.Muted, Text = "Generate a key pair, or load a key you have (OpenSSH, PuTTY .ppk or PEM) to change its passphrase, export it or let it log in here." };
             root.Controls.Add(_kgResult, 0, 2);
+            var keyBar = Flow();
+            Action<Button> keyButton = b => { b.Enabled = false; _kgKeyButtons.Add(b); keyBar.Controls.Add(b); };
+            keyButton(Btn("Change passphrase...", (s, e) => Safe(ChangeKeyPassphrase), 160));
+            keyButton(Btn("Export...", (s, e) => Safe(() => ExportKey(null)), 100));
+            keyButton(Btn("Allow it to log in", (s, e) => Safe(AuthorizeCurrentKey), 150));
+            keyBar.Controls.Add(Btn("Test login with this key", (s, e) => Safe(TestKeyLogin), 190));
+            keyBar.Controls.Add(Btn("Copy public key", (s, e) => Safe(() => { if (_kgPublic.Text.Length > 0) { Clipboard.SetText(_kgPublic.Text); Status("Public key copied"); } }), 140));
+            keyBar.Controls.Add(Btn("Open folder", (s, e) => Safe(() => { var p = _kgKey != null ? _kgKey.Path : _kgPath.Text.Trim(); if (File.Exists(p)) Proc.OpenExternal("explorer.exe", "/select,\"" + p + "\""); else if (Directory.Exists(Path.GetDirectoryName(p))) Proc.OpenExternal("explorer.exe", "\"" + Path.GetDirectoryName(p) + "\""); }), 120));
+            root.Controls.Add(keyBar, 0, 3);
             _kgPublic = new TextBox { Multiline = true, ReadOnly = true, WordWrap = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Font = new Font("Consolas", Ui.Pt(9.5f)) };
-            _kgPublic.AccessibleName = "Public key"; root.Controls.Add(_kgPublic, 0, 3);
+            _kgPublic.AccessibleName = "Public key"; root.Controls.Add(_kgPublic, 0, 4);
             root.Controls.Add(new Label
             {
                 AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(6), MaximumSize = new Size(Ui.Px(980), 0),
                 Text = "The private key stays on this computer and only you, SYSTEM and Administrators can read it; ssh refuses a key that others can read. " +
-                       "The passphrase goes to ssh-keygen through SSH_ASKPASS and never appears on a command line. Give other servers the public key " +
-                       "(the .pub file or the text above), never the private key. PuTTY and WinSCP: import the private key in PuTTYgen (Conversions, Import key)."
-            }, 0, 4);
+                       "Passphrases go to ssh-keygen through SSH_ASKPASS and never appear on a command line. Give other servers the public key " +
+                       "(the .pub file or the text above), never the private key. For PuTTY, WinSCP and FileZilla, Export saves the key as a .ppk file; Load key converts a .ppk file to the OpenSSH format."
+            }, 0, 5);
             page.Controls.Add(root);
             return page;
+        }
+
+        /// <summary>Shows a key on the tab: a headline (what just happened), what the key is, and whether it may log in here.</summary>
+        private void ShowKey(KeyFileInfo k, string headline, bool? allowed, Color color)
+        {
+            _kgKey = k; _kgAllowed = allowed;
+            _kgPublic.Text = k.PublicLine;
+            foreach (var b in _kgKeyButtons) b.Enabled = true;
+            var lines = new List<string>();
+            if (!string.IsNullOrEmpty(headline)) lines.Add(headline);
+            lines.Add("Key: " + k.Path);
+            lines.Add(k.Description + ", " + k.Format + " format, " + (k.Encrypted ? "protected by a passphrase" : "NO passphrase") + ". Fingerprint " + k.Fingerprint + (k.Comment.Length > 0 ? ", comment \"" + k.Comment + "\"" : "") + ".");
+            if (allowed != null) lines.Add("This server: " + (allowed.Value ? "the key may log in as " + KeyGen.LoginName() + "." : "the key may not log in as " + KeyGen.LoginName() + " (\"Allow it to log in\" adds it)."));
+            _kgResult.Text = string.Join("\n", lines); _kgResult.ForeColor = color;
+        }
+
+        private KeyFileInfo CurrentKey()
+        {
+            if (_kgKey == null || !File.Exists(_kgKey.Path)) throw new ConfigException("Generate a key pair or load a key first.");
+            return _kgKey;
+        }
+
+        /// <summary>Whether the key may log in as the account running this program; null when that cannot be read.</summary>
+        private static bool? AuthorizedState(string publicLine)
+        {
+            try { return KeyGen.IsAuthorizedForMe(publicLine); }
+            catch (Exception ex) { Log.Error("Reading the authorized keys", ex, false); return null; }
+        }
+
+        /// <summary>Asks for a key's passphrase, after showing why when problem is given; null when cancelled.</summary>
+        private static string AskPassphrase(IWin32Window owner, string keyName, string problem)
+        {
+            if (problem != null) MessageBox.Show(owner, problem, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            using (var d = new PasswordDialog("Passphrase for " + keyName)) return d.ShowDialog(owner) == DialogResult.OK ? d.Value : null;
+        }
+
+        /// <summary>Load key: an OpenSSH or PEM key is shown; a PuTTY key is converted to an OpenSSH key first.</summary>
+        private void LoadKey()
+        {
+            string path;
+            using (var dlg = new OpenFileDialog { Title = "Load a private key", Filter = "Key files (id_*, *.ppk, *.pem, *.key)|id_*;*.ppk;*.pem;*.key|All files (*.*)|*.*" })
+            {
+                try { dlg.InitialDirectory = Directory.Exists(KeyGen.SshDir) ? KeyGen.SshDir : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile); } catch { }
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                path = dlg.FileName;
+            }
+            KeyFileInfo info = null; string pass = null;
+            while (info == null)
+            {
+                try { var p = pass; info = Bg("Reading " + Path.GetFileName(path) + "...", () => KeyGen.Inspect(path, p)); }
+                catch (WrongPassphraseException ex) { pass = AskPassphrase(this, Path.GetFileName(path), pass == null ? null : ex.Message); if (pass == null) return; }
+            }
+            if (info.IsPutty) { ImportPuttyKey(info); return; }
+            var allowed = Bg("Checking whether the key may log in here...", () => AuthorizedState(info.PublicLine));
+            ShowKey(info, "Loaded " + info.FileName + ".", allowed, Theme.Text);
+            Status("Key loaded: " + info.Path);
+        }
+
+        /// <summary>Converts a PuTTY key to a new OpenSSH key file (the .ppk file stays) and shows it.</summary>
+        private void ImportPuttyKey(KeyFileInfo info)
+        {
+            if (!KeyFormats.PuttyCanUse(info.Type)) throw new ConfigException(info.FileName + " holds a key of type " + info.Description + ", which cannot be converted.");
+            if (MessageBox.Show(this, info.FileName + " is a PuTTY key (" + info.Description + ", " + info.Format + ").\n\nssh, scp, sftp and this program use keys in the OpenSSH format. Save a copy in that format? The .ppk file stays as it is, for PuTTY, WinSCP and FileZilla." +
+                    (info.Encrypted ? "\n\nThe copy is protected by the same passphrase." : ""), Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            string target;
+            using (var dlg = new SaveFileDialog { Title = "Save the OpenSSH key as", Filter = "Private key (no extension)|*.*", OverwritePrompt = true, AddExtension = false })
+            {
+                var dir = Directory.Exists(KeyGen.SshDir) ? KeyGen.SshDir : Path.GetDirectoryName(info.Path);
+                dlg.InitialDirectory = dir; dlg.FileName = Path.GetFileName(NewKeyDialog.FreeName(Path.Combine(dir, Path.GetFileNameWithoutExtension(info.Path))));
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                target = dlg.FileName;
+            }
+            string pass = null; KeyGenResult res = null; var now = DateTime.Now;
+            if (info.Encrypted && (pass = AskPassphrase(this, info.FileName, null)) == null) return;
+            while (res == null)
+            {
+                try { var p = pass; res = Bg("Converting " + info.FileName + "...", () => KeyGen.ImportPuttyKey(info.Path, p, target, p, now)); }
+                catch (WrongPassphraseException ex) { pass = AskPassphrase(this, info.FileName, ex.Message); if (pass == null) return; }
+            }
+            var allowed = Bg("Checking whether the key may log in here...", () => AuthorizedState(res.PublicKey));
+            ShowKey(KeyInfoOf(res), "Converted " + info.FileName + " to " + res.PrivatePath + " and " + Path.GetFileName(res.PublicPath) + (res.Encrypted ? ", protected by the passphrase of the PuTTY key" : ", without a passphrase like the PuTTY key") +
+                ". Checked with ssh-keygen: the new file gives the same key." + WrittenNote(res.Written, true, res.Encrypted), allowed, res.Written.Unprotected ? Orange : Green);
+            Status("PuTTY key converted: " + res.PrivatePath);
+        }
+
+        private void ChangeKeyPassphrase()
+        {
+            var key = CurrentKey();
+            string what = null;
+            using (var d = new PassphraseChangeDialog(key, dlg =>
+            {
+                var oldPass = dlg.OldPassphrase; var newPass = dlg.NewPassphrase; // read here: the work runs on another thread
+                Bg("Changing the passphrase of " + key.FileName + "...", () => KeyGen.ChangePassphrase(key.Path, oldPass, newPass));
+                what = string.IsNullOrEmpty(newPass) ? "Passphrase removed from " : key.Encrypted ? "Passphrase changed for " : "Passphrase set for ";
+            }))
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+            var info = Bg("Reading the key...", () => KeyGen.Inspect(key.Path));
+            ShowKey(info, what + info.FileName + ". Checked with ssh-keygen: it is the same key, and it opens with the new passphrase" + (info.Encrypted ? " and not without it." : "."), _kgAllowed, Green);
+            Status(what + info.Path);
+        }
+
+        /// <summary>Export: the key in another format; true when a file was written. owner is the setup wizard when it offers the export of a key it made.</summary>
+        private bool ExportKey(IWin32Window owner)
+        {
+            var key = CurrentKey();
+            KeyWriteResult written = null; var format = KeyExportFormat.PuttyV3; bool encrypted = false;
+            using (var d = new KeyExportDialog(key, dlg =>
+            {
+                var f = dlg.Format; var t = Path.GetFullPath(dlg.Target); var cur = dlg.CurrentPassphrase; var np = dlg.NewPassphrase; var now = DateTime.Now;
+                written = Bg("Exporting " + key.FileName + "...", () => KeyGen.Export(key, f, t, cur, np, now));
+                format = f; encrypted = !string.IsNullOrEmpty(np);
+            }))
+                if (d.ShowDialog(owner ?? this) != DialogResult.OK) return false;
+            bool isPrivate = format == KeyExportFormat.OpenSshPrivate || format == KeyExportFormat.PuttyV3 || format == KeyExportFormat.PuttyV2;
+            string how;
+            if (format == KeyExportFormat.PuttyV3 || format == KeyExportFormat.PuttyV2)
+                how = "PuTTY: Connection > SSH > Auth > Credentials, \"Private key file\". WinSCP: Advanced > SSH > Authentication. FileZilla: Site Manager, logon type \"Key file\".";
+            else if (format == KeyExportFormat.OpenSshPrivate)
+                how = "On the other computer, put it in the .ssh folder of your profile, or give it to ssh with -i. ssh refuses a private key that other accounts can read.";
+            else how = "Add it to the authorized_keys file of the account on the server that should accept the key.";
+            var msg = "Exported " + written.Path + (format == KeyExportFormat.OpenSshPrivate ? " and " + Path.GetFileName(written.Path) + ".pub" : "") +
+                      (isPrivate ? " (checked before it was written: the same key, " + (encrypted ? "opened with its passphrase" : "with NO passphrase") + ")" : "") + "." +
+                      WrittenNote(written, isPrivate, encrypted) + "\n" + how;
+            bool warn = isPrivate && written.Unprotected;
+            ShowKey(key, msg, _kgAllowed, warn ? Orange : Green);
+            Status("Exported: " + written.Path);
+            if (owner != null) MessageBox.Show(owner, msg, Program.AppName, MessageBoxButtons.OK, warn ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+            return true;
+        }
+
+        /// <summary>What to know about files just written: the backups of files that were there, and a drive that keeps no permissions.</summary>
+        private static string WrittenNote(KeyWriteResult w, bool privateKey, bool encrypted)
+        {
+            var s = "";
+            if (w.MovedAside.Count > 0) s += " What was there is kept as " + string.Join(", ", w.MovedAside.Select(Path.GetFileName)) + ".";
+            if (privateKey && w.Unprotected)
+                s += "\nThis drive keeps no file permissions (FAT or exFAT, as on most USB sticks): anyone who has it can read the file" +
+                     (encrypted ? ", which only its passphrase protects." : " and use the key, which has NO passphrase.") + " Delete it from the drive once it is copied.";
+            return s;
+        }
+
+        /// <summary>The tab's view of a key made or converted here, from what was just written (no second read of the file).</summary>
+        private static KeyFileInfo KeyInfoOf(KeyGenResult res)
+        {
+            var e = Keys.Parse(res.PublicKey);
+            return new KeyFileInfo
+            {
+                Path = res.PrivatePath, Format = "OpenSSH", Type = e.Type, Description = KeyFormats.Describe(Convert.FromBase64String(Keys.Blob(res.PublicKey))),
+                Fingerprint = res.Fingerprint, Comment = e.Comment ?? "", PublicLine = res.PublicKey, Encrypted = res.Encrypted,
+            };
+        }
+
+        /// <summary>Allow it to log in: adds the key to the authorized_keys file sshd reads for the account running this program.</summary>
+        private void AuthorizeCurrentKey()
+        {
+            var key = CurrentKey();
+            bool already = false; // sshd -T works out the file: in the background, it can take seconds
+            var where = Bg("Allowing the key to log in...", () => KeyGen.AuthorizeForCurrentUser(key.PublicLine, out already));
+            LoadKeys();
+            var text = (already ? "The key was already allowed to log in as " : "The key may now log in as ") + KeyGen.LoginName() + ": it is in " + where + ". \"Test login with this key\" tries it.";
+            var type = KeyGen.Types.FirstOrDefault(t => t.Experimental && t.PublicType == key.Type);
+            if (type != null && !EnsureServerAccepts(type)) text += "\nThis server does not accept " + type.PublicType + " yet, so the key cannot log in until PubkeyAcceptedAlgorithms includes it.";
+            ShowKey(key, text, true, Green);
+            Status(already ? "Key already allowed to log in" : "Key allowed to log in: " + where);
+        }
+
+        /// <summary>
+        /// The setup wizard's "Create a key for me": a new key pair (the types clients use without extra settings), allowed to
+        /// log in as the account running this program, shown on the Key generator tab and offered for export, since the
+        /// computer you connect from needs the private key. Returns the note the wizard shows: null when no key was made, empty when it was exported.
+        /// </summary>
+        private string CreateMyKey(IWin32Window owner)
+        {
+            KeyGenResult res = null;
+            using (var d = new NewKeyDialog(dlg =>
+            {
+                var t = dlg.KeyType; var p = dlg.PrivatePath; var c = dlg.Comment; var pass = dlg.Passphrase; var now = DateTime.Now;
+                res = Bg("Generating " + t.Label + " key...", () => KeyGen.GenerateReplacing(t, p, c, pass, now));
+            }))
+                if (d.ShowDialog(owner) != DialogResult.OK) return null;
+            Log.Info("Key pair created by the setup wizard: " + res.PrivatePath + " " + res.Fingerprint);
+            // The key exists from here on: a step that fails is reported with it, it does not hide the key.
+            string where = null, problem = null;
+            try { bool already; where = Bg("Allowing the key to log in...", () => KeyGen.AuthorizeForCurrentUser(res.PublicKey, out already)); LoadKeys(); }
+            catch (Exception ex) { problem = ex.Message; Log.Error("Allowing the new key to log in", ex, false); }
+            var text = "Created " + res.PrivatePath + " and " + Path.GetFileName(res.PublicPath) + (res.Encrypted ? ", protected by its passphrase" : ", with NO passphrase") + "." +
+                       (where != null ? " The key may log in as " + KeyGen.LoginName() + " (" + where + ")." : "\nIt could not be allowed to log in: " + problem + " \"Allow it to log in\" on the Key generator tab tries again.");
+            ShowKey(KeyInfoOf(res), text, where != null ? (bool?)true : null, where != null ? Green : Orange);
+            Status("Key pair created" + (where != null ? " and allowed to log in: " : ": ") + res.PrivatePath);
+            bool exported = false;
+            if (MessageBox.Show(owner, text + "\n\nFingerprint " + res.Fingerprint + "\n\nTo log in from another computer, that computer needs the private key. Export a copy now (.ppk for PuTTY, WinSCP and FileZilla, or the OpenSSH format)?",
+                    Program.AppName, MessageBoxButtons.YesNo, where != null ? MessageBoxIcon.Information : MessageBoxIcon.Warning) == DialogResult.Yes)
+                Safe(() => exported = ExportKey(owner));
+            return exported ? "" : "The new key is on this computer only. Before you choose key-only login on the next page, copy its private key to the computer you connect from (Export on the Key generator tab).";
         }
 
         private void BrowseKeyPath()
@@ -2287,10 +2492,10 @@ namespace OpenSSHServerPNManager
             finally { _kgPass1.Text = ""; _kgPass2.Text = ""; pass = null; }
             _kgPublic.Text = res.PublicKey;
             var text = "Created " + res.PrivatePath + " (private key" + (res.Encrypted ? ", protected by the passphrase" : ", NO passphrase") + ") and " + Path.GetFileName(res.PublicPath) +
-                       ".\nFingerprint " + res.Fingerprint + ". Verified: the private key reproduces the public key" + (res.Encrypted ? ", does not open without the passphrase" : "") + ", and only you, SYSTEM and Administrators can read it.";
+                       ". Verified: the private key reproduces the public key" + (res.Encrypted ? ", does not open without the passphrase" : "") + ", and only you, SYSTEM and Administrators can read it.";
             if (_kgAuthorize.Checked)
             {
-                bool already; var where = KeyGen.AuthorizeForCurrentUser(res.PublicKey, out already);
+                bool already = false; var where = Bg("Allowing the key to log in...", () => KeyGen.AuthorizeForCurrentUser(res.PublicKey, out already));
                 text += "\nAuthorized for " + KeyGen.LoginName() + " in " + where + (already ? " (it was already there)." : ".") + " Use \"Test login with this key\" to try it.";
                 LoadKeys();
                 if (type.Experimental && !EnsureServerAccepts(type))
@@ -2298,7 +2503,10 @@ namespace OpenSSHServerPNManager
             }
             if (type.Experimental)
                 text += "\nExperimental key type: clients need OpenSSH 10.5 or later and the line \"PubkeyAcceptedAlgorithms +" + type.PublicType + "\" in their ssh config.";
-            _kgResult.Text = text; _kgResult.ForeColor = Green;
+            var info = KeyInfoOf(res);
+            bool? allowed = _kgAuthorize.Checked ? (bool?)null : Bg("Checking whether the key may log in here...", () => AuthorizedState(res.PublicKey));
+            ShowKey(info, text, allowed, Green);
+            if (_kgAuthorize.Checked) _kgAllowed = true; // said in the text already
             Log.Info("Key pair created: " + res.PrivatePath + " " + res.Fingerprint);
             Status("Key pair created: " + res.PrivatePath);
         }
@@ -2329,8 +2537,8 @@ namespace OpenSSHServerPNManager
 
         private void TestKeyLogin()
         {
-            var p = _kgPath.Text.Trim();
-            if (p.Length == 0 || !File.Exists(p)) throw new ConfigException("No private key at\n" + p + "\n\nGenerate one first, or enter the path of an existing private key.");
+            var p = _kgKey != null ? _kgKey.Path : _kgPath.Text.Trim();
+            if (p.Length == 0 || !File.Exists(p)) throw new ConfigException("No private key at\n" + p + "\n\nGenerate one first, or load a key.");
             var path = Path.GetFullPath(p);
             string pass = null;
             if (KeyGen.IsEncrypted(path))
@@ -2343,14 +2551,16 @@ namespace OpenSSHServerPNManager
             finally { pass = null; }
             if (KeyGen.LoginOk(r))
             {
-                _kgResult.Text = "Login test passed: this server accepted " + Path.GetFileName(path) + " for " + KeyGen.LoginName() + " on port " + port + " (public key only, host key checked)."; _kgResult.ForeColor = Green;
+                var ok = "Login test passed: this server accepted " + Path.GetFileName(path) + " for " + KeyGen.LoginName() + " on port " + port + " (public key only, host key checked).";
+                if (_kgKey != null && _kgKey.Path == path) ShowKey(_kgKey, ok, true, Green); else { _kgResult.Text = ok; _kgResult.ForeColor = Green; }
                 Status("Login test passed");
             }
             else
             {
                 var detail = r == null ? "" : r.Output.Trim();
-                _kgResult.Text = "Login test failed for " + Path.GetFileName(path) + ". " + (detail.Length > 400 ? detail.Substring(0, 400) + "..." : detail) +
-                                 "\nIf the key is not authorized yet, tick \"Allow this key to log in\" and generate it again, or add the .pub file on the Keys tab."; _kgResult.ForeColor = Red;
+                var failed = "Login test failed for " + Path.GetFileName(path) + ". " + (detail.Length > 400 ? detail.Substring(0, 400) + "..." : detail) +
+                             "\nIf the key may not log in here yet, \"Allow it to log in\" adds it.";
+                if (_kgKey != null && _kgKey.Path == path) ShowKey(_kgKey, failed, _kgAllowed, Red); else { _kgResult.Text = failed; _kgResult.ForeColor = Red; }
                 Status("Login test failed");
             }
         }
@@ -2846,6 +3056,7 @@ namespace OpenSSHServerPNManager
             _trayMenu.Items.Add(new ToolStripSeparator());
             _trayMenu.Items.Add("Sessions", null, (s, e) => { ShowFromTray(); _tabs.SelectedTab = _pgSessions; });
             _trayMenu.Items.Add("Logs", null, (s, e) => { ShowFromTray(); _tabs.SelectedTab = _pgLogs; });
+            _trayMenu.Items.Add("Setup wizard...", null, (s, e) => { ShowFromTray(); Safe(RunWizard); });
             _trayMenu.Items.Add(new ToolStripSeparator());
             _trayMenu.Items.Add("Exit", null, (s, e) => { ShowFromTray(); Close(); });
             // While an operation runs or a dialog is open, the menu only opens the window: its actions would start a second
@@ -2942,7 +3153,10 @@ namespace OpenSSHServerPNManager
         /// <summary>Offers the setup wizard once, on the first start of the manager on this account.</summary>
         private void OfferWizard()
         {
-            if (Program.Unattended || Prefs.WizardOffered) return;
+            if (Program.Unattended) return;
+            // --wizard (the Start menu shortcut, or after installing): straight into the wizard.
+            if (Program.StartWizard) { Prefs.WizardOffered = true; RunWizard(); return; }
+            if (Prefs.WizardOffered) return;
             Prefs.WizardOffered = true;
             if (MessageBox.Show(this, "Set up the SSH server now? A short wizard helps with the port and networks, a key for you, how accounts log in, and the recommended settings.\n\nYou can start it any time with \"Setup wizard...\" on the Dashboard.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
                 RunWizard();
@@ -2962,10 +3176,12 @@ namespace OpenSSHServerPNManager
 
         private void RunWizard()
         {
+            // From the notification area menu, the wizard can be asked for while it (or another dialog) is open already.
+            if (_busyDepth > 0 || Application.OpenForms.Cast<Form>().Any(f => f != this && f.Modal)) { Status("Close the open dialog first"); return; }
             var fw = Bg("Reading the current settings...", () => Firewall.Get());
             string err; var allow = _cfg.GetCombinedArgs("AllowGroups", out err);
             WizardPlan plan;
-            using (var w = new SetupWizard(_cfg.EffectivePort, fw, allow == null || allow.Count == 0 ? null : SshdArgs.FormatTyped(allow), () => Bg("Reading your keys...", () => MyKeyCount()), QuickAddMyKey))
+            using (var w = new SetupWizard(_cfg.EffectivePort, fw, allow == null || allow.Count == 0 ? null : SshdArgs.FormatTyped(allow), () => Bg("Reading your keys...", () => MyKeyCount()), QuickAddMyKey, CreateMyKey))
             {
                 if (w.ShowDialog(this) != DialogResult.OK) return;
                 plan = w.Plan;

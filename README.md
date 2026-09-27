@@ -110,8 +110,10 @@ executable (`OpenSSHServerPNManager.exe`, .NET Framework 4.x, no installation). 
 released with 10.5.2.0 and earlier, it was called OpenSSH Server Manager (`OpenSSHServerManager.exe`);
 version 2.0.0 takes over its preferences, rules and firewall block list:
 
-- **Setup wizard**: port and networks, your key, key-only login for administrators or everyone,
-  the recommended settings and who may log in, in five steps.
+- **Setup wizard**: port and networks, a key for you (made in the wizard, or the `.pub` file of
+  one you have), key-only login for administrators or everyone, the recommended settings and who
+  may log in, in five steps. Start it from the Dashboard, the Key generator tab, the notification
+  area icon, or with `OpenSSHServerPNManager.exe --wizard`.
 - **Dashboard**: service state, version, listeners, sessions, SFTP, firewall, host key fingerprints;
   start, stop, restart, test the configuration, add your public key, generate host keys.
 - **Sessions**: live connections with user, start time, duration, peer address and what they do
@@ -134,7 +136,10 @@ version 2.0.0 takes over its preferences, rules and firewall block list:
   requires; comments in the files are kept.
 - **Key generator**: creates Ed25519, ECDSA, RSA and post-quantum ML-DSA key pairs, verifies
   every key, authorizes it for your account on this server if you ask, and tests a login with it.
-  The passphrase never appears on a command line.
+  Loads the keys you have (OpenSSH, PuTTY `.ppk`, PEM), changes, adds or removes their passphrase,
+  and exports them for PuTTY, WinSCP and FileZilla (`.ppk` versions 3 and 2) or as OpenSSH and
+  RFC 4716 files; a `.ppk` key is converted to OpenSSH when it is loaded. Passphrases never appear
+  on a command line, and conversions happen in memory.
 - **Client**: your `known_hosts` (add a server's keys after comparing fingerprints),
   the hosts of `.ssh\config`, and the keys in `ssh-agent`.
 - **Firewall**: rule state, profiles and ports.
@@ -211,12 +216,12 @@ The full record, including what could not be tested here, is in [docs/CHANGELOG.
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | Install, upgrade, keys, configuration, hardening, uninstall, troubleshooting |
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Windows version and architecture matrix, evidence, limitations |
+| [docs/SFTP-PERFORMANCE.md](docs/SFTP-PERFORMANCE.md) | SFTP speed: what 10.5.3.0 changed, the fastest client settings, how to measure your server |
 | [docs/BUILDING.md](docs/BUILDING.md) | Build and package from `src/` for x64, x86 and ARM64; updating OpenSSH and the libraries |
 | [docs/RELEASING.md](docs/RELEASING.md) | How a release is made: tag, CI build and tests, draft release, SBOM, attestations, optional signing |
 | [packaging/intune/README.md](packaging/intune/README.md) | Deploying with Intune or Configuration Manager: commands, detection rule, return codes |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Every build: changes and verification |
 | [docs/COMPARISON-BITVISE.md](docs/COMPARISON-BITVISE.md) | Feature audit against Bitvise SSH Server and other commercial servers |
-| [docs/SFTP-PERFORMANCE.md](docs/SFTP-PERFORMANCE.md) | SFTP speed: what 10.5.3.0 changed, the fastest client settings, how to measure your server |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Planned improvements |
 | [tools/OpenSSH-Server-PN-Manager/README.md](tools/OpenSSH-Server-PN-Manager/README.md) | The management console |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to propose changes |

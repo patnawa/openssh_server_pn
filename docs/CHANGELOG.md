@@ -10,6 +10,83 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
+## OpenSSH Server PN Manager 2.1.0 (not released yet)
+
+Keys for you, from start to finish: the setup wizard creates one, and the Key generator tab loads
+the keys you have, changes their passphrase and exports them for PuTTY, WinSCP and FileZilla. The
+server packages do not change.
+
+Fixed:
+
+- **The setup wizard could not create a key.** Its page *A key for you* could only add the `.pub`
+  file of an existing key and sent you to the Key generator tab after the wizard, so the key-only
+  choices on the next page stayed unavailable to anyone without a key. *Create a key for me* makes
+  a key pair there (Ed25519 by default, protected by a passphrase, never over an existing key),
+  allows it to log in as you, and offers to export the private key for the computer you connect
+  from; the next page then offers key-only login.
+
+Added:
+
+- **Load key.** Reads OpenSSH keys, PuTTY `.ppk` files (versions 2 and 3) and PEM files, and shows
+  type and size, format, whether a passphrase protects the key, the fingerprint, the comment and
+  whether the key may log in here. No passphrase is needed for that. A PuTTY key is converted to a
+  new OpenSSH key file with the same passphrase (the `.ppk` file stays), checked with `ssh-keygen`.
+- **Change passphrase.** Changes, adds or removes the passphrase of a key with `ssh-keygen -p`. The
+  current passphrase is checked before anything is written, the result is checked (the same key,
+  it opens with the new passphrase and not without it), and the file comes back byte for byte,
+  with its permissions, when anything fails. The askpass helper now tells the old passphrase from
+  the new one, and passes an empty one ("no passphrase") on as well.
+- **Export.** PuTTY `.ppk` version 3 (Argon2id, 8 MiB, 24 passes, AES-256) or version 2, OpenSSH
+  private key (`bcrypt_pbkdf` and AES-256-CTR, as `ssh-keygen` writes it), OpenSSH public key and
+  RFC 4716 public key; with the key's passphrase, a new one or none. Every copy is read back and
+  checked before it is kept; a new private key file has the permissions ssh requires from its
+  creation; a file already at the target is kept as `.bak-<date>`. On a drive that keeps no
+  permissions (FAT32 or exFAT, as on most USB sticks) the export works and says that anyone with
+  the drive can read the file. A `.ppk` passphrase is limited to ASCII characters, which PuTTY
+  reads the same way on every system; a `.ppk` file with a passphrase in the ANSI code page is read
+  as well.
+- **Allow it to log in** for a loaded key, and the Key generator tab shows the key it works on.
+- **Starting the setup wizard.** Besides the Dashboard: a button on the Key generator tab, an entry
+  in the menu of the notification area icon, and `OpenSSHServerPNManager.exe --wizard` (also
+  through the elevation prompt).
+
+How the key files are handled: `KeyFiles.cs` reads and writes the OpenSSH and PuTTY formats in
+memory, with `bcrypt_pbkdf` (Blowfish tables from `openbsd-compat/blowfish.c`), Argon2 and BLAKE2b
+written for it, and AES and the SHA hashes of Windows (which FIPS mode allows). A private key never
+goes to a temporary file without its passphrase; keys in other formats (PEM, or an OpenSSH key
+encrypted with another cipher) are first rewritten by `ssh-keygen` with the same passphrase, in a
+folder only the account can open, where every OpenSSH file is also checked before it is written to
+its place. A PEM key is read from the key itself, never from a `.pub` file next to it. Crafted
+files cannot keep the program busy: more than 2,000 `bcrypt_pbkdf` rounds, Argon2 above 256 MiB or
+above 16 GiB times passes, and more Argon2 lanes than the memory allows are refused before any
+work. When a file at the target cannot be moved aside, it stays where it is.
+
+A review of the new code before release found the last three points and these, fixed as well:
+the wizard's key creation reports a step that fails (allowing the key to log in, say) next to the
+key it made instead of hiding it, and warns on its page while the new key exists on the server
+only; allowing a key to log in no longer runs `sshd -T` on the window's thread; two backups in the
+same second get distinct names; the wizard offers the key types clients use without extra
+settings (ML-DSA stays on the Key generator tab).
+
+Verified:
+
+- `--unittest` 59 of 59 (51 before): BLAKE2b (RFC 7693) and Argon2d, Argon2i and Argon2id (RFC
+  9106) test vectors, OpenBSD's `bcrypt_pbkdf` test vector, keys made by `ssh-keygen` 10.5.3.0 and
+  the `.ppk` files WinSCP 6.5.7 made of them (the same key material), 18 write-and-read round
+  trips, tampered, damaged and crafted files, an export onto a file that cannot be moved aside
+  (the file stays), the askpass answers.
+- `--selftest` without administrator rights, 104 of 107: the 11 new tests pass (changing, adding and removing
+  a passphrase; export in every format and import from `.ppk` for Ed25519, ECDSA P-256, P-384,
+  P-521 and RSA; a PEM key; the three key dialogs filled in and confirmed as a user would, a wrong
+  passphrase refused and then the right one accepted). The three tests that need administrator
+  rights fail as they do with 2.0.0 run the same way.
+- Against the other programs, on Windows 11 with a private `sshd` 10.5.3.0 on 127.0.0.1: WinSCP
+  6.5.7 logged in with all 20 `.ppk` files the manager wrote (five key types, versions 2 and 3,
+  with and without a passphrase), PuTTY 0.85's `plink` with the 10 without a passphrase; `ssh`
+  logged in with the OpenSSH files it wrote and with the keys it converted from WinSCP's `.ppk`
+  files (Argon2id, 21 passes), which gave back the key byte for byte; a wrong passphrase was
+  refused every time.
+
 ## 10.5.3.0 (2026-09-27)
 
 The build that makes SFTP with AES about 3.5 times as fast on x64, with OpenSSH Server PN Manager

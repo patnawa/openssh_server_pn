@@ -29,11 +29,12 @@ namespace OpenSSHServerPNManager
             try { return new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator); }
             catch { return false; }
         }
-        public static bool Relaunch()
+        /// <summary>Starts this program again with administrator rights (the UAC prompt), with the given arguments.</summary>
+        public static bool Relaunch(string args = null)
         {
             try
             {
-                var psi = new ProcessStartInfo(Application.ExecutablePath) { UseShellExecute = true, Verb = "runas" };
+                var psi = new ProcessStartInfo(Application.ExecutablePath, args ?? "") { UseShellExecute = true, Verb = "runas" };
                 Process.Start(psi);
                 return true;
             }

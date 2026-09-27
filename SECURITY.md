@@ -62,7 +62,9 @@ Authenticode-signed only when a signing service is configured; the release notes
 - **OpenSSH Server PN Manager.** It runs elevated and writes configuration only after `sshd -t`
   accepts it. The key generator hands passphrases to `ssh-keygen` through `SSH_ASKPASS`, never on
   a command line. It never displays a private key, and it verifies that each private key is
-  readable only by its owner, SYSTEM and Administrators.
+  readable only by its owner, SYSTEM and Administrators. It converts keys to and from PuTTY's
+  `.ppk` format in memory, never through an unprotected temporary file, and reads every exported
+  file back before keeping it.
 - **Login-method changes.** The Authentication tab warns before a change would leave the
   administrator's own account without a method that works, and checks the result against the
   running server afterwards. It turns off keyboard-interactive, which has no Windows back end.

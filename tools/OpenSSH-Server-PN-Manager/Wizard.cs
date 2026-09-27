@@ -49,15 +49,16 @@ namespace OpenSSHServerPNManager
         private readonly CheckBox _dom, _priv, _pub, _recommended, _restrict;
         private readonly RadioButton _keep, _adminKeys, _allKeys;
         private readonly TextBox _groups;
-        private readonly Label _keysState, _summary;
+        private readonly Label _keysState, _summary, _keyNote;
         private readonly Func<int> _myKeyCount;
         private readonly Action _addKey;
+        private readonly Func<IWin32Window, string> _createKey;
         private readonly int _currentPort, _currentProfiles; private readonly bool _fwExists, _hadRestriction;
         public WizardPlan Plan;
 
-        public SetupWizard(int currentPort, FirewallRule fw, string allowGroups, Func<int> myKeyCount, Action addKey)
+        public SetupWizard(int currentPort, FirewallRule fw, string allowGroups, Func<int> myKeyCount, Action addKey, Func<IWin32Window, string> createKey)
         {
-            _myKeyCount = myKeyCount; _addKey = addKey; _currentPort = currentPort; _fwExists = fw != null; _hadRestriction = !string.IsNullOrEmpty(allowGroups);
+            _myKeyCount = myKeyCount; _addKey = addKey; _createKey = createKey; _currentPort = currentPort; _fwExists = fw != null; _hadRestriction = !string.IsNullOrEmpty(allowGroups);
             _currentProfiles = fw == null ? DefaultProfiles() : ((fw.Profiles & 0x7fffffff) == 0x7fffffff ? 7 : fw.Profiles & 7);
             Text = "Set up the SSH server"; StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
             MinimizeBox = MaximizeBox = false; ShowInTaskbar = false; ClientSize = new Size(Ui.Px(720), Ui.Px(470)); Font = new Font("Segoe UI", Ui.Pt(9.5f));
@@ -89,10 +90,18 @@ namespace OpenSSHServerPNManager
             var p2 = Page("A key for you", "A public key logs you in without a password that could be guessed or phished. The private key stays on the computer you connect from.");
             _keysState = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(680), 0), Font = new Font("Segoe UI", Ui.Pt(9.5f), FontStyle.Bold), Margin = new Padding(3, 8, 3, 8) };
             Add(p2, _keysState);
+            var createKeyButton = new Button { Text = "Create a key for me...", AutoSize = true, MinimumSize = new Size(Ui.Px(200), Ui.Px(32)), Margin = new Padding(3, 3, 8, 3) };
+            createKeyButton.Click += (s, e) => { try { var note = _createKey(this); if (note != null) _keyNote.Text = note; } catch (Exception ex) { Log.Error("Creating a key in the setup wizard", ex, false); MessageBox.Show(this, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); } UpdateKeys(); };
             var addKeyButton = new Button { Text = "Add my public key (.pub file)...", AutoSize = true, MinimumSize = new Size(0, Ui.Px(32)) };
             addKeyButton.Click += (s, e) => { try { _addKey(); } catch (Exception ex) { MessageBox.Show(this, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); } UpdateKeys(); };
-            Add(p2, addKeyButton);
-            Add(p2, Note("No key yet? Create one on the computer you connect from (ssh-keygen -t ed25519) and add its .pub file here, or finish this wizard and use the Key generator tab. The next page offers key-only login only once a key is authorized for you."));
+            var keyButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+            keyButtons.Controls.Add(createKeyButton); keyButtons.Controls.Add(addKeyButton);
+            Add(p2, keyButtons);
+            // After "Create a key for me": a warning while the new key exists on this computer only (it was not exported).
+            _keyNote = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(680), 0), ForeColor = Theme.Warn, Margin = new Padding(3, 8, 3, 0) };
+            Add(p2, _keyNote);
+            Add(p2, Note("Create a key for me makes a new key pair here (with a passphrase, unless you choose none) and allows it to log in as you; it then offers to export the private key for the computer you connect from (OpenSSH, or .ppk for PuTTY, WinSCP and FileZilla). " +
+                         "Already have a key on that computer? Add its .pub file instead. The next page offers key-only login once a key is allowed for you."));
 
             // 3. Login methods
             var p3 = Page("How accounts log in", "Windows authentication means the Windows account name and password. With a key only, a stolen or guessed password is not enough.");
