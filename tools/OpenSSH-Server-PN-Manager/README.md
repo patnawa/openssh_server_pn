@@ -407,7 +407,8 @@ it. The build is deterministic: the same source and compiler give the same SHA-2
 
 Download: the executable and its `.exe.config` (keep both in one folder) are attached to the
 product releases and to releases of their own (tags `manager-v<version>`), each with `SHA256SUMS.txt`. The newest is
-[manager-v2.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.1.0).
+[manager-v2.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.0), also installed by the
+packages of [v10.5.4.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.4.0).
 Up to [manager-v1.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.6.0) and
 [v10.5.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.2.0), the files are
 `OpenSSHServerManager.exe` and `OpenSSHServerManager.exe.config`; from

@@ -12,15 +12,18 @@ the same way; differences are called out where they exist.
 | `OpenSSH-ARM64-v<ver>.msi` | Windows 10 / 11 on ARM |
 
 Requirements: Windows 7 SP1 / Windows Server 2008 R2 or later, and local administrator rights
-for the installation. No Visual C++ redistributable or .NET runtime is needed; the binaries
-statically link the C runtime. See [COMPATIBILITY.md](COMPATIBILITY.md) for the full matrix.
+for the installation. No Visual C++ redistributable is needed; the binaries statically link the C
+runtime. OpenSSH Server PN Manager, which the server feature installs from 10.5.4.0 on, needs .NET
+Framework 4.5 or later (part of Windows 8 and Windows Server 2012 and later; on Windows 7 SP1 and
+Server 2008 R2, install it first); the server runs without it. See [COMPATIBILITY.md](COMPATIBILITY.md)
+for the full matrix.
 
 Download the package and `SHA256SUMS.txt` from the latest release on the
 [Releases](https://github.com/patnawa/openssh_server_pn/releases) page, for example:
 
 ```powershell
-$base = 'https://github.com/patnawa/openssh_server_pn/releases/download/v10.5.3.0'
-Invoke-WebRequest "$base/OpenSSH-Win64-v10.5.3.0.msi" -OutFile .\OpenSSH-Win64-v10.5.3.0.msi
+$base = 'https://github.com/patnawa/openssh_server_pn/releases/download/v10.5.4.0'
+Invoke-WebRequest "$base/OpenSSH-Win64-v10.5.4.0.msi" -OutFile .\OpenSSH-Win64-v10.5.4.0.msi
 Invoke-WebRequest "$base/SHA256SUMS.txt" -OutFile .\SHA256SUMS.txt
 ```
 
@@ -28,8 +31,8 @@ The packages are unsigned, so verify the download first. The hash must match the
 `SHA256SUMS.txt` (and the value in the README):
 
 ```powershell
-$line = Select-String -Path .\SHA256SUMS.txt -Pattern 'OpenSSH-Win64-v10.5.3.0.msi' -SimpleMatch
-(Get-FileHash .\OpenSSH-Win64-v10.5.3.0.msi -Algorithm SHA256).Hash -eq $line.Line.Split(' ')[0]   # must print True
+$line = Select-String -Path .\SHA256SUMS.txt -Pattern 'OpenSSH-Win64-v10.5.4.0.msi' -SimpleMatch
+(Get-FileHash .\OpenSSH-Win64-v10.5.4.0.msi -Algorithm SHA256).Hash -eq $line.Line.Split(' ')[0]   # must print True
 ```
 
 ## 2. Install
@@ -38,7 +41,7 @@ Interactive (double-click) and silent installs both work. The MSI has no user in
 run it from an elevated prompt for a log:
 
 ```powershell
-msiexec /i .\OpenSSH-Win64-v10.5.3.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
+msiexec /i .\OpenSSH-Win64-v10.5.4.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
 ```
 
 | Property | Default | Effect |
@@ -62,9 +65,9 @@ LocalSystem.
 Examples:
 
 ```powershell
-msiexec /i .\OpenSSH-Win64-v10.5.3.0.msi ADDLOCAL=Client /qn          # workstation, client only
-msiexec /i .\OpenSSH-Win64-v10.5.3.0.msi ADDLOCAL=Server ADD_PATH=0 /qn  # server, no PATH change
-msiexec /i .\OpenSSH-Win64-v10.5.3.0.msi REMOVE=Server /qn            # drop the server feature later
+msiexec /i .\OpenSSH-Win64-v10.5.4.0.msi ADDLOCAL=Client /qn          # workstation, client only
+msiexec /i .\OpenSSH-Win64-v10.5.4.0.msi ADDLOCAL=Server ADD_PATH=0 /qn  # server, no PATH change
+msiexec /i .\OpenSSH-Win64-v10.5.4.0.msi REMOVE=Server /qn            # drop the server feature later
 ```
 
 What the installer configures:
@@ -371,7 +374,7 @@ Clients connect with `Enter-PSSession -HostName server -UserName user`.
 ## 7. Uninstall
 
 ```powershell
-msiexec /x .\OpenSSH-Win64-v10.5.3.0.msi /qn
+msiexec /x .\OpenSSH-Win64-v10.5.4.0.msi /qn
 ```
 
 or through *Apps & features* / `Programs and Features`. The uninstaller ends open sessions and

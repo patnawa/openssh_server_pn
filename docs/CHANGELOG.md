@@ -2,6 +2,8 @@
 
 All builds of this project, newest first. Each entry lists the source, the library versions,
 every change to the packaging, and how the result was verified. Published as GitHub releases:
+[v10.5.4.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.4.0) (with OpenSSH
+Server PN Manager 2.2.0, which it installs), [manager-v2.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.0),
 [manager-v2.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.1.0),
 [v10.5.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.3.0) (with OpenSSH
 Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.0.0),
@@ -21,7 +23,36 @@ engine and on Windows Server 2025, with the elevated `--selftest`, `--keytest` a
 (partners and agent) of the new manager, the uninstall that removes its tasks, and the first
 installation with a window that opens the wizard. On Windows 11 on ARM64 that last scenario
 failed, which led to the request for the wizard described below; the rest passed there too. The
-file table follows when the release is published.
+next run of the pull request (36319435919), on the release commit, passed everything on all four
+machines.
+
+Built, tested and packaged by the CI from the tag `v10.5.4.0` (`.github/workflows/openssh.yml`, run
+36320527427), which also created the draft release with `SHA256SUMS.txt`, the SBOM and the
+attestations: 767 unit tests on x64, x86 and ARM64; on each of the four machines 275 install and
+manager checks, 280 with PowerShell 2.0, none failed (`--selftest` 122, `--keytest`, `--authtest`
+with the SFTP settings, the partners and the agent, the uninstall that removes the manager's tasks,
+the first installation that opens the wizard), no `preinstall: warning` line; Pester E2E 159
+passed, 0 failed, 1 skipped. On Windows Server 2022 the first attempt of the install job failed
+in `--authtest`: between two SFTP settings the test could not stop its temporary `sshd` service
+("Cannot stop OSMAuthTest... service"), a service-state race in the test's stop helper (it reads
+the state, then asks to stop; a change in between makes Windows refuse the request). The job ran
+again and passed; the helper is to wait instead in the next manager version. OpenSSH Server PN
+Manager 2.2.0 also has a release of its own, `manager-v2.2.0` (the same executable).
+
+| File | Size | SHA-256 |
+|---|---|---|
+| `OpenSSH-Win64-v10.5.4.0.msi` | 7,401,472 bytes | `187B2EAF3D8DB2CEF056EDCB37087E122B8D1C7F9313B55FF67CBF3EBBFD7C18` |
+| `OpenSSH-Win32-v10.5.4.0.msi` | 6,619,136 bytes | `58CFD7882B08BC424C666070C9C31A6BF38DFBFB254EB69F578705ADC0BBDBFD` |
+| `OpenSSH-ARM64-v10.5.4.0.msi` | 7,135,232 bytes | `B85157439DFAA966DAE3560C390BC976347E8588DEC6BC02EAD5FC0680571BE6` |
+| `OpenSSH-Server-PN-v10.5.4.0.cdx.json` | 14,383 bytes | `D2633ECE772E08AA7F1F185ADA5DCBD741B673A0679E39153F895C187F00B5DB` |
+| `OpenSSHServerPNManager.exe` (2.2.0) | 1,171,456 bytes | `80F4A90F6EF903DBE523D1452C4CD08A18D8B57F7AFE4975302B7FBAF305BEC8` |
+| `OpenSSHServerPNManager.exe.config` | 371 bytes | `38607418BB4655C3C736572F52DA1F35D926CCBF91AD1102F0DCDA164E798451` |
+
+Product codes: x64 `{731AF16B-10A7-4B35-9D16-0779ECBF35A5}`, x86
+`{76646AE1-D2CB-4416-9CD1-69254072F183}`, ARM64 `{417398AF-E298-4622-AACA-7A7135A2F3AA}`. Each
+package carries `sshd.exe` 10.5.4.0 and `OpenSSHServerPNManager.exe` 2.2.0.0; the attestations of
+the three packages and the manager verify with `gh attestation verify ... --signer-workflow
+patnawa/openssh_server_pn/.github/workflows/openssh.yml --source-ref refs/tags/v10.5.4.0`.
 
 Installer:
 
@@ -178,7 +209,10 @@ Verified:
   event log query the manager uses.
 - Elevated, on GitHub's runners (Windows Server 2022, the same with the PowerShell 2.0 engine,
   Windows Server 2025, Windows 11 on ARM64): the five partner tests passed on all four in run
-  36314606201; partners log in without being members of Users.
+  36314606201; partners log in without being members of Users. In the release run 36320527427
+  of `v10.5.4.0`, with the manager installed by the packages, `--selftest` passed 122 of 122 on
+  each, and `--keytest` and `--authtest` (the partner and agent tests included) passed; on Windows
+  Server 2022 after a second attempt of the job (see 10.5.4.0).
 
 ## OpenSSH Server PN Manager 2.1.0 (2026-09-27)
 

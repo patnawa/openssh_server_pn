@@ -18,43 +18,40 @@ you have set up keys; the manager's setup wizard switches them off for administr
 
 This project is independent: it is not affiliated with Microsoft or the OpenBSD OpenSSH project.
 
-## Current build: 10.5.3.0 (2026-09-27)
+## Current build: 10.5.4.0 (2026-09-27)
 
 | Package | Target | Size | SHA-256 |
 |---|---|---|---|
-| `OpenSSH-Win64-v10.5.3.0.msi` | Windows x64: every Windows Server edition, 64-bit Windows 10 and 11 | 6.6 MB | `ABE05A74E68C76ED051CABB7E86A8209F61770384431B4494FEBA45C76C0E920` |
-| `OpenSSH-Win32-v10.5.3.0.msi` | Windows x86: 32-bit Windows client editions | 5.9 MB | `C6C3645808FFA49455A9FA6C1FE488AFC1A838D8CC0D28DCDE496C85296BBAA6` |
-| `OpenSSH-ARM64-v10.5.3.0.msi` | Windows 10 and 11 on ARM | 6.4 MB | `C8255A5A0A91FC26E49A29528606E56744570BE319830A55C58C461575BA5E3C` |
-| `OpenSSHServerPNManager.exe` (2.0.0) | Management console, any Windows with .NET Framework 4.x, all architectures | 871 KB | `E6CDF9BF6DA7A958731E498372CBBE1F84426B3EE96B6D0A47713C8672C968F8` |
+| `OpenSSH-Win64-v10.5.4.0.msi` | Windows x64: every Windows Server edition, 64-bit Windows 10 and 11 | 7.1 MB | `187B2EAF3D8DB2CEF056EDCB37087E122B8D1C7F9313B55FF67CBF3EBBFD7C18` |
+| `OpenSSH-Win32-v10.5.4.0.msi` | Windows x86: 32-bit Windows client editions | 6.3 MB | `58CFD7882B08BC424C666070C9C31A6BF38DFBFB254EB69F578705ADC0BBDBFD` |
+| `OpenSSH-ARM64-v10.5.4.0.msi` | Windows 10 and 11 on ARM | 6.8 MB | `B85157439DFAA966DAE3560C390BC976347E8588DEC6BC02EAD5FC0680571BE6` |
+| `OpenSSHServerPNManager.exe` (2.2.0) | Management console, any Windows with .NET Framework 4.5 or later, all architectures; also inside the packages | 1.1 MB | `80F4A90F6EF903DBE523D1452C4CD08A18D8B57F7AFE4975302B7FBAF305BEC8` |
 
-10.5.3.0 replaces 10.5.2.0. **SFTP, and every connection with an AES cipher, is about 3.5 times as
-fast on x64**: LibreSSL built with Visual Studio never detected the processor's AES-NI and
-carry-less multiplication, so AES ran on slow table code; the x64 packages use them now
-(`msvc-x64-cpu-caps.patch`, [docs/BUILDING.md](docs/BUILDING.md#6-refreshing-the-vendored-libraries)).
-A 512 MiB SFTP transfer over the loopback, MB/s up / down (the median of three runs, averaged over
-two interleaved rounds):
+10.5.4.0 replaces 10.5.3.0. The packages now install **OpenSSH Server PN Manager 2.2.0** next to the
+server, with Start-menu shortcuts, open its setup wizard after a first installation run with a window,
+and remove its scheduled tasks when the server is uninstalled. Manager 2.2.0 adds:
 
-| Cipher | 10.5.2.0 | 10.5.3.0 |
-|---|---|---|
-| `aes128-gcm@openssh.com` | 154 / 160 | 487 / 597 |
-| `aes256-gcm@openssh.com` | 122 / 126 | 502 / 499 |
-| `aes256-ctr` | 143 / 144 | 500 / 472 |
-| `chacha20-poly1305@openssh.com` | 296 / 280 | 291 / 325 |
+- **SFTP partners**: accounts for customers, suppliers and auditors, each confined to a folder of its
+  own, with a generated password shown once, download-only access, key-only login or a last day,
+  created and removed without touching `sshd_config` again after a one-time setup;
+- **a transfer history**: every upload, download, rename and refused request by period and account,
+  as CSV or an HTML report, kept for a year;
+- **alerts** by e-mail or webhook (Microsoft Teams, Slack and others) when `sshd` stops, failed logins
+  pile up, a partner's files arrive or the disk runs low, a monthly transfer report, and **automatic
+  blocking** of addresses with many failed logins, run by two scheduled tasks as SYSTEM.
 
-WinSCP and FileZilla use AES by default, so they gain without a change. OpenSSH clients choose
-`chacha20-poly1305@openssh.com` first; `-c aes128-gcm@openssh.com` makes them use AES.
-[docs/SFTP-PERFORMANCE.md](docs/SFTP-PERFORMANCE.md) has the settings for each client and a test
-for your own server. The management console is now **OpenSSH Server PN Manager 2.0.0**, with an SFTP tab (see below). The
-installer is the one of 10.5.2.0, which repaired the ARM64 package and the installation on Windows 7
-and Windows Server 2008 R2 of 10.5.1.0 and earlier
+OpenSSH, LibreSSL and the other libraries are those of 10.5.3.0, so SFTP with AES keeps the speed that
+10.5.3.0 brought on x64 (about 3.5 times that of 10.5.2.0); [docs/SFTP-PERFORMANCE.md](docs/SFTP-PERFORMANCE.md)
+has the measurements, the settings for each client and a test for your own server. The installer runs
+its steps on the Windows PowerShell 2.0 of Windows 7 and Windows Server 2008 R2, where 10.5.1.0 and earlier hung
 ([docs/INSTALL.md](docs/INSTALL.md#a-hung-installation) says how to end such an installation).
 Details in [docs/CHANGELOG.md](docs/CHANGELOG.md) and [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md#run-time-tests).
 
-Download them from the release [v10.5.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.3.0), together with
+Download them from the release [v10.5.4.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.4.0), together with
 `OpenSSHServerPNManager.exe.config` (keep it next to the executable), `SHA256SUMS.txt` and the SBOM
-`OpenSSH-Server-PN-v10.5.3.0.cdx.json`. The management console also has releases of its own; the newest is
-[manager-v2.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.1.0) (keys: load, change the passphrase, export for PuTTY; the setup wizard creates one). The files are **unsigned**: always compare
-the SHA-256 hash before installing (`Get-FileHash .\OpenSSH-Win64-v10.5.3.0.msi`, or the check in
+`OpenSSH-Server-PN-v10.5.4.0.cdx.json`. The management console also has releases of its own; the newest is
+[manager-v2.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.0), the same file. The files are **unsigned**: always compare
+the SHA-256 hash before installing (`Get-FileHash .\OpenSSH-Win64-v10.5.4.0.msi`, or the check in
 [docs/INSTALL.md](docs/INSTALL.md#1-choose-a-package)). `gh attestation verify <file> --repo patnawa/openssh_server_pn`
 shows that a file was built by this repository's workflow. Anyone can rebuild them with
 [docs/BUILDING.md](docs/BUILDING.md). Installed, the product appears as *OpenSSH Server PN* in
@@ -64,11 +61,11 @@ What is in this build:
 
 | Component | Version | Note |
 |---|---|---|
-| OpenSSH | 10.5p1, file version 10.5.3.0 | Three releases ahead of the Windows port's `latestw_all` branch (10.2p1). How the 10.3, 10.4 and 10.5 releases were merged is in the changelog |
+| OpenSSH | 10.5p1, file version 10.5.4.0 | Three releases ahead of the Windows port's `latestw_all` branch (10.2p1). How the 10.3, 10.4 and 10.5 releases were merged is in the changelog |
 | LibreSSL | 4.3.2 (2026-05-26) | The official 10.0.0.0 Windows package shipped 4.2.0, without AES-NI. x64: with the CPU detection for Visual Studio builds, so AES-NI and PCLMULQDQ are used. ARM64: with LibreSSL's workaround for the compiler defect ([libressl/portable#1403](https://github.com/libressl/portable/issues/1403)) |
 | libfido2 | 1.17.0 (2026-04-15) | Includes YSA-2026-01 (restricted `webauthn.dll` search path) |
 | libcbor, zlib | 0.14.0, 1.3.2 | |
-| Installer | WiX 3.14 | Removes whatever is installed first; see below |
+| Installer | WiX 3.14 | Removes whatever is installed first, installs OpenSSH Server PN Manager 2.2.0; see below |
 
 Highlights of OpenSSH 10.3 to 10.5 on the server side: a GSSAPI pre-authentication
 denial-of-service fix, complete `PubkeyAcceptedAlgorithms` enforcement for ECDSA keys, the
@@ -195,33 +192,38 @@ known limitations.
 
 ## Verification of this build
 
-- The CI built the release from the tag `v10.5.3.0` (2026-09-27, run 36304755653) and ran all 767
+- The CI built the release from the tag `v10.5.4.0` (2026-09-27, run 36320527427) and ran all 767
   OpenSSH unit tests on x64, x86 and ARM64, none failed.
 - It installed the packages on Windows Server 2022 and 2025 (x64) and on Windows 11 on ARM
   (ARM64), and a fourth time on Windows Server 2022 with the installer's steps on the Windows
   PowerShell 2.0 engine of Windows 7 and Server 2008 R2. On each machine it ran install, upgrade
   with the firewall settings kept, repair, a failed installation rolled back, refused and allowed
-  downgrade with `SSHD_PORT`, `ACTIVE_SESSIONS` with a key login open, and uninstall. After the
-  install it ran OpenSSH Server PN Manager's `--check`, `--selftest` (96 tests), `--keytest` (every
-  key type, with a login) and `--authtest`: the Authentication tab's settings with real logins, and
-  SFTP with real transfers, where an SFTP-only account stayed confined to its folder (`cd ..`,
-  `/../..`, a drive letter and an upload outside were refused, and so were commands), a
-  download-only group could not change anything, and SFTP off refused every session. That was 209
-  checks per machine and 213 with PowerShell 2.0, none failed. The upstream Pester end-to-end tests:
+  downgrade with `SSHD_PORT`, `ACTIVE_SESSIONS` with a key login open, uninstall with the manager's
+  scheduled tasks set up (they were removed), and a first installation with a window, after which
+  the manager opened its setup wizard as the installing user. The installed manager was the
+  committed build, with both Start-menu shortcuts. After the install it ran OpenSSH Server PN
+  Manager's `--check`, `--selftest` (122 tests), `--keytest` (every key type, with a login) and
+  `--authtest`: the Authentication tab's settings with real logins; SFTP with real transfers, where
+  an SFTP-only account stayed confined to its folder; five partner tests (password and key-only
+  partners, download only, disable and enable, the last day, a new password, delete); and the
+  agent (an address blocked and unblocked, the transfer archive, the Watch task as SYSTEM, the
+  uninstall step). That was 275 checks per machine and 280 with PowerShell 2.0, none failed; on
+  Windows Server 2022 the job passed on its second attempt, after the test's own temporary `sshd`
+  service could not be stopped once between two settings. The upstream Pester end-to-end tests:
   159 passed, 0 failed, 1 skipped.
-- The x64 `libcrypto.dll` of the release encrypts with AES-128-GCM at 4.66 GB/s, where 10.5.2.0's
-  managed 0.2 GB/s (`openssl speed`, Windows 11 Pro, 2026-09-27); the SFTP figures above were measured
-  on the same machine.
+- The libraries are those of 10.5.3.0, whose x64 `libcrypto.dll` encrypts with AES-128-GCM at
+  4.66 GB/s, where 10.5.2.0's managed 0.2 GB/s (`openssl speed`, Windows 11 Pro, 2026-09-27).
 - The installer of the earlier builds was also tested by hand on Windows 11 Pro. That covered
   upgrade with open sessions, same-version replacement, blocked and allowed downgrade, switching
   architecture, install from inside an SSH session, adding and removing features, repair,
   uninstall, firewall profiles and rejected property values. After each install: automatic
   service start, public-key login, and recovery after `Restart-Service sshd` and after a forced
-  kill of `sshd.exe`.
-- The owner installed the release package on Windows Server 2008 R2 (the machine where the
-  installation of 10.5.1.0 had hung), Windows Server 2019, Windows Server 2025 and Windows 11, and
-  it passed on each (2026-09-27), as 10.5.2.0 had on the Windows Server 2008 R2 machine.
-- Not tested: Windows 7, 8.1 and Windows Server 2012 and 2016 themselves, a restart with the new
+  kill of `sshd.exe`. The owner installed the 10.5.3.0 package on Windows Server 2008 R2 (the
+  machine where the installation of 10.5.1.0 had hung), Windows Server 2019, Windows Server 2025
+  and Windows 11, and it passed on each (2026-09-27).
+- Not tested yet: the 10.5.4.0 packages on machines outside the CI (the owner's Windows Server
+  2008 R2, 2019 and 2025 and Windows 11), a double-click installation with a user's own UAC
+  prompt, Windows 7, 8.1 and Windows Server 2012 and 2016 themselves, a restart with the new
   package installed, and Kerberos logins.
 
 The full record, including what could not be tested here, is in [docs/CHANGELOG.md](docs/CHANGELOG.md).

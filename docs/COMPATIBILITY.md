@@ -2,7 +2,7 @@
 
 This page records which Windows versions and architectures the packages built by this repository run
 on, what that claim is based on, and where the limits are. It applies to builds 10.2.0.0 through
-10.5.3.0 (2026-09-27), which share the toolchain, the Windows SDK and the minimum Windows target;
+10.5.4.0 (2026-09-27), which share the toolchain, the Windows SDK and the minimum Windows target;
 re-check it whenever the toolchain or the Windows SDK changes.
 
 ## Matrix
@@ -71,6 +71,7 @@ friends) are not statically imported; the code resolves them at run time and fal
 | Install of the x64 package 10.5.2.0 (release run 36242773841) | Windows Server 2008 R2, the machine of the report, 2026-09-26 | pass, as reported by the owner |
 | Install of 10.5.3.0 (release run 36304755653) | Windows Server 2008 R2 (the machine of the report), Windows Server 2019, Windows Server 2025 and Windows 11, 2026-09-27 | pass, as reported by the owner |
 | The 10.5.3.0 packages (release run 36304755653): install, upgrade with the firewall rule kept, repair, rollback of a failed installation, refused and allowed downgrade with `SSHD_PORT`, `ACTIVE_SESSIONS`, uninstall; then OpenSSH Server PN Manager 2.0.0 `--check`, `--selftest` (96 tests), `--keytest` and `--authtest` (login methods, and SFTP with real transfers: SFTP-only accounts confined to a folder, download only, SFTP off) | Windows Server 2022 and 2025 (x64), Windows 11 on ARM64, and Windows Server 2022 with the installer's steps on PowerShell 2.0 (GitHub runners), 2026-09-27 | pass: 209 checks per machine, 213 with PowerShell 2.0; OpenSSH unit tests 767 on x64, x86 and ARM64; Pester E2E 159 passed, 0 failed, 1 skipped |
+| The 10.5.4.0 packages (release run 36320527427): the same scenarios, uninstall with the manager's scheduled tasks set up (removed), and a first installation with a window (the manager opens its setup wizard as the installing user); the installed OpenSSH Server PN Manager 2.2.0 `--check`, `--selftest` (122 tests), `--keytest` and `--authtest` (login methods, SFTP with real transfers, five partner tests, the agent) | Windows Server 2022 and 2025 (x64), Windows 11 on ARM64, and Windows Server 2022 with the installer's steps on PowerShell 2.0 (GitHub runners), 2026-09-27 | pass: 275 checks per machine, 280 with PowerShell 2.0, none failed (on Windows Server 2022 at the second attempt of the job: the first could not stop the test's own temporary `sshd` service once); 767 unit tests on each architecture; Pester 159 passed, 1 skipped |
 | AES speed of the x64 `libcrypto.dll` of 10.5.3.0 (`openssl speed -evp aes-128-gcm`, 16 KB blocks), with the CPU detection for MSVC | Windows 11 Pro 26200, x64, 2026-09-27 | 4.66 GB/s (10.5.2.0: 0.2 GB/s); SFTP with `aes128-gcm.com` over the loopback about 3.5 times as fast |
 | Windows 7 / 8.1 / 10 before 1809 | not executed | static checks only |
 
