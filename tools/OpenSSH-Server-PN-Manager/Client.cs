@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: Client (known_hosts, ssh client configuration, ssh-agent)
+// OpenSSH Server PN Manager: Client (known_hosts, ssh client configuration, ssh-agent)
 
 using System;
 using System.Collections.Generic;
@@ -7,7 +7,7 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     // ------------------------------------------------------------------------------------------
     // The ssh client of the account running this program: known_hosts, %USERPROFILE%\.ssh\config, ssh-agent

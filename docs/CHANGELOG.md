@@ -8,6 +8,107 @@ every change to the packaging, and how the result was verified. Published as Git
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
+## Unreleased
+
+Changes on `main` after 10.5.2.0, for the next build and OpenSSH Server PN Manager 2.0.0 (the
+management console under the project's name). Not yet built from a tag by the CI; the elevated
+manager tests and the install tests run in the CI of the pull request.
+
+LibreSSL:
+
+- **AES-NI and PCLMULQDQ are used on x64, so SFTP with AES is about 3.5 times as fast.** LibreSSL
+  4.x built with Visual Studio never detected a CPU feature, for two reasons: its CPU detection
+  (`crypto/arch/amd64/crypto_cpu_caps.c`, since 4.0 C with GCC inline assembly instead of the
+  `cpuid-masm-x86_64.S` of 3.9) is compiled out for MSVC by LibreSSL portable ("disable cpu caps on
+  windows for now"), and it runs from a function marked `__attribute__((constructor))`, which
+  `opensslfeatures.h` defines away for MSVC, so nothing called it. The x64 build contains the AES-NI
+  and GHASH assembly (`aesni-masm-x86_64.S`, `ghash-masm-x86_64.S`), but `aes_amd64.c` and
+  `gcm128_amd64.c` never selected it, and every AES cipher ran on the table-based code. The same
+  holds for Microsoft's official 10.0.0.0 package, which ships LibreSSL 4.2.0. The new overlay patch
+  `msvc-x64-cpu-caps.patch` adds `__cpuidex` and `_xgetbv` (MSVC intrinsics) as the third branch of
+  the detection and registers the initializer in the C runtime's `.CRT$XCU` table, which runs at
+  load time as constructors do elsewhere. x86 and ARM64 run the initializer too; it has nothing to
+  switch on there, because their MSVC builds have no assembly. Verified on 2026-09-27 on Windows 11
+  Pro 26200 (x64, not elevated): LibreSSL 4.3.2 built with the patch, `-DLIBRESSL_TESTS=ON`, passed
+  all 134 regression tests (`aes_test`, `aeadtest`, `gcm128test`, `evptest` and `testenc` now on
+  the AES-NI and CLMUL paths). `openssl speed -elapsed -evp`, 16 KB blocks, one `openssl.exe` with
+  the old and the new `libcrypto.dll`: aes-128-gcm 205 to 4,717 MB/s, aes-256-gcm 160 to 4,210
+  MB/s, aes-128-ctr 263 to 16,263 MB/s. vcpkg applies the patch (`Install-VcpkgDependencies.ps1
+  -Architecture x64`). SFTP of a 512 MiB file over the loopback, between the installed 10.5.2.0
+  (port 22, its own client) and this repository's binaries with that `libcrypto.dll` (a second
+  `sshd` run by the same user on 127.0.0.1:2222, its own client), median of 3 runs in each of two
+  interleaved rounds, MB/s upload / download:
+
+  | Cipher | 10.5.2.0 | With the patch |
+  |---|---|---|
+  | `aes128-gcm@openssh.com` | 154 / 162, 153 / 157 | 466 / 559, 507 / 635 |
+  | `aes256-gcm@openssh.com` | 125 / 126, 119 / 125 | 510 / 428, 494 / 569 |
+  | `aes256-ctr` | 144 / 153, 142 / 135 | 500 / 484, 500 / 460 |
+  | `chacha20-poly1305@openssh.com` | 298 / 284, 294 / 276 | 292 / 321, 290 / 329 |
+
+  A patched client with the unpatched server, and the other way round, transferred every file byte
+  for byte with each AES cipher. With AES this fast, `ssh` and `sshd-session` each use about 0.8 s
+  of CPU per 512 MiB, most of it outside the cipher. Larger buffers for the pipes between
+  `sshd-session` and `sftp-server` (64 KiB instead of 4 KiB) were measured and left out: interleaved,
+  505 / 582 MB/s with 4 KiB and 502 / 530 MB/s with 64 KiB. Larger SFTP requests (`-B 261120`) and
+  more of them (`-R 256`) did not help either.
+
+Installer:
+
+- `preinstall.ps1` puts a new `Port` line before the sections that OpenSSH Server PN Manager keeps
+  in `sshd_config` under both names (the Authentication tab's rules, under the new and the earlier
+  name, and the new section of SFTP-only accounts), as it did before the first `Match` block.
+  `tests\preinstall.Tests.ps1`: three new cases; 120 checks pass on PowerShell 5.1 and with
+  `-Version 2`.
+
+OpenSSH Server PN Manager 2.0.0:
+
+- **The project's name.** The console is now OpenSSH Server PN Manager: `OpenSSHServerPNManager.exe`
+  in `tools/OpenSSH-Server-PN-Manager`, product OpenSSH Server PN, company and copyright patnawa in
+  the file properties. What the earlier name left on a machine carries over: the preferences
+  (copied once from `HKCU\Software\OpenSSH Server Manager`), the Authentication tab's rules section
+  (its earlier start line is read, and written under the new name at the next *Apply*), and the
+  firewall block list (the rule "OpenSSH Server Manager: blocked addresses" is still read and kept
+  up to date). The version is 2.0.0 because the file name changed.
+- **About**: product, version, publisher, licence, the server's paths and versions, links to this
+  project's website, releases and issue tracker only (the link to the Win32-OpenSSH wiki is gone),
+  and *Copy details* for a problem report.
+- **SFTP tab.** SFTP on or off (`Subsystem sftp`); *Log file transfers* (`sftp-server -l INFO`: the
+  *OpenSSH/Operational* log gets each file opened and closed with its bytes, each rename, removal,
+  new folder and refused request, with the account); and **SFTP-only accounts and groups**, one
+  marked section of `Match` blocks like the Authentication tab's: `ForceCommand internal-sftp`,
+  terminals and every kind of forwarding off, optionally `ChrootDirectory` (a folder the account
+  sees as `/`, `%u` for one folder per account) and download only (`-R`). *Apply* creates the
+  folders of user rules and shared group folders with SYSTEM, Administrators and the account only
+  (parent folders it has to create with SYSTEM and Administrators only, so that no account can
+  create the folder of another next to its own), or adds the account to an existing folder and
+  names in its question an owner or other accounts that can open it. It warns, with *No* as the
+  default, when the rules would make your own account SFTP-only. Then it saves with the preview,
+  `sshd -t`, the backup and the keep-or-restore question. *Show its SFTP access* works out with `sshd -T` what the settings
+  mean for any account. A section edited by hand is left alone; SFTP cannot be switched off while
+  there are SFTP-only accounts.
+- Sessions: an *Activity* column (SFTP, scp, or the shell or command a session runs, from the
+  programs it started) and the number of SFTP sessions. Dashboard: an SFTP line. Logs: *SFTP
+  transfers*. Hardening: *SFTP* (its program exists, transfers logged) and *SFTP-only accounts*
+  (the folder of every user rule exists); *Fix selected* opens the SFTP tab.
+- Fix: the firewall rule of the package ("OpenSSH SSH Server Preview (sshd)") missing, the rule the
+  manager creates in its place ("OpenSSH SSH Server (sshd)") was never found: through `dynamic`, the
+  COM error of a missing rule arrives as `FileNotFoundException`, not `COMException`, and ended the
+  lookup. The block list dialog had the same fault.
+- Tests: `--unittest` 51 (7 new: SFTP logging, rules written and read back, a hand-edited section,
+  folders and `%u`/`%h`, the earlier name's rules section, session activity, file properties and
+  links); `--selftest` 96 (also `sshd -T` of SFTP-only rules, the permissions of the folders it makes, and SFTP changes kept until *Apply*);
+  `--authtest` with four SFTP settings and real transfers: SFTP for everyone (8 MiB each way, byte
+  for byte), an SFTP-only account confined to its folder (the files land there; `cd ..`, `/../..`,
+  a drive letter and an upload outside are refused; commands are refused), a download-only group
+  with a shared folder, and SFTP off. Verified here, not elevated: `--unittest` 51 of 51;
+  `--selftest` 93 of 96, the 3 that need administrator rights failing as expected; `--screenshot`.
+  The SFTP-only settings exactly as the tab writes them were tried by hand against a second `sshd`
+  run by the same user: `sshd -t` and `sshd -T` accept them; in the folder, upload, `mkdir`, rename
+  and download work and every escape fails; download only refuses upload, removal, `mkdir` and
+  rename; a command gets *This service allows sftp connections only.*; the event log has the
+  transfer lines.
+
 ## 10.5.2.0 (2026-09-26)
 
 The build that repairs the ARM64 package and makes the installer work on Windows 7 and Windows
@@ -448,7 +549,7 @@ and the source is split into one file per area.
 |---|---|---|
 | `OpenSSHServerManager.exe` | 254,464 bytes | `D74BC261405C3AEAD4958DB1F73A04CD037A2D81F026682CD21AA982C9FB6E35` |
 
-The executable is now committed in `tools/OpenSSH-Server-Manager/bin/`. With the Roslyn compiler
+The executable is now committed in `tools/OpenSSH-Server-PN-Manager/bin/`. With the Roslyn compiler
 the build is deterministic: two builds here gave the same hash.
 
 Fixed:
@@ -886,7 +987,7 @@ maintainers' CI covers those when the merges land upstream.
 
 ## OpenSSH Server Manager 1.1.0 (2026-09-25)
 
-First release of the management GUI in `tools/OpenSSH-Server-Manager` (see its README for the
+First release of the management GUI in `tools/OpenSSH-Server-PN-Manager` (see its README for the
 function list and safety design). 1.1.0 adds the Sessions tab (live `sshd-session.exe`
 processes with owning user, start time and duration, established connections with peer address,
 disconnect one or all) on top of the 1.0.0 feature set.

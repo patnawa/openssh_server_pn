@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: SelfTest
+// OpenSSH Server PN Manager: SelfTest
 
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     /// <summary>--selftest and --unittest.</summary>
     internal static class SelfTest
@@ -115,8 +115,8 @@ namespace OpenSSHServerManager
                 var xml = SystemTasks.TaskXml("d", "c", "a", true);
                 if (!xml.Contains("<BootTrigger><Enabled>true</Enabled><Delay>PT2M</Delay></BootTrigger>")) throw new Exception("the startup trigger has no delay: " + xml);
                 if (SystemTasks.TaskXml("d", "c", "a", false).Contains("Trigger")) throw new Exception("a one-off task got a trigger");
-                var s = SystemTasks.ProfileRemovalScript("S-1-5-21-1-2-3-1001", "OpenSSH Server Manager remove test profile o'x");
-                foreach (var part in new[] { "-ErrorAction Stop", "if ($p[0].Loaded) { exit 1 }", "Start-Sleep -Seconds 20", "exit 1", "'OpenSSH Server Manager remove test profile o''x'" })
+                var s = SystemTasks.ProfileRemovalScript("S-1-5-21-1-2-3-1001", "OpenSSH Server PN Manager remove test profile o'x");
+                foreach (var part in new[] { "-ErrorAction Stop", "if ($p[0].Loaded) { exit 1 }", "Start-Sleep -Seconds 20", "exit 1", "'OpenSSH Server PN Manager remove test profile o''x'" })
                     if (!s.Contains(part)) throw new Exception("the script lacks: " + part);
                 return null;
             });
@@ -600,6 +600,155 @@ namespace OpenSSHServerManager
                 if (new WizardPlan { Port = 22, Profiles = 3 }.Describe(22, 3, true).Count != 0) throw new Exception("no change described as a change");
                 return null;
             });
+            UnitSince20(test);
+        }
+
+        /// <summary>The configuration of a default installation, with the rules section of the Authentication tab when auth is given.</summary>
+        private static SshdConfig DefaultLike(string authBegin = null)
+        {
+            var l = new List<string> { "#Port 22", "AuthorizedKeysFile\t.ssh/authorized_keys", "", "# override default of no subsystems", "Subsystem\tsftp\tsftp-server.exe", "" };
+            if (authBegin != null) l.AddRange(new[] { authBegin, AuthConfig.RegionNote, "Match User alice", "\tPasswordAuthentication no", "\tPubkeyAuthentication yes", "\tGSSAPIAuthentication no", "\tAuthenticationMethods any", "Match all", AuthConfig.RegionEnd, "" });
+            l.AddRange(new[] { "Match Group administrators", "       AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys" });
+            return new SshdConfig { Lines = l };
+        }
+
+        /// <summary>Unit tests of what manager 2.0.0 added: SFTP, the new name, session activity.</summary>
+        private static void UnitSince20(Action<string, Func<string>> test)
+        {
+            test("SFTP: transfer logging on and off keeps the program and its other options", () =>
+            {
+                var cases = new[]
+                {
+                    new[] { "sftp-server.exe", "on", "sftp-server.exe -l INFO" },
+                    new[] { "sftp-server.exe -l INFO", "off", "sftp-server.exe" },
+                    new[] { "sftp-server.exe -f LOCAL0 -lVERBOSE", "on", "sftp-server.exe -f LOCAL0 -lVERBOSE" },
+                    new[] { "sftp-server.exe -f LOCAL0 -lVERBOSE", "off", "sftp-server.exe -f LOCAL0" },
+                    new[] { "\"C:/Program Files/OpenSSH/sftp-server.exe\" -l ERROR", "on", "\"C:/Program Files/OpenSSH/sftp-server.exe\" -l INFO" },
+                    new[] { "internal-sftp", "on", "internal-sftp -l INFO" },
+                };
+                foreach (var c in cases)
+                {
+                    var got = SftpConfig.WithLogging(c[0], c[1] == "on");
+                    if (got != c[2]) throw new Exception("[" + c[0] + "] " + c[1] + ": [" + got + "], expected [" + c[2] + "]");
+                    if (SftpConfig.LogsTransfers(got) != (c[1] == "on")) throw new Exception("[" + got + "] is not read back as logging " + c[1]);
+                }
+                if (SftpConfig.LogsTransfers("sftp-server.exe -l ERROR") || SftpConfig.LogsTransfers("sftp-server.exe") || !SftpConfig.LogsTransfers("sftp-server.exe -l debug3")) throw new Exception("log levels misread");
+                return null;
+            });
+            test("SFTP: SFTP-only rules are written, read back, and put before the other Match blocks", () =>
+            {
+                var c = DefaultLike();
+                var rules = new List<SftpRule>
+                {
+                    new SftpRule { Name = "alice", Folder = "C:\\SFTP\\%u" },
+                    new SftpRule { IsGroup = true, Name = "sftp users", Folder = "D:\\Shared Files\\in", ReadOnly = true },
+                    new SftpRule { Name = "contoso\\bob" },
+                };
+                SftpConfig.Apply(c, true, true, rules);
+                var st = SftpConfig.Read(c);
+                if (st.RulesProblem != null) throw new Exception("the section as written is not readable: " + st.RulesProblem);
+                if (st.Rules.Count != 3 || st.Rules.Where((r, i) => !r.SameAs(rules[i])).Any()) throw new Exception("read back: " + string.Join("; ", st.Rules.Select(r => r.Kind + " " + r.Name + " " + r.Describe())));
+                if (st.Subsystem != "sftp-server.exe -l INFO" || !st.LogTransfers) throw new Exception("subsystem " + st.Subsystem);
+                int begin = c.Lines.IndexOf(SftpConfig.RegionBegin), admins = c.Lines.FindIndex(l => l.StartsWith("Match Group administrators"));
+                if (begin < 0 || admins < begin) throw new Exception("the section is not before the other Match blocks");
+                foreach (var want in new[] { "Match Group \"sftp users\"", "\tForceCommand internal-sftp -l INFO -R", "\tChrootDirectory \"D:\\Shared Files\\in\"", "\tChrootDirectory C:\\SFTP\\%u", "\tForceCommand internal-sftp -l INFO", "\tChrootDirectory none", "\tAllowStreamLocalForwarding no", "Match all" })
+                    if (!c.Lines.Contains(want)) throw new Exception("missing line [" + want + "]:\n" + c.Text);
+                var once = c.Text;
+                SftpConfig.Apply(c, true, true, rules);
+                if (c.Text != once) throw new Exception("applying the same settings again changed the file");
+                c.Set("MaxAuthTries", "4");
+                if (c.Lines.IndexOf("MaxAuthTries 4") > c.Lines.IndexOf(SftpConfig.RegionBegin) || SftpConfig.Read(c).RulesProblem != null) throw new Exception("a new top-level setting landed in the section");
+                SftpConfig.Apply(c, true, false, new List<SftpRule>());
+                if (c.Text.Contains(SftpConfig.RegionBegin) || c.Lines.Contains("Match all") || c.GetSubsystem("sftp") != "sftp-server.exe") throw new Exception("no rules and no logging left something behind:\n" + c.Text);
+                return null;
+            });
+            test("SFTP: a section edited by hand is left alone, SFTP off with SFTP-only accounts is refused", () =>
+            {
+                var c = DefaultLike();
+                SftpConfig.Apply(c, true, false, new List<SftpRule> { new SftpRule { Name = "alice", Folder = "C:\\SFTP\\%u" } });
+                // Each edit replaces a line the tab wrote (old != null) or adds one before "Match all".
+                var edits = new[] { new[] { "\tAllowTcpForwarding no", "\tAllowTcpForwarding yes" }, new[] { "\tForceCommand internal-sftp", "\tForceCommand internal-sftp -d /in" }, new[] { null, "\tPasswordAuthentication no" }, new[] { "Match User alice", "Match User alice,bob" } };
+                foreach (var e in edits)
+                {
+                    var h = c.Copy(); var edit = e[1];
+                    if (e[0] != null) h.Lines[h.Lines.IndexOf(e[0])] = edit; else h.Lines.Insert(h.Lines.IndexOf("Match all"), edit);
+                    var st = SftpConfig.Read(h);
+                    if (st.RulesProblem == null) throw new Exception("[" + edit.Trim() + "] was not noticed");
+                    var before = h.Text;
+                    try { SftpConfig.Apply(h, true, false, new List<SftpRule>()); throw new Exception("rules were written over a section edited by hand"); }
+                    catch (ConfigException) { }
+                    try { SftpConfig.Apply(h.Copy(), false, false, null); throw new Exception("SFTP was switched off under a hand-edited section of SFTP-only accounts"); }
+                    catch (ConfigException) { }
+                    SftpConfig.Apply(h, true, true, null); // the subsystem alone can still change
+                    if (!h.Lines.Contains(edit) || h.GetSubsystem("sftp") != "sftp-server.exe -l INFO") throw new Exception("the hand-edited section or the subsystem: " + h.Text);
+                }
+                try { SftpConfig.Apply(c.Copy(), false, false, SftpConfig.Read(c).Rules); throw new Exception("SFTP was switched off with SFTP-only accounts"); }
+                catch (ConfigException) { }
+                var off = c.Copy(); SftpConfig.Apply(off, false, false, new List<SftpRule>());
+                if (off.GetSubsystem("sftp") != null || SftpConfig.Read(off).Enabled) throw new Exception("SFTP off left the subsystem");
+                if (SftpConfig.Read(DefaultLike()).OtherMatchSettings.Count != 0) throw new Exception("the default configuration was reported to force a command");
+                var other = DefaultLike(); other.Lines.Add("Match User carol"); other.Lines.Add("\tForceCommand internal-sftp");
+                if (SftpConfig.Read(other).OtherMatchSettings.Count != 1) throw new Exception("a ForceCommand in another Match block was not reported");
+                return null;
+            });
+            test("SFTP: folders with a drive letter, %u and %h as sshd works them out", () =>
+            {
+                foreach (var bad in new[] { "", "SFTP\\%u", "\\\\server\\share\\%u", "C:SFTP", "C:\\SFTP\\%x", "C:\\a\"b", " C:\\SFTP", "C:\\a*b", "C:\\a:b", "C:\\%h\\x", "%hx", "%h\\a\\%h" })
+                    if (SftpConfig.FolderError(bad) == null) throw new Exception("accepted [" + bad + "]");
+                foreach (var good in new[] { "C:\\SFTP\\%u", "d:/data/%u/in", "E:\\Shared Files", "%h\\sftp", "%h", "C:\\100%%" })
+                    if (SftpConfig.FolderError(good) != null) throw new Exception("refused [" + good + "]: " + SftpConfig.FolderError(good));
+                var cases = new[] { new[] { "C:\\SFTP\\%u", "contoso\\bob", "C:\\SFTP\\contoso\\bob" }, new[] { "C:/x/%%/%u", "bob", "C:\\x\\%\\bob" }, new[] { "%h\\sftp", "bob", "C:\\Users\\bob\\sftp" } };
+                foreach (var e in cases)
+                {
+                    var got = SftpConfig.ExpandFolder(e[0], e[1], "C:\\Users\\bob");
+                    if (got != e[2]) throw new Exception(e[0] + " for " + e[1] + ": " + got);
+                }
+                if (SftpConfig.ExpandFolder("%h\\sftp", "bob", null) != null) throw new Exception("%h without a profile folder was worked out");
+                return null;
+            });
+            test("new name: the rules section of OpenSSH Server Manager is read and rewritten under the new name", () =>
+            {
+                var c = DefaultLike(AuthConfig.LegacyRegionBegin);
+                var st = AuthConfig.Read(c);
+                if (st.RulesProblem != null || st.Rules.Count != 1 || st.Rules[0].Name != "alice") throw new Exception("the earlier section was not read: " + (st.RulesProblem ?? st.Rules.Count + " rule(s)"));
+                c.Set("MaxAuthTries", "4");
+                if (c.Lines.IndexOf("MaxAuthTries 4") > c.Lines.IndexOf(AuthConfig.LegacyRegionBegin)) throw new Exception("a new top-level setting landed in the earlier section");
+                AuthConfig.Apply(c, st.Global, st.Rules);
+                if (c.Lines.Contains(AuthConfig.LegacyRegionBegin) || c.Lines.Count(l => l == AuthConfig.RegionBegin) != 1) throw new Exception("not rewritten under the new name:\n" + c.Text);
+                SftpConfig.Apply(c, true, true, new List<SftpRule> { new SftpRule { Name = "carol" } });
+                if (AuthConfig.Read(c).RulesProblem != null || SftpConfig.Read(c).RulesProblem != null) throw new Exception("the two sections disturb each other:\n" + c.Text);
+                AuthConfig.Apply(c, st.Global, new List<AuthRule>());
+                if (SftpConfig.Read(c).Rules.Count != 1 || c.Text.Contains(AuthConfig.RegionBegin)) throw new Exception("removing the login-method rules touched the SFTP section:\n" + c.Text);
+                return null;
+            });
+            test("sessions: the activity from the programs a session started, SFTP through the shell", () =>
+            {
+                var cases = new Dictionary<string, string[]> { { "SFTP", new[] { "conhost.exe", "sftp-server.exe" } }, { "scp", new[] { "scp.exe" } }, { "cmd.exe", new[] { "cmd.exe", "conhost.exe" } }, { "", new string[0] }, { "powershell.exe, whoami.exe", new[] { "powershell.exe", "whoami.exe", "powershell.exe" } } };
+                foreach (var kv in cases) { var got = Sessions.Activity(kv.Value); if (got != kv.Key) throw new Exception(string.Join(",", kv.Value) + ": [" + got + "], expected [" + kv.Key + "]"); }
+                // As seen on 10.5.2.0: sshd-session.exe (SYSTEM) > sshd-session.exe (the user) > cmd.exe > sftp-server.exe.
+                Func<int, int, string, Sessions.ProcessEntry> P = (pid, parent, name) => new Sessions.ProcessEntry { Pid = pid, ParentPid = parent, Name = name };
+                var all = new List<Sessions.ProcessEntry>
+                {
+                    P(10, 4, "sshd.exe"), P(100, 10, "sshd-session.exe"), P(101, 100, "sshd-session.exe"), P(200, 101, "cmd.exe"), P(300, 200, "sftp-server.exe"),
+                    P(110, 10, "sshd-session.exe"), P(111, 110, "sshd-session.exe"), P(210, 111, "cmd.exe"), P(211, 111, "conhost.exe"),
+                    P(400, 4, "explorer.exe"), P(401, 400, "sftp-server.exe"), // an sftp-server.exe that no session started
+                    P(500, 500, "loop.exe"), P(501, 502, "a.exe"), P(502, 501, "b.exe"), // a process that is its own parent, and a cycle (reused ids)
+                };
+                if (Sessions.Activity(Sessions.Descendants(101, all)) != "SFTP") throw new Exception("SFTP under cmd.exe: " + Sessions.Activity(Sessions.Descendants(101, all)));
+                if (Sessions.Activity(Sessions.Descendants(111, all)) != "cmd.exe") throw new Exception("a shell: " + Sessions.Activity(Sessions.Descendants(111, all)));
+                if (Sessions.Descendants(501, all).Count > 1 || Sessions.Descendants(500, all).Count != 0) throw new Exception("a cycle of parent ids was followed");
+                if (Sessions.SftpSessionCount(all) != 1) throw new Exception("SFTP sessions counted: " + Sessions.SftpSessionCount(all));
+                return null;
+            });
+            test("new name: file properties, publisher and links of this project only", () =>
+            {
+                var fvi = FileVersionInfo.GetVersionInfo(typeof(SelfTest).Assembly.Location);
+                if (fvi.ProductVersion != Program.AppVersion || fvi.FileDescription != Program.AppName || fvi.CompanyName != Program.Publisher || fvi.LegalCopyright != Program.Copyright)
+                    throw new Exception("file properties: " + fvi.FileDescription + ", " + fvi.ProductVersion + ", " + fvi.CompanyName + ", " + fvi.LegalCopyright);
+                if (Path.GetFileName(typeof(SelfTest).Assembly.Location) != "OpenSSHServerPNManager.exe") throw new Exception("the executable is called " + Path.GetFileName(typeof(SelfTest).Assembly.Location));
+                foreach (var u in new[] { Program.Website, Program.SupportUrl, Program.ReleasesUrl }) if (!u.StartsWith("https://github.com/patnawa/openssh_server_pn")) throw new Exception("a link to another project: " + u);
+                return fvi.FileDescription + " " + fvi.ProductVersion + ", " + fvi.LegalCopyright;
+            });
         }
 
         private static void Server(Action<string, Func<string>> test, string tmpDir)
@@ -668,6 +817,62 @@ namespace OpenSSHServerManager
             test("hardening checks", () => Hardening.Run(SshdConfig.Load()).Count + " checks");
             test("service PID lookup", () => { var s = Services.Status("sshd"); return s.Status == "Running" ? (s.Pid > 0 ? "PID " + s.Pid : "running but no PID") : "service " + s.Status; });
             test("profile list (registry)", () => { var p = Keys.UserProfiles(); if (p.Count == 0) throw new Exception("no user profiles found"); var sid = Keys.SidOfProfile(p[0]); return p.Count + " profile(s), first " + p[0] + (sid == null ? " (SID unknown)" : " " + sid.Value); });
+            test("SFTP: sshd reads the SFTP-only rules as the SFTP tab writes them (sshd -T)", () =>
+            {
+                if (!Elevation.IsAdministrator()) return "skipped: not elevated";
+                string err;
+                var me = Accounts.Canonical(KeyGen.LoginName(), false, out err);
+                if (me == null) throw new Exception(err);
+                var baseCfg = SshdConfig.Load();
+                int port = baseCfg.EffectivePort;
+                var p = Path.Combine(tmpDir, "sftp.conf");
+                Func<List<SftpRule>, Dictionary<string, string>> eff = rules =>
+                {
+                    var c = new SshdConfig { Lines = baseCfg.Lines.ToList(), NewLine = baseCfg.NewLine, Path = p };
+                    // The SFTP tab refuses a hand-edited section; a live file with one is not this test's subject.
+                    if (SftpConfig.Read(c).RulesProblem != null) c = DefaultLike();
+                    SftpConfig.Apply(c, true, true, rules);
+                    File.WriteAllText(p, c.Text, new UTF8Encoding(false));
+                    var t = Ssh.TestConfig(p); if (!t.Ok) throw new Exception("sshd -t: " + t.Output);
+                    var lines = AuthConfig.EffectiveLinesFor(me, p, port, out err);
+                    if (lines == null) throw new Exception(err);
+                    var d = new Dictionary<string, string>();
+                    foreach (var kv in lines) if (!d.ContainsKey(kv.Key) || kv.Key == "subsystem" && kv.Value.StartsWith("sftp ")) d[kv.Key] = kv.Value;
+                    return d;
+                };
+                Func<Dictionary<string, string>, string, string> v = (d, k) => { string x; return d.TryGetValue(k, out x) ? x : ""; };
+                var mine = eff(new List<SftpRule> { new SftpRule { Name = me, Folder = "C:\\SFTP Test\\%u", ReadOnly = true } });
+                if (v(mine, "forcecommand") != "internal-sftp -l INFO -R") throw new Exception("forcecommand " + v(mine, "forcecommand"));
+                if (v(mine, "chrootdirectory") != "C:\\SFTP Test\\%u") throw new Exception("chrootdirectory " + v(mine, "chrootdirectory"));
+                if (v(mine, "subsystem") != "sftp sftp-server.exe -l INFO") throw new Exception("subsystem " + v(mine, "subsystem"));
+                foreach (var k in SftpConfig.Locks) if (v(mine, k.ToLowerInvariant()) != "no") throw new Exception(k + " " + v(mine, k.ToLowerInvariant()));
+                var other = eff(new List<SftpRule> { new SftpRule { Name = "osm-no-such-user", Folder = "C:\\SFTP\\%u" } });
+                if (v(other, "forcecommand").StartsWith("internal-sftp") || v(other, "permittty") == "no") throw new Exception("a rule for another account applied");
+                return me + ": " + v(mine, "forcecommand") + ", " + v(mine, "chrootdirectory");
+            });
+            test("SFTP: a folder made for an account is its own, and the parents made for it are closed", () =>
+            {
+                if (!Elevation.IsAdministrator()) return "skipped: not elevated";
+                var users = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
+                var root = Path.Combine(tmpDir, "sftp-root"); var leaf = Path.Combine(root, "contoso", "bob");
+                SftpConfig.PrepareFolder(leaf, users, false);
+                Func<string, List<string>> grants = p => Directory.GetAccessControl(p).GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+                    .Where(r => r.AccessControlType == AccessControlType.Allow).Select(r => ((SecurityIdentifier)r.IdentityReference).Value + ":" + r.FileSystemRights).ToList();
+                if (!Directory.GetAccessControl(leaf).GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().Any(r => users.Equals(r.IdentityReference) && (r.FileSystemRights & FileSystemRights.Modify) == FileSystemRights.Modify))
+                    throw new Exception("the account has no modify rights on its folder: " + string.Join(", ", grants(leaf)));
+                foreach (var p in new[] { root, Path.Combine(root, "contoso") })
+                {
+                    var g = grants(p);
+                    if (g.Any(x => x.StartsWith(users.Value + ":"))) throw new Exception("the account got rights on the parent " + p + ": " + string.Join(", ", g));
+                    if (!Directory.GetAccessControl(p).AreAccessRulesProtected) throw new Exception("the parent " + p + " inherits permissions");
+                }
+                if (SftpConfig.PrepareFolder(leaf, users, false).IndexOf("exists, with access", StringComparison.Ordinal) < 0) throw new Exception("a second run changed the folder");
+                var open = Path.Combine(tmpDir, "sftp-open"); Directory.CreateDirectory(open);
+                var ds = Directory.GetAccessControl(open); ds.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null), FileSystemRights.ReadAndExecute, AccessControlType.Allow)); Directory.SetAccessControl(open, ds);
+                var note = SftpConfig.FolderNote(open, users);
+                if (note == null || note.IndexOf("also open to", StringComparison.Ordinal) < 0) throw new Exception("a folder open to Everyone gave no note: " + note);
+                return note;
+            });
             test("login methods: sshd applies the rules in order (sshd -T)", () =>
             {
                 if (!Elevation.IsAdministrator()) return "skipped: not elevated";
@@ -816,6 +1021,25 @@ namespace OpenSSHServerManager
                 });
                 return null;
             });
+            test("window: SFTP changes wait for Apply, and survive a reload unless the file's SFTP settings changed", () =>
+            {
+                WithTestWindow(tmpDir, "Port 22\nSubsystem\tsftp\tsftp-server.exe\n", f =>
+                {
+                    if (f.SftpEditedForTest()) throw new Exception("a fresh SFTP tab reports changes");
+                    f.ShowSftpExampleForTest(); // logging on and two SFTP-only rules, in the window only
+                    if (!f.SftpEditedForTest() || !f.UnsavedTabsForTest().Contains("the SFTP tab") || !f.TabNamesForTest().Contains("SFTP *")) throw new Exception("the SFTP changes are not marked as not applied");
+                    if (File.ReadAllText(Ssh.ConfigPath).Contains(SftpConfig.RegionBegin) || f.WorkingValueForTest("Port") != "22") throw new Exception("an edit on the SFTP tab reached the file or the working configuration");
+                    var cand = SftpConfig.Read(f.SftpCandidateForTest());
+                    if (cand.Rules.Count != 2 || !cand.LogTransfers) throw new Exception("Apply would write " + cand.Rules.Count + " rule(s), logging " + cand.LogTransfers);
+                    File.WriteAllText(Ssh.ConfigPath, "Port 2222\nSubsystem\tsftp\tsftp-server.exe\n", new UTF8Encoding(false)); // another setting changed
+                    f.ReloadFromFileForTest();
+                    if (!f.SftpEditedForTest() || f.SftpCandidateForTest().Get("Port") != "2222") throw new Exception("the SFTP changes were lost, or Apply would not start from the reloaded file");
+                    File.WriteAllText(Ssh.ConfigPath, "Port 2222\n", new UTF8Encoding(false)); // SFTP switched off in the file
+                    f.ReloadFromFileForTest();
+                    if (f.SftpEditedForTest()) throw new Exception("the tab kept its changes over SFTP settings changed in the file");
+                });
+                return null;
+            });
             test("window: no clipped text at 100% and 150%", () =>
             {
                 var report = new List<string>();
@@ -832,7 +1056,7 @@ namespace OpenSSHServerManager
             {
                 if (!Elevation.IsAdministrator()) return "skipped: not elevated";
                 // A disabled inbound rule of its own (it opens no port), removed at the end.
-                var name = "OpenSSH Server Manager selftest " + Guid.NewGuid().ToString("N").Substring(0, 8);
+                var name = "OpenSSH Server PN Manager selftest " + Guid.NewGuid().ToString("N").Substring(0, 8);
                 dynamic policy = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2"));
                 dynamic rule = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule"));
                 rule.Name = name; rule.Direction = 1; rule.Action = 1; rule.Enabled = false; rule.Protocol = 6; rule.LocalPorts = "65001"; rule.Profiles = 2;
@@ -845,7 +1069,7 @@ namespace OpenSSHServerManager
                     if (!th.Join(60000)) throw new Exception("the lookup on a background thread took more than a minute");
                     foreach (var r in new[] { onWindowThread, onOther })
                         if (r == null || r.Enabled || r.Ports != "65001" || r.Profiles != 2) throw new Exception("rule read as " + (r == null ? "missing" : (r.Enabled ? "enabled" : "disabled") + ", ports " + r.Ports + ", profiles " + r.Profiles));
-                    if (Firewall.Get("OpenSSH Server Manager no such rule " + Guid.NewGuid().ToString("N")) != null) throw new Exception("a missing rule was found");
+                    if (Firewall.Get("OpenSSH Server PN Manager no such rule " + Guid.NewGuid().ToString("N")) != null) throw new Exception("a missing rule was found");
                     return "background thread: " + ms + " ms";
                 }
                 finally { try { policy.Rules.Remove(name); } catch { } }
@@ -966,7 +1190,7 @@ namespace OpenSSHServerManager
             test("profile removal task: script for a profile that does not exist", () =>
             {
                 // No profile has this SID: the script must end at once with 0 (and try to delete its task, which does not exist).
-                var script = SystemTasks.ProfileRemovalScript("S-1-5-21-1-2-3-999999", "OpenSSH Server Manager selftest no such task " + Guid.NewGuid().ToString("N").Substring(0, 8));
+                var script = SystemTasks.ProfileRemovalScript("S-1-5-21-1-2-3-999999", "OpenSSH Server PN Manager selftest no such task " + Guid.NewGuid().ToString("N").Substring(0, 8));
                 var ps = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
                 var sw = Stopwatch.StartNew();
                 var r = Proc.Run(ps, "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(script)), 60000);

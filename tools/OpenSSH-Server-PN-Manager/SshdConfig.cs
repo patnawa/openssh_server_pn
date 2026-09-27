@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: SshdConfig
+// OpenSSH Server PN Manager: SshdConfig
 
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     // ------------------------------------------------------------------------------------------
     // sshd_config model
@@ -72,10 +72,11 @@ namespace OpenSSHServerManager
         /// <summary>A copy to edit: changes reach the original only when the caller adopts the copy (after it was saved).</summary>
         public SshdConfig Copy() { return new SshdConfig { Lines = Lines.ToList(), NewLine = NewLine, Path = Path, LoadedHash = LoadedHash }; }
 
-        /// <summary>A Match line, or the start of the rules section of the Authentication tab (whose first line is a comment).</summary>
+        /// <summary>A Match line, or the start of the rules section of the Authentication tab or of the SFTP tab (whose first line is a comment).</summary>
         private static bool StartsMatchSection(string line)
         {
-            return Regex.IsMatch(line, @"^\s*Match\b", RegexOptions.IgnoreCase) || line.Trim() == AuthConfig.RegionBegin;
+            var t = line.Trim();
+            return Regex.IsMatch(line, @"^\s*Match\b", RegexOptions.IgnoreCase) || AuthConfig.IsRegionBegin(t) || t == SftpConfig.RegionBegin;
         }
 
         /// <summary>Index of the first line after the top-level settings (a Match block or the rules section), or Lines.Count.</summary>

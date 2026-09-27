@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: Theme
+// OpenSSH Server PN Manager: Theme
 
 using System;
 using System.Collections.Generic;
@@ -8,7 +8,7 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     // ------------------------------------------------------------------------------------------
     // Colours: light (the Windows colours), dark, and high contrast (the system colours, never dark)

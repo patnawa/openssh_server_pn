@@ -470,7 +470,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/scripts
-            tools/OpenSSH-Server-Manager
+            tools/OpenSSH-Server-PN-Manager
 
       - name: Download the MSI
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -510,12 +510,12 @@ jobs:
         id: install
         run: ./.github/scripts/Test-Installer.ps1 -Scenario Install
 
-      - name: Build OpenSSH Server Manager
+      - name: Build OpenSSH Server PN Manager
         id: manager
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
-          & ./tools/OpenSSH-Server-Manager/build.ps1 -OutDir (Join-Path $env:RUNNER_TEMP 'manager')
-          "MANAGER=$(Join-Path $env:RUNNER_TEMP 'manager/OpenSSHServerManager.exe')" | Add-Content -Path $env:GITHUB_ENV
+          & ./tools/OpenSSH-Server-PN-Manager/build.ps1 -OutDir (Join-Path $env:RUNNER_TEMP 'manager')
+          "MANAGER=$(Join-Path $env:RUNNER_TEMP 'manager/OpenSSHServerPNManager.exe')" | Add-Content -Path $env:GITHUB_ENV
 
       # A GUI-subsystem program: Invoke-ManagerTest waits for it and prints the report file it writes.
       - name: Manager --check
@@ -723,8 +723,8 @@ jobs:
       - name: SBOM and SHA256SUMS.txt
         run: |
           $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
-          Copy-Item tools/OpenSSH-Server-Manager/bin/OpenSSHServerManager.exe, tools/OpenSSH-Server-Manager/bin/OpenSSHServerManager.exe.config -Destination $dist
-          $files = "OpenSSH-Win64-v$env:VERSION.msi", "OpenSSH-Win32-v$env:VERSION.msi", "OpenSSH-ARM64-v$env:VERSION.msi", 'OpenSSHServerManager.exe', 'OpenSSHServerManager.exe.config'
+          Copy-Item tools/OpenSSH-Server-PN-Manager/bin/OpenSSHServerPNManager.exe, tools/OpenSSH-Server-PN-Manager/bin/OpenSSHServerPNManager.exe.config -Destination $dist
+          $files = "OpenSSH-Win64-v$env:VERSION.msi", "OpenSSH-Win32-v$env:VERSION.msi", "OpenSSH-ARM64-v$env:VERSION.msi", 'OpenSSHServerPNManager.exe', 'OpenSSHServerPNManager.exe.config'
           foreach ($f in $files) { if (-not (Test-Path -LiteralPath (Join-Path $dist $f))) { Write-Host "::error::$f is missing"; exit 1 } }
           $sbom = "OpenSSH-Server-PN-v$env:VERSION.cdx.json"
           $env:SOURCE_DATE_EPOCH = (git log -1 --format=%ct).Trim()
@@ -779,8 +779,8 @@ jobs:
         with:
           subject-path: |
             dist/*.msi
-            dist/OpenSSHServerManager.exe
-            dist/OpenSSHServerManager.exe.config
+            dist/OpenSSHServerPNManager.exe
+            dist/OpenSSHServerPNManager.exe.config
             dist/*.cdx.json
             dist/SHA256SUMS.txt
 

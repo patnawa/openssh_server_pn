@@ -37,7 +37,7 @@
 # - "fwsave" (deferred, LocalSystem; InstallExecute runs it before RemoveExistingProducts removes the
 #   old package): when a package of this series is installed (-Previous keep), writes the rule's
 #   LocalPorts, Profiles, Enabled and RemoteAddresses to HKLM\SOFTWARE\OpenSSH\Installer, value
-#   FirewallRule (only SYSTEM and Administrators can write there). The rule of OpenSSH Server Manager
+#   FirewallRule (only SYSTEM and Administrators can write there). The rule of OpenSSH Server PN Manager
 #   counts when the package's rule is missing. On a fresh install, only removes a leftover record.
 # - "firewall" (deferred, after the WiX firewall action has created the rule): sets the rule.
 #   Networks: FIREWALL_PROFILES, else the saved ones, else all on Windows Server and Domain plus
@@ -221,11 +221,15 @@ function Register-MitigationTask {
 #region firewall   (openssh.wixproj leaves this part out of the script of phases "pre" and "sessions")
 # ---- firewall rule settings ----
 $ruleName = 'OpenSSH SSH Server Preview (sshd)'   # FirewallException/@Name in server.wxs
-$altRuleName = 'OpenSSH SSH Server (sshd)'        # OpenSSH Server Manager creates this one when the rule above is missing
+$altRuleName = 'OpenSSH SSH Server (sshd)'        # OpenSSH Server PN Manager creates this one when the rule above is missing
 $recordKey = 'HKLM\SOFTWARE\OpenSSH\Installer'
 $recordValue = 'FirewallRule'
-# First line of the rules section that OpenSSH Server Manager keeps in sshd_config (Auth.cs, RegionBegin).
-$managerRegion = '# Login methods by user and group, managed on the Authentication tab of OpenSSH Server Manager.'
+# First lines of the sections that OpenSSH Server PN Manager keeps in sshd_config before its Match blocks
+# (Auth.cs and Sftp.cs, RegionBegin), and that of its earlier name, OpenSSH Server Manager (1.6.0 and older).
+$managerRegions = @(
+    '# Login methods by user and group, managed on the Authentication tab of OpenSSH Server Manager.',
+    '# Login methods by user and group, managed on the Authentication tab of OpenSSH Server PN Manager.',
+    '# SFTP-only accounts, managed on the SFTP tab of OpenSSH Server PN Manager.')
 # The functions below return values and write no log lines (Log output would become part of the
 # value); the phases log.
 
@@ -307,7 +311,7 @@ function Get-InboundRule($policy, [string]$name) {
     return $null
 }
 
-# The settings of the sshd rule as a record hashtable, or $null. The rule of OpenSSH Server Manager
+# The settings of the sshd rule as a record hashtable, or $null. The rule of OpenSSH Server PN Manager
 # counts when the package's rule is missing, unless it allows the in-box sshd (that rule belongs to
 # the Windows capability).
 function Read-FirewallRecord($policy) {
@@ -351,7 +355,7 @@ function Remove-Record { & $reg delete $recordKey /f 2>&1 | Out-Null }
 
 # ---- sshd_config ----
 
-# sshd_config text with "Port <port>", following OpenSSH Server Manager (SshdConfig.SetFirst): the
+# sshd_config text with "Port <port>", following OpenSSH Server PN Manager (SshdConfig.SetFirst): the
 # first top-level Port line gets the port (a comment at its end stays), else the first "#Port"
 # example (sshd_config_default has "#Port 22"; prose such as "# Port forwarding" has a space after
 # the #), else the line goes before the first Include line or the first Match block. Further Port
@@ -365,7 +369,7 @@ function Set-SshdConfigPortText([string]$text, [int]$port) {
     if ($final) { $lines.RemoveAt($lines.Count - 1) }
     $new = 'Port ' + $port
     $end = $lines.Count
-    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*Match(\s|$)' -or $lines[$i].Trim() -eq $managerRegion) { $end = $i; break } }
+    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*Match(\s|$)' -or $managerRegions -ccontains $lines[$i].Trim()) { $end = $i; break } }
     $at = -1
     for ($i = 0; $i -lt $end -and $at -lt 0; $i++) {
         if ($lines[$i] -match '^\s*Port(\s*=\s*|\s+)[^#]*(#.*)?$') {
@@ -394,7 +398,7 @@ function Get-SshdConfigPorts([string]$text) {
     $ports = @()
     $listen = @()
     foreach ($l in ($text -split "`r?`n")) {
-        if ($l -match '^\s*Match(\s|$)' -or $l.Trim() -eq $managerRegion) { break }
+        if ($l -match '^\s*Match(\s|$)' -or $managerRegions -ccontains $l.Trim()) { break }
         if ($l -match '^\s*Port(?:\s*=\s*|\s+)([0-9]{1,5})\s*(#.*)?$') { $p = [string][int]$matches[1]; if ($ports -notcontains $p) { $ports += $p } }
         elseif ($l -match '^\s*ListenAddress(?:\s*=\s*|\s+)(?:\[[^\]]*\]|[^\s:#\[]+):([0-9]{1,5})(\s|#|$)') { $p = [string][int]$matches[1]; if ($listen -notcontains $p) { $listen += $p } }
     }
@@ -404,7 +408,7 @@ function Get-SshdConfigPorts([string]$text) {
 }
 
 # sshd_config.bak.yyyyMMdd-HHmmss, with -2, -3 ... when a backup of that second exists already
-# (the names OpenSSH Server Manager uses, so its Restore dialog lists them).
+# (the names OpenSSH Server PN Manager uses, so its Restore dialog lists them).
 function Get-BackupPath([string]$path, [DateTime]$now) {
     $b = $path + '.bak.' + $now.ToString('yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture)
     if (-not (Test-Path -LiteralPath $b)) { return $b }
@@ -588,7 +592,7 @@ if ($Phase -eq 'port') {
         $res = Set-RuleSettings (New-Object -ComObject HNetCfg.FwPolicy2) $ruleName @{ LocalPorts = ($ports -join ',') }
         if ($res['Rules'] -gt 0 -and $res['Errors'].Count -eq 0) { $fwNote = ' The firewall rule allows port ' + ($ports -join ',') + ' again.' }
     } catch { }
-    Log ("warning: sshd did not listen on port " + $port + " (port in use, or blocked by a ListenAddress line?). The previous sshd_config is back and sshd was restarted with port " + ($ports -join ',') + "." + $fwNote + " Check the OpenSSH/Operational event log, then set the port with OpenSSH Server Manager.")
+    Log ("warning: sshd did not listen on port " + $port + " (port in use, or blocked by a ListenAddress line?). The previous sshd_config is back and sshd was restarted with port " + ($ports -join ',') + "." + $fwNote + " Check the OpenSSH/Operational event log, then set the port with OpenSSH Server PN Manager.")
     exit 0
 }
 #endregion firewall

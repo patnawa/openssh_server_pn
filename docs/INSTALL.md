@@ -80,7 +80,7 @@ What the installer configures:
   `sshd.exe`. On Windows Server it applies to all networks, so domain-joined and workgroup
   servers are reachable. On Windows 10 and 11 it applies to Domain and Private networks only, so
   a laptop on public Wi-Fi does not expose SSH. `FIREWALL_PROFILES` overrides both, and the
-  Firewall tab of OpenSSH Server Manager changes it later. Official Microsoft packages enable the
+  Firewall tab of OpenSSH Server PN Manager changes it later. Official Microsoft packages enable the
   rule for Private only.
   Since 10.5.2.0, an upgrade, downgrade or repair keeps the rule's ports,
   networks, enabled state and allowed remote addresses; `FIREWALL_PROFILES` and `SSHD_PORT` given
@@ -149,7 +149,7 @@ sessions alone, and `REMOVE=Server` leaves client tools that are in use alone.
 
 **Repair.** `msiexec /fa <package.msi>` rewrites every file and re-registers both services,
 using the same cleanup as an upgrade. Use it when a service no longer points at the installed
-binaries; OpenSSH Server Manager reports that as *Service binary* on its Hardening tab.
+binaries; OpenSSH Server PN Manager reports that as *Service binary* on its Hardening tab.
 
 **Upgrading from inside an SSH session.** The session that runs `msiexec` (and everything it
 started) is kept alive; all other sessions are ended. The old copies of the two files that
@@ -186,7 +186,7 @@ of `sshd` are in Event Viewer under *Applications and Services Logs / OpenSSH / 
 
 ### Public-key authentication
 
-The quickest way is the **Key generator** tab of OpenSSH Server Manager. It creates an
+The quickest way is the **Key generator** tab of OpenSSH Server PN Manager. It creates an
 Ed25519, ECDSA, RSA or ML-DSA key pair in `%UserProfile%\.ssh`, protected by a passphrase, with
 the permissions ssh requires. It can add the public key to the file `sshd` reads for your account
 and log in with it to prove it works. Give other servers the `.pub` file, never the private key.
@@ -210,7 +210,7 @@ By hand:
 ### Login methods
 
 Accounts can log in with their Windows password (*Windows authentication*), with a public key,
-or with Kerberos on domain members. The **Authentication** tab of OpenSSH Server Manager chooses
+or with Kerberos on domain members. The **Authentication** tab of OpenSSH Server PN Manager chooses
 the methods for everyone, can require key and password together, and adds rules for single users
 or groups, for example public key only for administrators. It warns before a change would lock
 you out and checks the result with the running server.
@@ -221,6 +221,43 @@ By hand, the directives are `PasswordAuthentication`, `PubkeyAuthentication`,
 `sshd -T -C user=<name>,host=localhost,addr=127.0.0.1` (elevated). Give the name in lower case,
 because `sshd` compares it that way. For another account run this as SYSTEM, because an
 administrator's `sshd -T` cannot see another account's groups and skips `Match Group` for it.
+
+### SFTP
+
+SFTP is on after installation (`Subsystem sftp sftp-server.exe`): WinSCP, FileZilla, `sftp` and
+`scp` log in with the account's Windows password or key and reach its files as its Windows
+permissions allow. The **SFTP** tab of OpenSSH Server PN Manager switches SFTP on and off, logs
+file transfers, and keeps **SFTP-only accounts**: users or groups that can transfer files and do
+nothing else, optionally confined to a folder they see as `/`, optionally download only. *Apply*
+creates the folders and gives the accounts access. By hand, for a local group `sftp users` whose
+members each get `C:\SFTP\<name>`:
+
+```
+Subsystem sftp sftp-server.exe -l INFO     # -l INFO: every transfer in the OpenSSH event log
+
+Match Group "sftp users"                   # above the other Match blocks
+	ForceCommand internal-sftp -l INFO       # add -R for download only
+	ChrootDirectory C:\SFTP\%u               # a drive letter is required; %u is the account name
+	PermitTTY no
+	AllowTcpForwarding no
+	AllowAgentForwarding no
+	AllowStreamLocalForwarding no
+	PermitTunnel no
+	X11Forwarding no
+Match all
+```
+
+Each folder must exist before the account logs in (`New-Item C:\SFTP\alice -ItemType Directory`),
+and the account needs NTFS rights on it (`icacls C:\SFTP\alice /grant 'alice:(OI)(CI)M'`). On
+Windows, `ChrootDirectory` applies to SFTP sessions only, which is why `ForceCommand internal-sftp`
+goes with it; `internal-sftp` runs `sftp-server.exe`. A domain account's `%u` is `domain\name`.
+
+The client chooses the cipher, and the cipher decides the speed. On x64, from the packages after
+10.5.2.0 on, `aes128-gcm@openssh.com` and `aes256-gcm@openssh.com` are the fastest, about twice
+`chacha20-poly1305@openssh.com`, the first choice of OpenSSH clients: add
+`-c aes128-gcm@openssh.com` to `sftp` and `scp`, or `Ciphers aes128-gcm@openssh.com,...` to the
+client's `ssh_config`. WinSCP and FileZilla use AES by default. Compression (`-C`) slows transfers
+down on a fast network.
 
 ### Default shell
 
@@ -235,12 +272,12 @@ New-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell -PropertyType
 
 Edit `%ProgramData%\ssh\sshd_config` and restart the service (`Restart-Service sshd`). Test the
 configuration before restarting: `sshd.exe -t` from `%ProgramFiles%\OpenSSH` (run elevated).
-OpenSSH Server Manager does both for you and rolls back if the restart fails.
+OpenSSH Server PN Manager does both for you and rolls back if the restart fails.
 
 Hardening, in the order to apply it. Put the lines above the `Match Group administrators` block:
 
 ```
-# low risk: apply now (OpenSSH Server Manager, Hardening tab, "Apply recommended settings")
+# low risk: apply now (OpenSSH Server PN Manager, Hardening tab, "Apply recommended settings")
 LogLevel VERBOSE            # logs the key fingerprint of every login
 LoginGraceTime 60
 ClientAliveInterval 300
@@ -333,7 +370,7 @@ you want a clean slate.
 | `scp` or `sftp` fail from a client after install | The system `PATH` change takes effect in new sessions only; sign out and back in, or restart the service that launches your shell. |
 | Install stops with exit 1603 and *A newer version of OpenSSH from this package series is already installed* | You are installing an older package. Add `ALLOWDOWNGRADE=1` or install a newer one. |
 | A `preinstall: warning:` line in the MSI log | The install succeeded; one cleanup step could not be done, and the line says which and what to run. The usual case is DISM being busy with another servicing operation, which leaves the in-box OpenSSH Server files in place. |
-| OpenSSH Server Manager shows *Service binary* WARN, or `sc qc sshd` names `System32\OpenSSH` | Windows servicing pointed the service back at the in-box binary. Run `msiexec /fa <package.msi>` to repair, and remove the in-box capability so it does not happen again. |
+| OpenSSH Server PN Manager shows *Service binary* WARN, or `sc qc sshd` names `System32\OpenSSH` | Windows servicing pointed the service back at the in-box binary. Run `msiexec /fa <package.msi>` to repair, and remove the in-box capability so it does not happen again. |
 | Error 1925 *You do not have sufficient privileges to complete this installation for all users of the machine* (exit code 1603) | Silent install from a non-elevated prompt. Run `msiexec` elevated. |
 | Error 1730 *You must be an Administrator to remove this application* | Silent install from a non-elevated prompt. Run `msiexec` elevated. |
 | Restart pending after an upgrade | Expected when the upgrade ran from inside an SSH session, because the old copies of the files that session held are deleted at the restart. Also expected when Windows could only finish removing the in-box server at the restart. Everything else is already in place. |

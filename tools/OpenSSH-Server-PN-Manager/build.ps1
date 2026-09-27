@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Builds OpenSSHServerManager.exe from the C# source files in this folder.
+    Builds OpenSSHServerPNManager.exe from the C# source files in this folder.
 
 .DESCRIPTION
     Uses the Roslyn C# compiler shipped with Visual Studio 2022 Build Tools (or the one given with
@@ -45,7 +45,7 @@ $src = @(Get-ChildItem -Path $PSScriptRoot -Filter *.cs | Sort-Object Name | For
 if ($src.Count -eq 0) { throw "No .cs files in $PSScriptRoot" }
 $manifest = Join-Path $PSScriptRoot 'app.manifest'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-$out = Join-Path $OutDir 'OpenSSHServerManager.exe'
+$out = Join-Path $OutDir 'OpenSSHServerPNManager.exe'
 
 $refs = 'mscorlib.dll','System.dll','System.Core.dll','System.Drawing.dll','System.Windows.Forms.dll','System.ServiceProcess.dll','Microsoft.CSharp.dll' |
     ForEach-Object { '/r:' + (Join-Path $fw $_) }
@@ -57,7 +57,7 @@ $cscArgs += @('/deterministic+', "/pathmap:$PSScriptRoot=.")
 # The program icon (icon\app.ico, made by icon\render.py): the executable's icon in Explorer and on the taskbar (/win32icon), and a resource
 # the window loads with all its sizes, so the title bar gets the hand-made 16-24 px images (/resource).
 $icon = Join-Path $PSScriptRoot 'icon\app.ico'
-if (Test-Path $icon) { $cscArgs += @("/win32icon:$icon", "/resource:$icon,OpenSSHServerManager.app.ico") }
+if (Test-Path $icon) { $cscArgs += @("/win32icon:$icon", "/resource:$icon,OpenSSHServerPNManager.app.ico") }
 else { Write-Warning "icon\app.ico not found: building without the program icon." }
 $cscArgs += $src
 

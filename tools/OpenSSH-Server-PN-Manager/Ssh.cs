@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: Ssh
+// OpenSSH Server PN Manager: Ssh
 
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     // ------------------------------------------------------------------------------------------
     // Paths, versions, config test

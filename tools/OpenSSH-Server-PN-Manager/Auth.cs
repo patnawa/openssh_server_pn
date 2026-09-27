@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: Auth
+// OpenSSH Server PN Manager: Auth
 
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     // ------------------------------------------------------------------------------------------
     // Login methods: Windows authentication, public key and Kerberos, for everyone and per user or group
@@ -284,9 +284,14 @@ namespace OpenSSHServerManager
     /// <summary>Reads and writes the login methods in sshd_config, and asks sshd what they mean for an account.</summary>
     internal static class AuthConfig
     {
-        public const string RegionBegin = "# Login methods by user and group, managed on the Authentication tab of OpenSSH Server Manager.";
+        public const string RegionBegin = "# Login methods by user and group, managed on the Authentication tab of OpenSSH Server PN Manager.";
+        /// <summary>The start line that the manager wrote under its earlier name, OpenSSH Server Manager (1.6.0 and older): read as the same section, and replaced by RegionBegin when the rules are applied.</summary>
+        public const string LegacyRegionBegin = "# Login methods by user and group, managed on the Authentication tab of OpenSSH Server Manager.";
         public const string RegionNote = "# The first rule that matches an account applies; all other accounts use the methods set above.";
         public const string RegionEnd = "# End of login methods by user and group.";
+
+        /// <summary>A line that starts the rules section (trimmed), under the current or the earlier name of the manager.</summary>
+        public static bool IsRegionBegin(string trimmed) { return trimmed == RegionBegin || trimmed == LegacyRegionBegin; }
         private static readonly string[] RuleKeywords = { "PasswordAuthentication", "PubkeyAuthentication", "GSSAPIAuthentication", "AuthenticationMethods" };
         private static readonly string[] MethodKeywords = { "PasswordAuthentication", "PubkeyAuthentication", "GSSAPIAuthentication", "AuthenticationMethods", "KbdInteractiveAuthentication", "ChallengeResponseAuthentication", "HostbasedAuthentication" };
 
@@ -329,7 +334,7 @@ namespace OpenSSHServerManager
             for (int i = 0; i < lines.Count; i++)
             {
                 var t = lines[i].Trim();
-                if (t == RegionBegin)
+                if (IsRegionBegin(t))
                 {
                     if (begin >= 0) return "its start line appears twice, lines " + (begin + 1) + " and " + (i + 1);
                     begin = i;
@@ -744,7 +749,7 @@ namespace OpenSSHServerManager
             if (spec.IndexOfAny(new[] { '"', '%', '\r', '\n' }) >= 0) { r.StdErr = "the account name contains a character that cannot be passed to sshd as SYSTEM"; return r; }
             var id = Guid.NewGuid().ToString("N").Substring(0, 12);
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "osm-check-" + id);
-            var task = "OpenSSH Server Manager check " + id;
+            var task = "OpenSSH Server PN Manager check " + id;
             bool registered = false;
             try
             {
@@ -754,7 +759,7 @@ namespace OpenSSHServerManager
                 // cmd.exe only redirects the output; with /s it runs the quoted command line exactly as written.
                 var args = "/d /s /c \"\"" + Ssh.Exe("sshd.exe") + "\" -T -f \"" + cfg + "\" -C \"" + spec + "\" > \"" + output + "\" 2>&1" +
                            " & if errorlevel 1 ((echo 1)> \"" + exit + "\") else ((echo 0)> \"" + exit + "\")\"";
-                Register(task, "OpenSSH Server Manager: sshd -T as SYSTEM for one account (temporary)", Path.Combine(Environment.SystemDirectory, "cmd.exe"), args, false);
+                Register(task, "OpenSSH Server PN Manager: sshd -T as SYSTEM for one account (temporary)", Path.Combine(Environment.SystemDirectory, "cmd.exe"), args, false);
                 registered = true;
                 var run = Proc.Run(Schtasks, "/Run /TN " + Proc.Quote(task), 30000);
                 if (!run.Ok) { r.StdErr = "schtasks /Run failed: " + run.Output; return r; }
@@ -784,9 +789,9 @@ namespace OpenSSHServerManager
         /// </summary>
         public static string ScheduleProfileRemoval(SecurityIdentifier sid, string account)
         {
-            var task = "OpenSSH Server Manager remove test profile " + account;
+            var task = "OpenSSH Server PN Manager remove test profile " + account;
             var script = ProfileRemovalScript(sid.Value, task);
-            Register(task, "Deletes the profile of " + account + ", a temporary test account of OpenSSH Server Manager --authtest that no longer exists, then removes this task.",
+            Register(task, "Deletes the profile of " + account + ", a temporary test account of OpenSSH Server PN Manager --authtest that no longer exists, then removes this task.",
                      Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"),
                      "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(script)), true);
             return task;

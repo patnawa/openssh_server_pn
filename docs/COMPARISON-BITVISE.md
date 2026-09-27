@@ -37,7 +37,7 @@ Where Bitvise is ahead: FTPS, virtual accounts and virtual groups, a built-in RF
 password factor, virtual filesystem mount points and encrypted volumes, quotas and bandwidth
 limits, tasks and e-mail alerts driven by log events, settings replication between servers, FIPS
 140 validated cryptography, support for Windows XP / 2003 / Vista, and a mature GUI control
-panel. This repository adds a management GUI (`tools/OpenSSH-Server-Manager`) that closes the
+panel. This repository adds a management GUI (`tools/OpenSSH-Server-PN-Manager`) that closes the
 day-to-day administration gap: service control, settings, keys, firewall, logs and a hardening
 check. The remaining gaps are architectural and are listed with the closest workaround.
 
@@ -59,7 +59,7 @@ check. The remaining gaps are architectural and are listed with the closest work
 |---|---|---|---|
 | Works immediately after installation | Yes: MSI starts `sshd`, creates default `sshd_config`, generates host keys, allows password login for local and domain accounts | Match | |
 | Designed for Windows, easy to install and configure | MSI / winget install; configuration is a text file (`%ProgramData%\ssh\sshd_config`) | Partial | Text configuration; the manager GUI covers common settings |
-| GUI control panel | Not in OpenSSH. This repository ships **OpenSSH Server Manager** (service status, settings editor with syntax test, login methods per user and group, authorized keys, key generator, default shell, firewall, event log viewer, hardening check) | Partial | Fewer features than Bitvise's panel; no virtual accounts or statistics |
+| GUI control panel | Not in OpenSSH. This repository ships **OpenSSH Server PN Manager** (service status, settings editor with syntax test, login methods per user and group, SFTP and SFTP-only accounts, authorized keys, key generator, default shell, firewall, event log viewer, hardening check) | Partial | Fewer features than Bitvise's panel; no virtual accounts or statistics |
 | Remote configuration through the SSH client | Edit `sshd_config` over SSH or PowerShell remoting, then `Restart-Service sshd`; `sshd -t` validates | Match | Scriptable, no dedicated tool |
 
 ## 3. Authentication
@@ -70,7 +70,7 @@ check. The remaining gaps are architectural and are listed with the closest work
 | Password policy for virtual accounts | Windows account policy applies; no virtual accounts | Gap | Local security policy / AD policy governs real accounts |
 | Public key authentication | `authorized_keys`, `administrators_authorized_keys`, OpenSSH certificates (`TrustedUserCAKeys`), FIDO2 keys (`sk-ssh-ed25519`, `sk-ecdsa`), PKCS#11 tokens | Match | Broader than Bitvise (certificates, FIDO2) |
 | Kerberos 5 single sign-on via GSSAPI | Built with `GSSAPI_SSPI`; `GSSAPIAuthentication yes` enables SSO for domain accounts | Match | Off by default; a box on the Authentication tab of the manager (a Kerberos login was not tested here) |
-| Choice of methods per account or group (password, public key; either one or both required) | `Match User` and `Match Group` blocks with `PasswordAuthentication`, `PubkeyAuthentication` and `AuthenticationMethods`, written by the Authentication tab of OpenSSH Server Manager | Match | Tested with real logins (`--authtest`) |
+| Choice of methods per account or group (password, public key; either one or both required) | `Match User` and `Match Group` blocks with `PasswordAuthentication`, `PubkeyAuthentication` and `AuthenticationMethods`, written by the Authentication tab of OpenSSH Server PN Manager | Match | Tested with real logins (`--authtest`) |
 | Two-factor with time-based one-time passwords (RFC 6238) | No built-in TOTP. `AuthenticationMethods publickey,password` requires two factors of different kinds; FIDO2 keys with `verify-required` give possession plus PIN | Partial | Third-party TOTP requires a PAM-like hook, which the Windows port lacks |
 | Windows session cache (reuse of logon sessions) | Each connection performs its own logon | Match | Functionally transparent; no configuration needed |
 
@@ -87,7 +87,7 @@ check. The remaining gaps are architectural and are listed with the closest work
 
 | Bitvise feature | OpenSSH for Windows 10.2 | Status | Notes |
 |---|---|---|---|
-| Virtual filesystem with directory restrictions | `ChrootDirectory` with `ForceCommand internal-sftp` in a `Match` block confines SFTP users to a directory tree | Partial | SFTP only; chroot for shells is not supported on Windows |
+| Virtual filesystem with directory restrictions | `ChrootDirectory` with `ForceCommand internal-sftp` in a `Match` block confines SFTP users to a directory tree; the SFTP tab of the manager (2.0.0) writes these blocks per user or group, with a folder per account (`%u`) and download only (`-R`), and creates the folders | Partial | SFTP only; chroot for shells is not supported on Windows |
 | Multiple virtual mount points | One chroot root per `Match`; junctions inside the root are followed | Partial | Build the tree with NTFS junctions or `subst` |
 | Encrypted volumes, at-rest encryption | none in `sshd`; BitLocker or EFS on the data folder | Partial | OS-level encryption |
 | SFTP jump server to remote SFTP servers | `ProxyJump` / `-J` for SSH sessions; no SFTP proxying | Partial | |
@@ -121,7 +121,7 @@ check. The remaining gaps are architectural and are listed with the closest work
 | Multi-instance on the same computer | Possible manually: second service with `sshd.exe -f <other config> -p <port>` | Partial | Not packaged |
 | Server-side port forwarding configuration | `AllowTcpForwarding`, `PermitOpen`, `PermitListen`, `GatewayPorts`, `PermitTunnel`, `AllowStreamLocalForwarding`, per `Match` block | Match | |
 | Scriptable settings (BssCfg / PowerShell) | Plain-text `sshd_config`, `sshd -T` to dump effective settings, PowerShell for everything else | Match | |
-| Logging and auditing | ETW / Event Log (*OpenSSH/Operational*), optional file log (`SyslogFacility LOCAL0`), `LogLevel VERBOSE` records key fingerprints per login | Match | No built-in statistics |
+| Logging and auditing | ETW / Event Log (*OpenSSH/Operational*), optional file log (`SyslogFacility LOCAL0`), `LogLevel VERBOSE` records key fingerprints per login; `sftp-server -l INFO` (*Log file transfers* on the SFTP tab) records every file opened, closed with its bytes, renamed and removed | Match | No built-in statistics |
 | Dark mode | see section 1 | N/A | |
 
 ## 8. Security hardening
@@ -200,6 +200,6 @@ ranked list of what this repository can adopt, and how, is in [ROADMAP.md](ROADM
    `LogLevel VERBOSE` with a log shipper.
 4. **Bandwidth and storage.** Use NTFS quotas for storage caps and Windows QoS policies for
    port-level rate limits; there is no per-user limit in `sshd`.
-5. **Server administration.** Use the OpenSSH Server Manager GUI from this repository for
+5. **Server administration.** Use the OpenSSH Server PN Manager GUI from this repository for
    status, settings, keys, firewall and logs; keep `sshd_config` under version control for
    replication between servers.

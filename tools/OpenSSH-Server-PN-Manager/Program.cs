@@ -1,21 +1,23 @@
-// OpenSSH Server Manager for Windows
-// A WinForms application (.NET Framework 4.x) that manages the OpenSSH for Windows server: service
-// control, sshd_config editing with validation and rollback, login methods (Windows authentication,
-// public key, Kerberos; per user and group), authorized keys, a key generator, host keys, default
-// shell, Windows Firewall rule, event log viewer and a hardening check.
+// OpenSSH Server PN Manager
+// The management console of OpenSSH Server PN: a WinForms application (.NET Framework 4.x) for the
+// OpenSSH server on Windows: service control, sshd_config editing with validation and rollback, login
+// methods (Windows authentication, public key, Kerberos; per user and group), SFTP (the subsystem,
+// transfer logging, SFTP-only accounts confined to a folder), authorized keys, a key generator, host
+// keys, default shell, Windows Firewall rule, event log viewer and a hardening check.
+// Copyright (c) 2026 patnawa. BSD-style licence, like OpenSSH: see LICENSE.txt of the package.
 //
 // Source: one file per area in this folder (Program, SelfTest, Platform, Ssh, SshdConfig, Keys,
-// KeyGen, Auth, AuthTest, WindowsSettings, Hardening, Sessions, Client, MainForm, Dialogs, Wizard,
-// Theme, Widgets, Prefs), compiled into one executable by build.ps1 (the Roslyn C# compiler from
-// Visual Studio Build Tools). Runs elevated (see app.manifest).
+// KeyGen, Auth, AuthTest, Sftp, WindowsSettings, Hardening, Sessions, Client, MainForm, Dialogs,
+// Wizard, Theme, Widgets, Prefs), compiled into one executable by build.ps1 (the Roslyn C# compiler
+// from Visual Studio Build Tools). Runs elevated (see app.manifest).
 //
 // Command line (an optional file name receives the report):
 //   --unittest   tests of the program logic alone: no sshd, no service, no administrator rights
 //   --selftest   the unit tests plus tests against the installed server; changes nothing (elevated)
 //   --check      status and hardening report
 //   --keytest    every key type: generate, authorize, log in, remove (authorized_keys restored)
-//   --authtest   every login-method setting with real logins against a temporary sshd on 127.0.0.1
-//                and a temporary local account; both are removed at the end
+//   --authtest   every login-method setting, and SFTP with SFTP-only accounts, with real logins against
+//                a temporary sshd on 127.0.0.1 and a temporary local account; both are removed at the end
 //   --screenshot <folder> [--ui-scale 1.5] [--theme dark|light]   every tab rendered off-screen to PNG files
 
 using System;
@@ -39,22 +41,29 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 
 // File properties (Explorer, Get-Item ...VersionInfo); keep in step with Program.AppVersion.
-[assembly: System.Reflection.AssemblyTitle("OpenSSH Server Manager")]
-[assembly: System.Reflection.AssemblyProduct("OpenSSH Server Manager")]
-[assembly: System.Reflection.AssemblyDescription("Management console for the OpenSSH for Windows server")]
-[assembly: System.Reflection.AssemblyVersion("1.6.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.6.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.6.0")]
+[assembly: System.Reflection.AssemblyTitle("OpenSSH Server PN Manager")]
+[assembly: System.Reflection.AssemblyProduct("OpenSSH Server PN")]
+[assembly: System.Reflection.AssemblyDescription("Management console of OpenSSH Server PN: service, configuration, login methods, SFTP, keys, firewall, logs and hardening")]
+[assembly: System.Reflection.AssemblyCompany(OpenSSHServerPNManager.Program.Publisher)]
+[assembly: System.Reflection.AssemblyCopyright(OpenSSHServerPNManager.Program.Copyright)]
+[assembly: System.Reflection.AssemblyVersion("2.0.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.0.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("2.0.0")]
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     // ------------------------------------------------------------------------------------------
     // Entry point, crash protection, elevation
     // ------------------------------------------------------------------------------------------
     internal static class Program
     {
-        public const string AppName = "OpenSSH Server Manager";
-        public const string AppVersion = "1.6.0";
+        public const string AppName = "OpenSSH Server PN Manager";
+        public const string AppVersion = "2.0.0";
+        public const string Publisher = "patnawa";
+        public const string Copyright = "Copyright © 2026 patnawa";
+        public const string Website = "https://github.com/patnawa/openssh_server_pn";
+        public const string SupportUrl = Website + "/issues";
+        public const string ReleasesUrl = Website + "/releases";
         /// <summary>True in --check, --selftest and --screenshot: no modal dialogs may block the process.</summary>
         public static bool Unattended;
 
@@ -117,7 +126,7 @@ namespace OpenSSHServerManager
             if (!Elevation.IsAdministrator())
             {
                 if (Elevation.Relaunch()) return 0;
-                MessageBox.Show("OpenSSH Server Manager needs administrator rights to control the sshd service, edit the server configuration and manage keys.\n\nRight-click the program and choose \"Run as administrator\".",
+                MessageBox.Show("OpenSSH Server PN Manager needs administrator rights to control the sshd service, edit the server configuration and manage keys.\n\nRight-click the program and choose \"Run as administrator\".",
                     AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return 1;
             }
@@ -166,6 +175,28 @@ namespace OpenSSHServerManager
                         {
                             d.DrawToBitmap(bmp, new Rectangle(0, 0, d.Width, d.Height));
                             bmp.Save(Path.Combine(dir, "rule-dialog.png"), System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                        d.Close();
+                    }
+                    // The SFTP tab with example SFTP-only accounts (in the window only, nothing is saved) and its rule dialog; the
+                    // example rules of the Authentication tab are dropped first, so that tab shows no changes.
+                    f.UndoAuthForTest();
+                    for (int i = 0; i < n; i++) if (f.TabName(i) == "SFTP") f.SelectTabForTest(i);
+                    f.ShowSftpExampleForTest();
+                    Application.DoEvents();
+                    using (var bmp = new Bitmap(f.Width, f.Height))
+                    {
+                        f.DrawToBitmap(bmp, new Rectangle(0, 0, f.Width, f.Height));
+                        bmp.Save(Path.Combine(dir, "sftp-example.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    var sftpSample = new SftpRule { Name = "partner", Folder = "C:\\SFTP\\%u", ReadOnly = false };
+                    using (var d = new SftpRuleDialog(sftpSample, new List<SftpRule>()) { StartPosition = FormStartPosition.Manual, Location = new Point(-20000, -20000) })
+                    {
+                        d.Show(); Application.DoEvents();
+                        using (var bmp = new Bitmap(d.Width, d.Height))
+                        {
+                            d.DrawToBitmap(bmp, new Rectangle(0, 0, d.Width, d.Height));
+                            bmp.Save(Path.Combine(dir, "sftp-rule-dialog.png"), System.Drawing.Imaging.ImageFormat.Png);
                         }
                         d.Close();
                     }

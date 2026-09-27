@@ -145,7 +145,7 @@ Get-Service sshd, ssh-agent | Select-Object Name, Status, StartType    # Running
 Get-NetFirewallRule -DisplayName 'OpenSSH SSH Server Preview (sshd)' | Select-Object Enabled, Profile
 ```
 
-`OpenSSHServerManager.exe --check report.txt` (from the release, run elevated) writes a status report and
+`OpenSSHServerPNManager.exe --check report.txt` (from the release, run elevated) writes a status report and
 exits with 0 when the server is healthy, which suits a remediation or compliance script.
 
 ## Application control

@@ -184,7 +184,9 @@ $cases = @(
     @('no final line break is kept', "#Port 22`nLogLevel INFO", "Port 2222`nLogLevel INFO"),
     @('appended at the end with a line break', "LogLevel INFO", "LogLevel INFO`nPort 2222`n"),
     @('empty file', "", "Port 2222`n"),
-    @('before the rules section of OpenSSH Server Manager', ("LogLevel INFO`n" + $managerRegion + "`nMatch User x`n"), ("LogLevel INFO`nPort 2222`n`n" + $managerRegion + "`nMatch User x`n")),
+    @('before the rules section of OpenSSH Server Manager 1.6.0', ("LogLevel INFO`n" + $managerRegions[0] + "`nMatch User x`n"), ("LogLevel INFO`nPort 2222`n`n" + $managerRegions[0] + "`nMatch User x`n")),
+    @('before the rules section of OpenSSH Server PN Manager', ("LogLevel INFO`n" + $managerRegions[1] + "`nMatch User x`n"), ("LogLevel INFO`nPort 2222`n`n" + $managerRegions[1] + "`nMatch User x`n")),
+    @('before the SFTP section of OpenSSH Server PN Manager', ("LogLevel INFO`n" + $managerRegions[2] + "`nMatch Group sftp`n"), ("LogLevel INFO`nPort 2222`n`n" + $managerRegions[2] + "`nMatch Group sftp`n")),
     @('PortForwarding-like keyword is not Port', "PortX 1`n", "PortX 1`nPort 2222`n")
 )
 foreach ($c in $cases) {

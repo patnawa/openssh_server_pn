@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: Widgets (list sorting, export)
+// OpenSSH Server PN Manager: Widgets (list sorting, export)
 
 using System;
 using System.Collections;
@@ -9,7 +9,7 @@ using System.Linq;
 using System.Text;
 using System.Windows.Forms;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     /// <summary>Sorting of list columns by a click on the header: numbers as numbers, dates as dates, text without case.</summary>
     internal sealed class ListSorter : IComparer

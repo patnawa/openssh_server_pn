@@ -10,8 +10,8 @@
 
 ## Checklist
 
-- [ ] Source or installer: built with [docs/BUILDING.md](https://github.com/patnawa/openssh_server_pn/blob/main/docs/BUILDING.md); unit tests, an install over the previous release and `OpenSSHServerManager.exe --check` pass on at least x64.
-- [ ] OpenSSH Server Manager: `--unittest`, and elevated `--selftest`, `--keytest`, `--authtest` pass; `bin\OpenSSHServerManager.exe` rebuilt with `build.ps1` and committed with the source.
+- [ ] Source or installer: built with [docs/BUILDING.md](https://github.com/patnawa/openssh_server_pn/blob/main/docs/BUILDING.md); unit tests, an install over the previous release and `OpenSSHServerPNManager.exe --check` pass on at least x64.
+- [ ] OpenSSH Server PN Manager: `--unittest`, and elevated `--selftest`, `--keytest`, `--authtest` pass; `bin\OpenSSHServerPNManager.exe` rebuilt with `build.ps1` and committed with the source.
 - [ ] New or changed behaviour is described in the documentation (INSTALL.md, the manager README, ...), with nothing claimed that was not tested.
 - [ ] An entry in [docs/CHANGELOG.md](https://github.com/patnawa/openssh_server_pn/blob/main/docs/CHANGELOG.md) with the change and how it was verified.
 - [ ] Not a security fix. Security fixes go through a private advisory first ([SECURITY.md](https://github.com/patnawa/openssh_server_pn/blob/main/SECURITY.md)).

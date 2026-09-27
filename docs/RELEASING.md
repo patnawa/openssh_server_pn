@@ -13,7 +13,7 @@ manual build in [BUILDING.md](BUILDING.md) stays the reference for building on y
 | Workflow | Runs on | Does |
 |---|---|---|
 | [`openssh.yml`](../.github/workflows/openssh.yml) | pull requests and pushes to `main` that change `src/`, the workflow, `.github/scripts/` or `tools/release/`; tags `v*`; manually | Builds x64, x86 and ARM64 on `windows-2022`, packages the MSIs and runs the installer tests that need no installation (`src/contrib/win32/install/tests`, when present) on each; runs the unit tests (x64 and x86 on `windows-2022`, ARM64 on `windows-11-arm`) followed by the crypto probes (`.github/scripts/Test-CryptoProbes.ps1`: `libcrypto` arithmetic, curves and random numbers, each `ssh-keygen` key type and `sshd -t`, one process per probe with a timeout, so a broken library is told apart from a broken test); installs the x64 MSI on `windows-2022` and `windows-2025` and the ARM64 MSI on `windows-11-arm` and tests it (below), and the x64 MSI once more on `windows-2022` with the installer's steps on the Windows PowerShell 2.0 engine of Windows 7 and Server 2008 R2 (both packages get `-Version 2` on their `powershell.exe` command lines; the pre-install step must report PowerShell 2.0 in the MSI log); runs the Pester end-to-end tests (not gating); assembles the release files (SBOM, `SHA256SUMS.txt`). For a tag: attestations and a **draft** release |
-| [`manager.yml`](../.github/workflows/manager.yml) | changes to `tools/OpenSSH-Server-Manager/`; tags `manager-v*` | Builds OpenSSH Server Manager, runs `--unittest` on the fresh build and the committed executable, reports whether the fresh build reproduces the committed one. For a tag: publishes the committed executable with an attestation |
+| [`manager.yml`](../.github/workflows/manager.yml) | changes to `tools/OpenSSH-Server-PN-Manager/`; tags `manager-v*` | Builds OpenSSH Server PN Manager, runs `--unittest` on the fresh build and the committed executable, reports whether the fresh build reproduces the committed one. For a tag: publishes the committed executable with an attestation |
 | [`upstream-watch.yml`](../.github/workflows/upstream-watch.yml) | Mondays; manually | Opens an issue for each new release of OpenSSH, LibreSSL, libfido2, libcbor or zlib |
 | Dependabot ([`dependabot.yml`](../.github/dependabot.yml)) | weekly | Pull requests that update the pinned actions |
 
@@ -22,7 +22,7 @@ The install test on each of the four machines, in this order (every `msiexec` th
 | Step | Checks |
 |---|---|
 | Install | `msiexec /i` exit 0; product version; `sshd` and `ssh-agent` Running and Automatic, running the installed `sshd.exe`; file version; `ssh -V`; the banner on port 22; recovery policy; one firewall rule for `sshd.exe`, port 22, all networks on Windows Server and Domain and Private on Windows 11 |
-| OpenSSH Server Manager | built from source with `build.ps1`; `--check`, `--selftest`, `--keytest`, `--authtest` must return 0 |
+| OpenSSH Server PN Manager | built from source with `build.ps1`; `--check`, `--selftest`, `--keytest`, `--authtest` must return 0 |
 | Upgrade | the rule is set to port 2222 and Private only, then a package of the same build with the third version field raised by one (`10.5.2.0` for `10.5.1.0`) is installed; the rule must keep both |
 | Repair | `msiexec /fa`; the rule still has port 2222 and Private |
 | Rollback | a copy of the release MSI with a custom action that fails after `StartServices` (`New-FailingMsi` in `OpenSSHCI.psm1`), installed with `ALLOWDOWNGRADE=1`: `msiexec` returns 1603, the previous package is registered again with its services and files, the rule has port 2222 and Private again (the rollback action of the saved firewall record), the record is gone |
@@ -70,7 +70,7 @@ before pushing. On `main` the filter applies to the push itself.
    | File | |
    |---|---|
    | `OpenSSH-Win64-v<version>.msi`, `OpenSSH-Win32-v<version>.msi`, `OpenSSH-ARM64-v<version>.msi` | built by the workflow |
-   | `OpenSSHServerManager.exe`, `OpenSSHServerManager.exe.config` | the committed files, as always |
+   | `OpenSSHServerPNManager.exe`, `OpenSSHServerPNManager.exe.config` | the committed files, as always |
    | `OpenSSH-Server-PN-v<version>.cdx.json` | CycloneDX 1.5 SBOM (section 5) |
    | `SHA256SUMS.txt` | lower-case SHA-256, two spaces, file name; LF line endings (`sha256sum -c` reads it) |
 
@@ -83,7 +83,7 @@ before pushing. On `main` the filter applies to the push itself.
    changelog entry and the README table, and update `packaging/winget` (section 7).
 
 A release of the management console alone works as before: a tag `manager-v<version>` on a commit whose
-`bin\OpenSSHServerManager.exe` has that version. `manager.yml` publishes the committed executable, its
+`bin\OpenSSHServerPNManager.exe` has that version. `manager.yml` publishes the committed executable, its
 `.exe.config` and `SHA256SUMS.txt`, not marked as latest, now with a provenance attestation.
 
 ## 3. Reviewing the draft
@@ -105,7 +105,7 @@ Also check:
 - the install test summaries and the logs attached to the run (`install-logs-*`), in particular
   `preinstall: warning` lines;
 - the Pester result and its failures, although it does not block the release yet;
-- that `OpenSSHServerManager.exe` in the draft has the SHA-256 recorded for that manager version.
+- that `OpenSSHServerPNManager.exe` in the draft has the SHA-256 recorded for that manager version.
 
 What CI does not cover and still has to be done by hand, as before: a restart of a machine with the new
 package (services come back), Windows versions other than Server 2022, Server 2025 and Windows 11 on ARM
@@ -166,7 +166,7 @@ commit, and the release files with SHA-256 and SHA-512. It is deterministic for 
 checks its output before writing it. Locally:
 
 ```powershell
-pwsh ./tools/release/New-Sbom.ps1 -File .\dist\*.msi, .\dist\OpenSSHServerManager.exe -OutFile .\dist\sbom.cdx.json
+pwsh ./tools/release/New-Sbom.ps1 -File .\dist\*.msi, .\dist\OpenSSHServerPNManager.exe -OutFile .\dist\sbom.cdx.json
 ```
 
 The release job also attests the SBOM for the three MSIs (section 6), so it can be checked against them:
@@ -191,7 +191,7 @@ gh attestation verify .\OpenSSH-Win64-v10.5.2.0.msi --repo patnawa/openssh_serve
     --source-ref refs/tags/v10.5.2.0 --deny-self-hosted-runners
 ```
 
-For `OpenSSHServerManager.exe` the attestation says that the file came from that commit through the
+For `OpenSSHServerPNManager.exe` the attestation says that the file came from that commit through the
 workflow; the executable itself is compiled by the maintainer and committed, and `manager.yml` reports
 whether a fresh build on GitHub reproduces it byte for byte. Releases before this workflow (10.5.1.0,
 manager 1.5.0) have no attestations; their hashes are in the changelog.

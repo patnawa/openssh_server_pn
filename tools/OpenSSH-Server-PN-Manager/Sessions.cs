@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: Sessions
+// OpenSSH Server PN Manager: Sessions
 
 using System;
 using System.Collections.Generic;
@@ -20,12 +20,12 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     // ------------------------------------------------------------------------------------------
     // Live sessions (sshd-session.exe processes, owners and TCP peers)
     // ------------------------------------------------------------------------------------------
-    internal sealed class SessionInfo { public int Pid; public string User = ""; public DateTime Start; public string Peer = ""; }
+    internal sealed class SessionInfo { public int Pid; public string User = ""; public DateTime Start; public string Peer = ""; public string Activity = ""; }
 
     internal static class Sessions
     {
@@ -122,17 +122,102 @@ namespace OpenSSHServerManager
             return l;
         }
 
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct PROCESSENTRY32W
+        {
+            public int dwSize; public int cntUsage; public int th32ProcessID; public IntPtr th32DefaultHeapID; public int th32ModuleID;
+            public int cntThreads; public int th32ParentProcessID; public int pcPriClassBase; public int dwFlags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile;
+        }
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr CreateToolhelp32Snapshot(uint flags, int pid);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool Process32FirstW(IntPtr snapshot, ref PROCESSENTRY32W entry);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool Process32NextW(IntPtr snapshot, ref PROCESSENTRY32W entry);
+
+        /// <summary>One process of a snapshot of the process list.</summary>
+        internal struct ProcessEntry { public int Pid, ParentPid; public string Name; }
+
+        /// <summary>Every process, with its parent and program name, from one snapshot.</summary>
+        private static List<ProcessEntry> Snapshot()
+        {
+            var l = new List<ProcessEntry>();
+            var snap = CreateToolhelp32Snapshot(0x2 /*TH32CS_SNAPPROCESS*/, 0);
+            if (snap == IntPtr.Zero || snap == new IntPtr(-1)) return l;
+            try
+            {
+                var e = new PROCESSENTRY32W { dwSize = Marshal.SizeOf(typeof(PROCESSENTRY32W)) };
+                for (bool more = Process32FirstW(snap, ref e); more; more = Process32NextW(snap, ref e))
+                    l.Add(new ProcessEntry { Pid = e.th32ProcessID, ParentPid = e.th32ParentProcessID, Name = e.szExeFile });
+            }
+            finally { CloseHandle(snap); }
+            return l;
+        }
+
+        /// <summary>
+        /// The programs a process started, its children first, then theirs, down to three levels: sshd for Windows starts
+        /// a subsystem such as sftp-server.exe through the account's shell (cmd.exe /c ...), so the program that matters is
+        /// often a grandchild.
+        /// </summary>
+        internal static List<string> Descendants(int pid, IEnumerable<ProcessEntry> all)
+        {
+            var byParent = all.Where(p => p.Pid != p.ParentPid).ToLookup(p => p.ParentPid);
+            var names = new List<string>(); var level = new List<int> { pid }; var seen = new HashSet<int> { pid };
+            for (int depth = 0; depth < 3 && level.Count > 0; depth++)
+            {
+                var next = new List<int>();
+                foreach (var parent in level)
+                    foreach (var c in byParent[parent])
+                        if (seen.Add(c.Pid)) { names.Add(c.Name); next.Add(c.Pid); }
+                level = next;
+            }
+            return names;
+        }
+
+        /// <summary>
+        /// What a user's session does, from the programs its sshd-session.exe started (Descendants): "SFTP"
+        /// (sftp-server.exe, which internal-sftp runs too), "scp", or the shell or command; empty for a session that only
+        /// forwards ports or has nothing running. The console host of a terminal (conhost.exe) is left out.
+        /// </summary>
+        internal static string Activity(IEnumerable<string> descendants)
+        {
+            var names = (descendants ?? Enumerable.Empty<string>()).Where(n => !n.Equals("conhost.exe", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (names.Any(n => n.Equals("sftp-server.exe", StringComparison.OrdinalIgnoreCase))) return "SFTP";
+            if (names.Any(n => n.Equals("scp.exe", StringComparison.OrdinalIgnoreCase))) return "scp";
+            return string.Join(", ", names.Distinct(StringComparer.OrdinalIgnoreCase));
+        }
+
+        /// <summary>SFTP sessions open now: sftp-server.exe processes below an sshd-session.exe (one process snapshot).</summary>
+        public static int SftpSessionCount() { return SftpSessionCount(Snapshot()); }
+
+        internal static int SftpSessionCount(List<ProcessEntry> all)
+        {
+            var byPid = new Dictionary<int, ProcessEntry>();
+            foreach (var p in all) byPid[p.Pid] = p;
+            return all.Count(p =>
+            {
+                if (!p.Name.Equals("sftp-server.exe", StringComparison.OrdinalIgnoreCase)) return false;
+                ProcessEntry up = p;
+                for (int depth = 0; depth < 3; depth++)
+                {
+                    if (!byPid.TryGetValue(up.ParentPid, out up) || up.Pid == up.ParentPid) return false;
+                    if (up.Name.Equals("sshd-session.exe", StringComparison.OrdinalIgnoreCase)) return true;
+                }
+                return false;
+            });
+        }
+
         public static List<SessionInfo> List(int port)
         {
             var l = new List<SessionInfo>();
             try
             {
+                var all = Snapshot();
                 foreach (var p in Process.GetProcessesByName("sshd-session"))
                 {
                     using (p)
                     {
                         var si = new SessionInfo { Pid = p.Id, User = OwnerOf(p.Id) };
                         try { si.Start = p.StartTime; } catch { }
+                        if (si.User.IndexOf("SYSTEM", StringComparison.OrdinalIgnoreCase) < 0) si.Activity = Activity(Descendants(p.Id, all));
                         l.Add(si);
                     }
                 }

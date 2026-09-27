@@ -1,4 +1,4 @@
-// OpenSSH Server Manager for Windows: Platform
+// OpenSSH Server PN Manager: Platform
 
 using System;
 using System.Collections.Generic;
@@ -20,7 +20,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace OpenSSHServerManager
+namespace OpenSSHServerPNManager
 {
     internal static class Elevation
     {
@@ -48,7 +48,7 @@ namespace OpenSSHServerManager
         {
             get
             {
-                var dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenSSH Server Manager");
+                var dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenSSH Server PN Manager");
                 try { Directory.CreateDirectory(dir); } catch { }
                 return System.IO.Path.Combine(dir, "manager.log");
             }

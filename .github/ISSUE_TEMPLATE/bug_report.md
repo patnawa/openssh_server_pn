@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Something does not work in these packages - the installer, OpenSSH (ssh, sshd, sftp, keys), OpenSSH Server Manager, the build or the documentation
+about: Something does not work in these packages - the installer, OpenSSH (ssh, sshd, sftp, keys), OpenSSH Server PN Manager, the build or the documentation
 title: ''
 labels: ''
 assignees: ''
@@ -48,7 +48,7 @@ around `Return value 3`:
 Events from *Applications and Services Logs / OpenSSH / Operational*, or `sshd -ddd` output, with
 passwords, keys and host names removed.
 
-**OpenSSHServerManager.exe --check** (optional)
+**OpenSSHServerPNManager.exe --check** (optional)
 
 ```
 ```
