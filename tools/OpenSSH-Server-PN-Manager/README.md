@@ -147,7 +147,7 @@ Match all
   SFTP-only or not, download only, and the folder it sees as `/` (and whether it exists).
 - A section edited by hand in a way the tab does not write is left alone, and the tab says why.
   `ForceCommand` and `ChrootDirectory` elsewhere in the file are listed as a note.
-- Speed: the client chooses the cipher. With LibreSSL's AES-NI code in use (packages after 10.5.2.0),
+- Speed: the client chooses the cipher. With LibreSSL's AES-NI code in use (10.5.3.0 and later),
   `aes128-gcm@openssh.com` and `aes256-gcm@openssh.com` move files over SFTP about 3.5 times as fast
   as with the 10.5.2.0 packages, and up to twice as fast as `chacha20-poly1305@openssh.com`, the first
   choice of OpenSSH clients. WinSCP and FileZilla use AES by default; with `sftp` and `scp`, add

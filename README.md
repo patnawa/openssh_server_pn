@@ -59,7 +59,7 @@ denial-of-service fix, complete `PubkeyAcceptedAlgorithms` enforcement for ECDSA
 `mlkem768nistp256-sha256` hybrid key exchange, and the experimental
 `ssh-mldsa44-ed25519@openssh.com` post-quantum key type.
 
-## Since 10.5.2.0 (in this repository, for the next release)
+## Coming in 10.5.3.0 (built from this repository, not yet published)
 
 - **SFTP with AES about 3.5 times as fast on x64.** LibreSSL 4.x built with Visual Studio never
   detected the processor's AES-NI and carry-less multiplication, so every AES cipher ran on slow
