@@ -20,6 +20,7 @@ vcpkg_extract_source_archive(
         modify-cmakelists.patch
         modify-crypto-cmakelists.patch
         msvc-arm64-bn-ct-ne-zero.patch
+        msvc-x64-cpu-caps.patch
 )
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS

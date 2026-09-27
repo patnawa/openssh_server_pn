@@ -1,0 +1,77 @@
+Detect the CPU features on Windows x64 when LibreSSL is built with MSVC, so AES-NI and PCLMULQDQ
+are used. Two things keep an MSVC build from ever detecting them:
+
+1. LibreSSL 4.0 replaced the assembly CPUID routine (cpuid-masm-x86_64.S in 3.9) with C and GCC
+   inline assembly, and LibreSSL portable compiles the cpuid and xgetbv helpers only for GCC
+   (patches/patch-amd64-crypto-cpu-caps.c.patch, "disable cpu caps on windows for now"): MSVC
+   has no inline assembly for x64. This adds the MSVC intrinsics __cpuidex and _xgetbv
+   (<intrin.h>) as a third branch for MSVC; GCC, Clang and MinGW keep the inline assembly, and
+   clang-cl, which defines neither __GNUC__ nor the xgetbv target feature by default, keeps the
+   old behaviour.
+2. crypto_cpu_caps_init() runs only from openssl_init_crypto_constructor(), a function marked
+   __attribute__((constructor)), which opensslfeatures.h defines away for MSVC, so nothing calls
+   it. This registers the function in the .CRT$XCU section, whose functions the C runtime runs
+   when the DLL or the program is loaded, as it runs constructors elsewhere.
+
+Without them, aes_amd64.c and gcm128_amd64.c never select the AES-NI and CLMUL assembly that the
+MSVC x64 build contains, and every AES cipher runs on the table-based code. Drop this patch with
+a LibreSSL release that detects the CPU features under MSVC.
+No line of the hunks is empty: git apply rejects an empty context line once a checkout with
+CRLF line endings turns it into a bare carriage return.
+
+diff --git a/crypto/arch/amd64/crypto_cpu_caps.c b/crypto/arch/amd64/crypto_cpu_caps.c
+--- a/crypto/arch/amd64/crypto_cpu_caps.c
++++ b/crypto/arch/amd64/crypto_cpu_caps.c
+@@ -22,2 +22,5 @@
+ #include "crypto_arch.h"
++#if defined(_MSC_VER) && !defined(__clang__)
++#include <intrin.h>
++#endif
+ #include "x86_arch.h"
+@@ -41,2 +44,9 @@
+ 	__asm__ ("cpuid": "+a"(eax), "+b"(ebx), "+c"(ecx), "+d"(edx));
++#elif defined(_MSC_VER) && !defined(__clang__) && !defined(OPENSSL_NO_ASM)
++	int regs[4];
++	__cpuidex(regs, (int)eax, (int)ecx);
++	eax = (uint32_t)regs[0];
++	ebx = (uint32_t)regs[1];
++	ecx = (uint32_t)regs[2];
++	edx = (uint32_t)regs[3];
+ #else
+@@ -62,2 +72,6 @@
+ 	__asm__ ("xgetbv": "+a"(eax), "+c"(ecx), "+d"(edx));
++#elif defined(_MSC_VER) && !defined(__clang__) && !defined(OPENSSL_NO_ASM)
++	uint64_t xcr = _xgetbv(ecx);
++	eax = (uint32_t)xcr;
++	edx = (uint32_t)(xcr >> 32);
+ #endif
+diff --git a/crypto/crypto_init.c b/crypto/crypto_init.c
+--- a/crypto/crypto_init.c
++++ b/crypto/crypto_init.c
+@@ -57,4 +57,25 @@
+ 	crypto_cpu_caps_init();
+ }
+-
++
++#if defined(_MSC_VER) && !defined(__clang__)
++/*
++ * MSVC has no constructor attribute (opensslfeatures.h defines __attribute__
++ * away), so nothing would call the function above. The C runtime calls the
++ * functions of the .CRT$XCU section when the DLL or the program is loaded.
++ */
++static void __cdecl
++openssl_init_crypto_msvc(void)
++{
++	openssl_init_crypto_constructor();
++}
++#pragma section(".CRT$XCU", read)
++__declspec(allocate(".CRT$XCU")) void (__cdecl *openssl_init_crypto_msvc_ptr)(void) =
++    openssl_init_crypto_msvc;
++#if defined(_M_IX86) /* C names get a leading underscore on x86 only */
++#pragma comment(linker, "/include:_openssl_init_crypto_msvc_ptr")
++#else
++#pragma comment(linker, "/include:openssl_init_crypto_msvc_ptr")
++#endif
++#endif
++
+ /*
