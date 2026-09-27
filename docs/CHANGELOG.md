@@ -8,11 +8,17 @@ every change to the packaging, and how the result was verified. Published as Git
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
-## Unreleased
+## 10.5.3.0 (2026-09-27)
 
-Changes on `main` after 10.5.2.0, for the next build and OpenSSH Server PN Manager 2.0.0 (the
-management console under the project's name). Not yet built from a tag by the CI; the elevated
-manager tests and the install tests run in the CI of the pull request.
+The build that makes SFTP with AES about 3.5 times as fast on x64, with OpenSSH Server PN Manager
+2.0.0, the management console under the project's name. OpenSSH 10.5p1, libfido2 1.17.0, libcbor
+0.14.0 and zlib 1.3.2 are unchanged; LibreSSL stays 4.3.2, now with the CPU detection for MSVC and
+the ARM64 workaround. The pull request's CI (run 36303283512) built x64, x86 and ARM64 and passed
+the unit tests and the install tests on Windows Server 2022 and 2025, on Windows 11 on ARM64, and
+on Windows Server 2022 with the PowerShell 2.0 engine, with the elevated `--selftest` (96 of 96), `--keytest` and
+`--authtest` (including the four SFTP settings) of the new manager. The CI builds, tests and
+packages the release from the tag `v10.5.3.0`; the hashes of the published files follow in the
+README and in the release.
 
 LibreSSL:
 

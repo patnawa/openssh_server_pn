@@ -252,8 +252,8 @@ and the account needs NTFS rights on it (`icacls C:\SFTP\alice /grant 'alice:(OI
 Windows, `ChrootDirectory` applies to SFTP sessions only, which is why `ForceCommand internal-sftp`
 goes with it; `internal-sftp` runs `sftp-server.exe`. A domain account's `%u` is `domain\name`.
 
-The client chooses the cipher, and the cipher decides the speed. On x64, from the packages after
-10.5.2.0 on, `aes128-gcm@openssh.com` and `aes256-gcm@openssh.com` are the fastest, about twice
+The client chooses the cipher, and the cipher decides the speed. On x64, from the packages of
+10.5.3.0 on, `aes128-gcm@openssh.com` and `aes256-gcm@openssh.com` are the fastest, about twice
 `chacha20-poly1305@openssh.com`, the first choice of OpenSSH clients: add
 `-c aes128-gcm@openssh.com` to `sftp` and `scp`, or `Ciphers aes128-gcm@openssh.com,...` to the
 client's `ssh_config`. WinSCP and FileZilla use AES by default. Compression (`-C`) slows transfers
