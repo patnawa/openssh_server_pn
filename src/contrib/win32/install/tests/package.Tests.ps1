@@ -147,9 +147,14 @@ Before 'RemoveExistingProducts' 'OpenSSHManagerUninstall'
 Check 'OpenSSHManagerUninstall: deferred, no impersonation, exit code ignored' (($type['OpenSSHManagerUninstall'] -band 0xF40) -eq 0xC40) ([string]$type['OpenSSHManagerUninstall'])
 Check 'OpenSSHManagerUninstall: only when the Server feature is removed, not by an upgrade' ($cond['OpenSSHManagerUninstall'] -eq '&Server = 2 AND NOT UPGRADINGPRODUCTCODE AND NETFX45_RELEASE') $cond['OpenSSHManagerUninstall']
 Check 'OpenSSHManagerUninstall runs the manager from the install folder' ($target['SetOpenSSHManagerUninstall'] -eq '"[INSTALLFOLDER]OpenSSHServerPNManager.exe" --agent uninstall') $target['SetOpenSSHManagerUninstall']
+Before 'InstallFiles' 'OpenSSHWizardRequest'
+Before 'OpenSSHWizardRequest' 'InstallFinalize'
+Check 'OpenSSHWizardRequest: deferred, no impersonation, exit code ignored' (($type['OpenSSHWizardRequest'] -band 0xF40) -eq 0xC40) ([string]$type['OpenSSHWizardRequest'])
+Check 'OpenSSHWizardRequest runs the manager from the install folder' ($target['SetOpenSSHWizardRequest'] -eq '"[INSTALLFOLDER]OpenSSHServerPNManager.exe" --agent open-wizard') $target['SetOpenSSHWizardRequest']
+Check 'OpenSSHWizardRequest: the condition of the step that starts the manager' ($cond['OpenSSHWizardRequest'] -eq $cond['OpenSSHOpenWizard']) $cond['OpenSSHWizardRequest']
 Before 'InstallFinalize' 'OpenSSHOpenWizard'
 Check 'OpenSSHOpenWizard: immediate, as the user, exit code ignored' (($type['OpenSSHOpenWizard'] -band 0xC40) -eq 0x40) ([string]$type['OpenSSHOpenWizard'])
-Check 'OpenSSHOpenWizard starts the installed manager (it opens the wizard when msiexec.exe starts it)' ($props['WixShellExecTarget'] -eq '[#OpenSSHServerPNManager.exe]') $props['WixShellExecTarget']
+Check 'OpenSSHOpenWizard starts the installed manager (it opens the wizard on the request)' ($props['WixShellExecTarget'] -eq '[#OpenSSHServerPNManager.exe]') $props['WixShellExecTarget']
 Check 'OPEN_WIZARD defaults to 1 and is a secure property' ($props['OPEN_WIZARD'] -eq '1' -and $secure -contains 'OPEN_WIZARD')
 Before 'FindRelatedProducts' 'SetOpenSSHFirstInstall'
 Check 'a first installation: the condition of the fresh firewall step' ($cond['SetOpenSSHFirstInstall'] -eq $cond['SetOpenSSHFirewallSaveFresh']) $cond['SetOpenSSHFirstInstall']

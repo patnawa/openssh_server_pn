@@ -196,6 +196,39 @@ namespace OpenSSHServerPNManager
         }
     }
 
+    /// <summary>
+    /// The package's request for the setup wizard after a first installation with a window. A deferred step of the package
+    /// (as LocalSystem, after the files are installed) runs "--agent open-wizard", which leaves this marker; after the
+    /// installation the package starts the manager, which takes a fresh marker and opens the wizard. The step that starts it
+    /// (WixShellExec) passes no arguments, and the program that started the manager may have ended by the time it looks.
+    /// </summary>
+    internal static class WizardRequest
+    {
+        public static string FilePath { get { return Path.Combine(AlertSettings.Dir, "open-wizard"); } }
+        /// <summary>How long a marker counts: an installation that failed after leaving one does not open the wizard later.</summary>
+        public static readonly TimeSpan Fresh = TimeSpan.FromMinutes(15);
+
+        public static void Leave(DateTime now)
+        {
+            if (!Directory.Exists(AlertSettings.Dir)) Acl.CreatePrivateFolder(AlertSettings.Dir);
+            File.WriteAllText(FilePath, now.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture));
+        }
+
+        /// <summary>Whether a marker left within the last 15 minutes is there. It is removed either way. Only administrators can read it.</summary>
+        public static bool Take(DateTime now)
+        {
+            try
+            {
+                if (!File.Exists(FilePath)) return false;
+                DateTime at;
+                bool ok = DateTime.TryParseExact(File.ReadAllText(FilePath).Trim(), "yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out at);
+                File.Delete(FilePath);
+                return ok && at <= now.AddMinutes(1) && now - at < Fresh;
+            }
+            catch { return false; }
+        }
+    }
+
     /// <summary>What the agent remembers between runs.</summary>
     internal sealed class AgentState
     {
@@ -254,11 +287,17 @@ namespace OpenSSHServerPNManager
 
         /// <summary>
         /// --agent watch | daily: what the scheduled tasks run; --agent uninstall: what the MSI runs (as SYSTEM) before it
-        /// removes the program files. Returns the exit code.
+        /// removes the program files; --agent open-wizard: what it runs during a first installation with a window
+        /// (WizardRequest). Returns the exit code.
         /// </summary>
         public static int Run(string job)
         {
             if (job == "uninstall") return Uninstall();
+            if (job == "open-wizard")
+            {
+                try { WizardRequest.Leave(DateTime.Now); return 0; }
+                catch (Exception ex) { Note("the request for the setup wizard failed: " + ex.Message); return 1; }
+            }
             try
             {
                 if (job == "watch") MoveToInstalled();

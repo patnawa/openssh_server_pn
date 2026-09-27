@@ -602,7 +602,7 @@ namespace OpenSSHServerPNManager
             });
             UnitSince20(test);
             UnitSince21(test, tmpDir);
-            UnitSince22(test);
+            UnitSince22(test, tmpDir);
         }
 
         /// <summary>The configuration of a default installation, with the rules section of the Authentication tab when auth is given.</summary>
@@ -894,7 +894,7 @@ namespace OpenSSHServerPNManager
         }
 
         /// <summary>Unit tests of what manager 2.2.0 added: SFTP partners.</summary>
-        private static void UnitSince22(Action<string, Func<string>> test)
+        private static void UnitSince22(Action<string, Func<string>> test, string tmpDir)
         {
             test("partners: generated passwords have 20 characters of every kind and none that is easy to confuse", () =>
             {
@@ -1125,13 +1125,29 @@ namespace OpenSSHServerPNManager
                 if (string.Join("|", sizes) != "0 bytes|1023 bytes|1.5 KB|10 MB|3.0 GB") throw new Exception(string.Join("|", sizes));
                 return null;
             });
-            test("after installing: the program that started the manager is found (msiexec.exe opens the wizard)", () =>
+            test("after installing: the package's request for the setup wizard counts once, and only while it is fresh", () =>
             {
-                var parent = Sessions.ParentNameOf(Process.GetCurrentProcess().Id);
-                if (string.IsNullOrEmpty(parent) || !parent.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) throw new Exception("parent of this process: " + (parent ?? "none"));
-                if (Sessions.ParentNameOf(-1) != null) throw new Exception("a process that does not exist has a parent");
-                if (Program.StartedByInstaller) throw new Exception("this test run counts as started by the installer");
-                return parent;
+                var old = Ssh.ConfigDirOverride;
+                Ssh.ConfigDirOverride = Path.Combine(tmpDir, "wizard-request");
+                try
+                {
+                    var now = new DateTime(2026, 9, 27, 12, 0, 0);
+                    bool admin = Elevation.IsAdministrator();
+                    if (!admin) Directory.CreateDirectory(AlertSettings.Dir); // the admin-only folder needs administrator rights
+                    if (WizardRequest.Take(now)) throw new Exception("taken without a request");
+                    WizardRequest.Leave(now.AddMinutes(-2));
+                    if (admin && !Acl.IsAdminOnly(AlertSettings.Dir)) throw new Exception("the folder of the request is open to others");
+                    if (!WizardRequest.Take(now)) throw new Exception("a request of 2 minutes ago is not taken");
+                    if (File.Exists(WizardRequest.FilePath) || WizardRequest.Take(now)) throw new Exception("a request counts twice");
+                    WizardRequest.Leave(now.AddMinutes(-20));
+                    if (WizardRequest.Take(now) || File.Exists(WizardRequest.FilePath)) throw new Exception("a request of 20 minutes ago counts, or stays");
+                    WizardRequest.Leave(now.AddHours(2));
+                    if (WizardRequest.Take(now)) throw new Exception("a request from the future counts");
+                    File.WriteAllText(WizardRequest.FilePath, "not a time");
+                    if (WizardRequest.Take(now) || File.Exists(WizardRequest.FilePath)) throw new Exception("an unreadable request counts, or stays");
+                    return null;
+                }
+                finally { Ssh.ConfigDirOverride = old; }
             });
         }
 

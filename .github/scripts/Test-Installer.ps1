@@ -274,8 +274,9 @@ switch ($Scenario) {
 
     'FirstRun' {
         # The first installation run with a window (here /qr, the reduced window, which asks nothing) starts the installed
-        # manager, which opens its setup wizard (msiexec.exe started it) and says so in its log; the silent installations of
-        # the other scenarios do not. The manager runs as the installing user, whose log it writes.
+        # manager, which takes the request the package left during the installation, opens its setup wizard and says so in
+        # its log; the silent installations of the other scenarios do not. The manager runs as the installing user, whose log
+        # it writes.
         if (Get-InstalledOpenSSHProduct) { throw 'FirstRun needs a machine without the package: run it after Uninstall.' }
         $managerLog = Join-Path $env:LOCALAPPDATA 'OpenSSH Server PN Manager\manager.log'
         $linesBefore = if (Test-Path -LiteralPath $managerLog) { @(Get-Content -LiteralPath $managerLog).Count } else { 0 }
@@ -295,6 +296,8 @@ switch ($Scenario) {
         $running | ForEach-Object { Write-Host "OpenSSHServerPNManager.exe PID $($_.Id) as $($_.User): $($_.CommandLine)" }
         Test-Check 'The setup wizard of the manager opens after a first installation with a window' ($null -ne $opened) "$(if ($opened) { $opened } else { "no 'Setup wizard opened' in $managerLog within 60 s; $($running.Count) manager process(es)" })" | Out-Null
         Test-Check 'The manager runs as the installing user' ($running.Count -gt 0 -and @($running | Where-Object { $_.User -notlike "*\$env:USERNAME" }).Count -eq 0) (($running | ForEach-Object { $_.User }) -join ', ') | Out-Null
+        $request = Join-Path $env:ProgramData 'ssh\manager\open-wizard'   # WizardRequest in tools/OpenSSH-Server-PN-Manager/Agent.cs
+        Test-Check 'The request for the wizard was taken' (-not (Test-Path -LiteralPath $request)) $request | Out-Null
         # Its window waits for someone to answer it: end it, then leave the machine as Uninstall did.
         foreach ($p in Get-ManagerProcess) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
         $product = Get-InstalledOpenSSHProduct

@@ -23,8 +23,8 @@
 //                a temporary sshd on 127.0.0.1 and a temporary local account; both are removed at the end
 //   --screenshot <folder> [--ui-scale 1.5] [--theme dark|light]   every tab rendered off-screen to PNG files
 //   --wizard     opens the window and starts the setup wizard at once
-//   --agent watch|daily   the scheduled tasks of the Alerts tab (as SYSTEM); --agent uninstall: what the MSI runs
-//                when the package is removed (deletes those tasks)
+//   --agent watch|daily   the scheduled tasks of the Alerts tab (as SYSTEM); --agent uninstall and open-wizard: what the MSI runs
+//                when the package is removed (deletes those tasks), and during a first installation with a window (asks for the wizard)
 
 using System;
 using System.Collections.Generic;
@@ -74,7 +74,7 @@ namespace OpenSSHServerPNManager
         public static bool Unattended;
         /// <summary>--wizard: the setup wizard starts as soon as the window is shown.</summary>
         public static bool StartWizard;
-        /// <summary>Started by msiexec.exe: the package opens the wizard after a first installation.</summary>
+        /// <summary>Started by the package after a first installation, which asked for the setup wizard (WizardRequest).</summary>
         public static bool StartedByInstaller;
 
         [DllImport("kernel32.dll")] private static extern bool AttachConsole(int pid);
@@ -136,10 +136,11 @@ namespace OpenSSHServerPNManager
                 if (ui >= 0) { Unattended = true; return SelfTest.Run(ui + 1 < args.Length ? args[ui + 1] : null, true); }
             }
 
-            // After a first installation the package starts the manager itself, which then opens the wizard: its step
-            // (WixShellExec) passes no arguments, and cannot start the wizard's shortcut, since the 32-bit process resolves a
-            // shortcut into the 64-bit Program Files as Program Files (x86). Nothing else starts the manager from msiexec.exe.
-            try { StartedByInstaller = string.Equals(Sessions.ParentNameOf(Process.GetCurrentProcess().Id), "msiexec.exe", StringComparison.OrdinalIgnoreCase); } catch { }
+            // After a first installation the package starts the manager, which then opens the wizard when the package left its
+            // request (WizardRequest): the step that starts it (WixShellExec) passes no arguments, and cannot start the wizard's
+            // shortcut, since that 32-bit process resolves a shortcut into the 64-bit Program Files as Program Files (x86).
+            // Without administrator rights the request cannot be read; the elevated start below takes it.
+            StartedByInstaller = WizardRequest.Take(DateTime.Now);
             StartWizard = StartedByInstaller || args.Any(a => a.Equals("--wizard", StringComparison.OrdinalIgnoreCase) || a.Equals("/wizard", StringComparison.OrdinalIgnoreCase));
             if (!Elevation.IsAdministrator())
             {
