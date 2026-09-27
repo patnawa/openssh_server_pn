@@ -50,8 +50,11 @@ Authenticode-signed only when a signing service is configured; the release notes
   to known values, so no property value can change the command. The steps never fail an install,
   and everything they do is written to the MSI log. When the server is removed, the installed
   manager runs as LocalSystem from the install folder to delete its scheduled tasks
-  (packages after 10.5.3.0). The setup wizard that opens after an interactive first install runs
-  as the installing user and asks for administrator rights like any start of the manager.
+  (10.5.4.0 and later). During an interactive first install it also leaves, as LocalSystem, a
+  request for the setup wizard in `%ProgramData%\ssh\manager`, which only administrators can read
+  or change; the manager the package then starts runs as the installing user and asks for
+  administrator rights like any start of the manager, and a request older than 15 minutes is
+  ignored.
 - **Exposure.** On Windows 10 and 11 the firewall rule applies to Domain and Private networks
   only; on Windows Server to all networks. Password logins are allowed after install so that
   the first login works. INSTALL.md section 5 lists the hardening to apply once keys are set up.

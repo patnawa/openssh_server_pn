@@ -11,10 +11,17 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
-## 10.5.4.0 (not released yet)
+## 10.5.4.0 (2026-09-27)
 
 The packages install OpenSSH Server PN Manager 2.2.0 (next entry) with the server. OpenSSH 10.5p1,
-LibreSSL 4.3.2, libfido2 1.17.0, libcbor 0.14.0 and zlib 1.3.2 are unchanged from 10.5.3.0.
+LibreSSL 4.3.2, libfido2 1.17.0, libcbor 0.14.0 and zlib 1.3.2 are unchanged from 10.5.3.0. The
+pull request's CI (run 36318071657) built x64, x86 and ARM64 and passed the unit tests, Pester E2E
+and every install test on Windows Server 2022, on Windows Server 2022 with the PowerShell 2.0
+engine and on Windows Server 2025, with the elevated `--selftest`, `--keytest` and `--authtest`
+(partners and agent) of the new manager, the uninstall that removes its tasks, and the first
+installation with a window that opens the wizard. On Windows 11 on ARM64 that last scenario
+failed, which led to the request for the wizard described below; the rest passed there too. The
+file table follows when the release is published.
 
 Installer:
 
@@ -26,14 +33,18 @@ Installer:
   repair (which would restart `sshd`). Their component has an HKMU key path, HKLM in this
   per-machine package; ICE57, which takes the Start-menu folder for per-user data, is suppressed.
 - **The setup wizard after installing.** After a first installation of the server run with a
-  window (a double-click, or `msiexec /i` with `/qr` or no UI switch), the package starts the
-  installed manager through the shell as the installing user (`WixShellExec`, after
-  `InstallFinalize`, never failing the installation), and the manager, started by `msiexec.exe`,
-  opens its wizard. Not after a silent or `/passive` installation, an upgrade, a downgrade or a
-  repair; `OPEN_WIZARD=0` turns it off. `WixShellExec` passes no arguments, and it cannot start
-  the wizard's shortcut instead: the WiX custom action DLL is 32-bit, and a 32-bit process
-  resolves a shortcut into the 64-bit Program Files as Program Files (x86), which failed with
-  "path not found" in CI run 36316791081.
+  window (a double-click, or `msiexec /i` with `/qr` or no UI switch), the manager opens its setup
+  wizard. While the files are installed, a deferred step runs `OpenSSHServerPNManager.exe --agent
+  open-wizard` as LocalSystem, which leaves a request in `%ProgramData%\ssh\manager` (readable by
+  administrators only); after `InstallFinalize` the package starts the installed manager through the
+  shell as the installing user (`WixShellExec`), and the manager takes a request younger than 15
+  minutes and opens the wizard. Neither step ever fails the installation. Not after a silent or
+  `/passive` installation, an upgrade, a downgrade or a repair; `OPEN_WIZARD=0` turns it off. Why
+  a request: `WixShellExec` passes no arguments; it cannot start the wizard's shortcut, because
+  the WiX custom action DLL is 32-bit and a 32-bit process resolves a shortcut into the 64-bit
+  Program Files as Program Files (x86) ("path not found" in CI run 36316791081); and whether
+  `msiexec.exe` started the manager cannot be told reliably, since that process may have ended
+  when the manager looks (Windows 11 on ARM64 in CI run 36318071657).
 - **The manager's tasks go with the server.** When the Server feature is removed (an uninstall or
   `REMOVE=Server`, not the removal of the old package by an upgrade), the package runs
   `OpenSSHServerPNManager.exe --agent uninstall` from the install folder as LocalSystem, before the
@@ -48,10 +59,10 @@ Installer:
   removal; a manager window someone has open is left alone. `tests\preinstall.Tests.ps1`: 126
   checks pass.
 - `tests\package.Tests.ps1` checks the manager's files and shortcuts in the Server feature, the key
-  path, the order, type and condition of the uninstall step, and the wizard step's conditions for a
-  first installation with a full or reduced window, `/passive`, `/quiet`, `OPEN_WIZARD=0`, no .NET
-  Framework 4.5, and an upgrade or repair: 114 checks (115 on ARM64), all passing on the x64, x86
-  and ARM64 packages built here with WiX 3.14.1.
+  path, the order, type and condition of the uninstall step and of the two wizard steps, and their
+  conditions for a first installation with a full or reduced window, `/passive`, `/quiet`,
+  `OPEN_WIZARD=0`, no .NET Framework 4.5, and an upgrade or repair: 119 checks (120 on ARM64), all
+  passing on the x64, x86 and ARM64 packages built here with WiX 3.14.1.
 
 CI (`.github/workflows/openssh.yml`, `.github/scripts`):
 
@@ -62,15 +73,23 @@ CI (`.github/workflows/openssh.yml`, `.github/scripts`):
   records the step, and that the manager and its shortcuts are removed.
 - A new scenario, *FirstRun*, installs the package with `msiexec /qr` on the machine the uninstall
   left, waits for the manager's log to say that it opened the wizard, checks that the manager runs
-  as the installing user, ends it and uninstalls again.
+  as the installing user and that it took the request, ends it and uninstalls again.
 - The workflow also runs when the committed manager (`tools/OpenSSH-Server-PN-Manager/bin`)
   changes, since the packages carry it.
 
-## OpenSSH Server PN Manager 2.2.0 (not released yet)
+## OpenSSH Server PN Manager 2.2.0 (2026-09-27)
 
 File exchange with partners outside the company, and a server that reports and defends itself
-while the window is closed. The packages of 10.5.4.0 install it; it also has a release of its own
-and runs with the 10.5.3.0 packages and earlier ones.
+while the window is closed. The packages of 10.5.4.0 install it; it is also published on its own,
+as `manager-v2.2.0` by the CI (`.github/workflows/manager.yml`), and runs with the 10.5.3.0
+packages and earlier ones.
+
+| File | Size | SHA-256 |
+|---|---|---|
+| `OpenSSHServerPNManager.exe` | 1,171,456 bytes | `80F4A90F6EF903DBE523D1452C4CD08A18D8B57F7AFE4975302B7FBAF305BEC8` |
+| `OpenSSHServerPNManager.exe.config` | 371 bytes | `38607418BB4655C3C736572F52DA1F35D926CCBF91AD1102F0DCDA164E798451` (unchanged) |
+
+A fresh build of the source gives the same SHA-256.
 
 Added:
 
@@ -125,8 +144,9 @@ Added:
   run when the server is removed). Tasks set up while the manager ran from another folder run a
   copy in `%ProgramFiles%\OpenSSH Server PN Manager`; once a package installs the manager next to
   `sshd.exe`, their next run moves them to that one.
-- Started by `msiexec.exe`, as the packages do after a first installation, the manager opens its
-  setup wizard, as with `--wizard`, and writes a line to its log.
+- `--agent open-wizard` leaves a request for the setup wizard, which the packages do during a first
+  installation with a window: the next start of the manager within 15 minutes, with administrator
+  rights, takes it and opens the wizard, as with `--wizard`, and writes a line to its log.
 
 Tests:
 
@@ -134,8 +154,8 @@ Tests:
   reads back, `AllowGroups` and hand-edited sections, the partner dialog, the last day; transfers
   from `sftp-server` events, CSV that spreadsheets do not run, the report and its periods; networks
   and the allow list, settings with their secrets sealed, the blocking plan, uploads batched per
-  partner, an e-mail and a webhook sent to test servers on 127.0.0.1, and the program that
-  started the manager (from `msiexec.exe`, it opens the wizard).
+  partner, an e-mail and a webhook sent to test servers on 127.0.0.1, and the package's request
+  for the setup wizard (taken once, and only within 15 minutes).
 - `--selftest` 122 (74 and 48). The window test now lays the window out as on a 1024 x 768 screen,
   at 100% and 150%, wherever it runs: CI run 36315515987 found that the Alerts tab ran past its
   width at 150% on the runners' screens, and the tab now wraps its rows.
@@ -151,9 +171,9 @@ Tests:
 Verified:
 
 - Here, on Windows 11 Pro 26200: `--unittest` 74 of 74; `--selftest` without administrator rights
-  119 of 122, the 3 that need them failing as expected (the build before the last change passed
-  121 of 121 elevated);
-  `--screenshot`. The build is reproducible: a fresh build gives the committed file byte for byte.
+  119 of 122, the 3 that need them failing as expected (an earlier build of this version passed
+  121 of 121 elevated); `--screenshot`. The build is reproducible: a fresh build gives the
+  committed file byte for byte.
 - The transfer parser against the events of a local `sshd`: 39 events read in 12 ms with the
   event log query the manager uses.
 - Elevated, on GitHub's runners (Windows Server 2022, the same with the PowerShell 2.0 engine,
