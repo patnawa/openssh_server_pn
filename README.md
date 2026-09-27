@@ -51,8 +51,8 @@ Details in [docs/CHANGELOG.md](docs/CHANGELOG.md) and [docs/COMPATIBILITY.md](do
 
 Download them from the release [v10.5.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.3.0), together with
 `OpenSSHServerPNManager.exe.config` (keep it next to the executable), `SHA256SUMS.txt` and the SBOM
-`OpenSSH-Server-PN-v10.5.3.0.cdx.json`. The management console also has releases of its own, such as
-[manager-v2.0.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.0.0). The files are **unsigned**: always compare
+`OpenSSH-Server-PN-v10.5.3.0.cdx.json`. The management console also has releases of its own; the newest is
+[manager-v2.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.1.0) (keys: load, change the passphrase, export for PuTTY; the setup wizard creates one). The files are **unsigned**: always compare
 the SHA-256 hash before installing (`Get-FileHash .\OpenSSH-Win64-v10.5.3.0.msi`, or the check in
 [docs/INSTALL.md](docs/INSTALL.md#1-choose-a-package)). `gh attestation verify <file> --repo patnawa/openssh_server_pn`
 shows that a file was built by this repository's workflow. Anyone can rebuild them with
