@@ -970,7 +970,7 @@ namespace OpenSSHServerPNManager
             test("partners: the partner dialog refuses a bad name before anything is made, and passes the choices on", () =>
             {
                 bool ran = false;
-                using (var d = new PartnerDialog(null, @"C:\SFTP", x => ran = true))
+                using (var d = new PartnerDialog(null, @"C:\SFTP", "", x => ran = true))
                 {
                     d.StartPosition = FormStartPosition.Manual; d.Location = new Point(-20000, -20000); d.ShowInTaskbar = false; d.Show(); Application.DoEvents();
                     d.TypeForTest("Account name", "bad name"); d.OkForTest();
@@ -982,6 +982,141 @@ namespace OpenSSHServerPNManager
                 }
                 return null;
             });
+            test("transfers: sftp-server events become transfers with the client address, two sessions apart", () =>
+            {
+                var t0 = new DateTime(2026, 9, 27, 10, 0, 0);
+                Func<int, int, string, Transfers.SftpEvent> E = (sec, pid, text) => new Transfers.SftpEvent { Time = t0.AddSeconds(sec), Pid = pid, Text = text };
+                var events = new List<Transfers.SftpEvent>
+                {
+                    E(0, 100, "user: acme: session opened for local user acme from [203.0.113.7] [postauth]"),
+                    E(1, 200, "user: globex: session opened for local user globex from [2001:db8::5] [postauth]"),
+                    E(2, 100, "user: acme: open \"/in/a, \"b\".csv\" flags WRITE,CREATE,TRUNCATE mode 0666 [postauth]"),
+                    E(3, 200, "user: globex: open \"/report.pdf\" flags READ mode 0666 [postauth]"),
+                    E(4, 100, "user: acme: close \"/in/a, \"b\".csv\" bytes read 0 written 52873 [postauth]"),
+                    E(5, 200, "user: globex: close \"/report.pdf\" bytes read 1048576 written 0 [postauth]"),
+                    E(6, 100, "user: acme: open \"/empty.txt\" flags WRITE,CREATE,TRUNCATE mode 0666 [postauth]"),
+                    E(7, 100, "user: acme: close \"/empty.txt\" bytes read 0 written 0 [postauth]"),
+                    E(8, 100, "user: acme: posix-rename old \"/in/x.tmp\" new \"/in/x.csv\" [postauth]"),
+                    E(9, 100, "user: acme: remove name \"/old.csv\" [postauth]"),
+                    E(10, 100, "user: acme: mkdir name \"/out\" mode 0777 [postauth]"),
+                    E(11, 200, "user: globex: open \"/up.bin\" flags WRITE,CREATE,TRUNCATE mode 0666 [postauth]"),
+                    E(12, 200, "user: globex: sent status Permission denied [postauth]"),
+                    E(13, 200, "user: globex: sent status Permission denied [postauth]"),
+                    E(14, 100, "user: acme: open \"/peek.txt\" flags READ mode 0666 [postauth]"),
+                    E(15, 100, "user: acme: close \"/peek.txt\" bytes read 0 written 0 [postauth]"),
+                };
+                var r = Transfers.Parse(events);
+                var got = string.Join("; ", r.Select(x => x.User + " " + x.Address + " " + x.Action + " " + x.File + " " + x.Bytes + (x.Detail.Length > 0 ? " (" + x.Detail + ")" : "")));
+                var want = "acme 203.0.113.7 upload /in/a, \"b\".csv 52873; globex 2001:db8::5 download /report.pdf 1048576; acme 203.0.113.7 upload /empty.txt 0; " +
+                           "acme 203.0.113.7 rename /in/x.csv 0 (from /in/x.tmp); acme 203.0.113.7 delete /old.csv 0; acme 203.0.113.7 new folder /out 0; globex 2001:db8::5 refused /up.bin 0 (upload refused)";
+                if (got != want) throw new Exception("\n got: " + got + "\nwant: " + want);
+                var t = Transfers.Totals(r);
+                if (t.Count != 2 || t[0].User != "globex" || t[0].DownloadBytes != 1048576 || t[0].Refused != 1 || t[1].Uploads != 2 || t[1].UploadBytes != 52873 || t[1].Changes != 3) throw new Exception("totals: " + string.Join("; ", t.Select(x => x.User + " " + x.Short)));
+                return r.Count + " records";
+            });
+            test("transfers: CSV lines come back as written, and spreadsheets do not run a name as a formula", () =>
+            {
+                var recs = new[]
+                {
+                    new TransferRecord { Time = new DateTime(2026, 9, 27, 10, 11, 12), User = "acme", Address = "203.0.113.7", Action = "upload", File = "/in/a, \"b\"\n.csv", Bytes = 5, Detail = "" },
+                    new TransferRecord { Time = new DateTime(2026, 9, 27, 10, 11, 13), User = "x", Address = "::1", Action = "download", File = "=HYPERLINK(\"http://x\")", Bytes = 0, Detail = "-2" },
+                    new TransferRecord { Time = new DateTime(2026, 9, 27, 10, 11, 14), User = "y", Address = "", Action = "rename", File = "@sum", Bytes = 0, Detail = "+from" },
+                };
+                foreach (var x in recs)
+                {
+                    var line = Transfers.CsvLine(x);
+                    if (Regex.IsMatch(line, "(^|,)\"?[=+@]")) throw new Exception("a field starts like a formula: " + line);
+                    var back = Transfers.FromCsv(line);
+                    var expected = x.File.Replace("\n", "?"); // control characters are written as ?: one record per line
+                    if (back == null || back.Key != x.Key.Replace(x.File, expected) || back.File != expected || back.Address != x.Address || back.Detail != x.Detail) throw new Exception("round trip of " + line + " gave " + (back == null ? "nothing" : back.File + " / " + back.Detail));
+                }
+                return null;
+            });
+            test("transfers: the report encodes names, and the periods start and end where they should", () =>
+            {
+                var recs = new List<TransferRecord> { new TransferRecord { Time = new DateTime(2026, 9, 3, 9, 0, 0), User = "acme", Address = "203.0.113.7", Action = "upload", File = "/<script>alert(1)</script>.csv", Bytes = 2048 } };
+                var html = Transfers.ReportHtml(recs, new DateTime(2026, 9, 1), new DateTime(2026, 10, 1), "srv<1>", new Dictionary<string, string> { { "acme", "ACME & Sons" } });
+                if (html.Contains("<script>") || html.Contains("srv<1>") || !html.Contains("ACME &amp; Sons") || !html.Contains("2026-09-01 to 2026-09-30")) throw new Exception("the report is not encoded as it should be");
+                DateTime f, to; var now = new DateTime(2026, 3, 15, 14, 30, 0);
+                TransfersWindow.Range("Last month", now, out f, out to);
+                if (f != new DateTime(2026, 2, 1) || to != new DateTime(2026, 3, 1)) throw new Exception("last month: " + f + " to " + to);
+                TransfersWindow.Range("Yesterday", now, out f, out to);
+                if (f != new DateTime(2026, 3, 14) || to != new DateTime(2026, 3, 15)) throw new Exception("yesterday: " + f + " to " + to);
+                TransfersWindow.Range("This month", now, out f, out to);
+                if (f != new DateTime(2026, 3, 1) || to != now) throw new Exception("this month: " + f + " to " + to);
+                return null;
+            });
+            test("alerts: networks, the allow list, and the settings with their secrets sealed", () =>
+            {
+                Network n;
+                if (!Network.TryParse("203.0.113.0/24", out n) || !n.Contains("203.0.113.77") || n.Contains("203.0.114.1")) throw new Exception("IPv4 network");
+                if (!Network.TryParse("2001:db8::/32", out n) || !n.Contains("2001:db8:1::5") || n.Contains("2001:db9::1") || n.Contains("203.0.113.1")) throw new Exception("IPv6 network");
+                if (!Network.TryParse("198.51.100.7", out n) || !n.Contains("::ffff:198.51.100.7") || n.Contains("198.51.100.8")) throw new Exception("one address");
+                foreach (var bad in new[] { "x", "1.2.3.4/33", "1.2.3.4/-1", "1.2.3.4/8/1", "" }) if (Network.TryParse(bad, out n)) throw new Exception("accepted [" + bad + "]");
+                var s = new AlertSettings { SmtpHost = "mail.example.com", SmtpUser = "u", SmtpPassword = "p=ss;word", From = "a@example.com", AdminTo = "b@example.com, c@example.com", Webhook = "https://example.com/hook?sig=abc", AllowList = "203.0.113.0/24 198.51.100.7" };
+                s.PartnerNotify["acme"] = "d@example.com";
+                var v = s.ToValues();
+                if (v["smtp.password"].Contains("p=ss") || !v["smtp.password"].StartsWith("dpapi:") || v["webhook.url"].Contains("example.com")) throw new Exception("a secret is stored in the clear");
+                var back = AlertSettings.FromValues(v);
+                if (back.SmtpPassword != s.SmtpPassword || back.Webhook != s.Webhook || back.AdminTo != s.AdminTo || back.PartnerNotify["acme"] != "d@example.com" || back.Problem() != null) throw new Exception("read back: " + back.Problem());
+                s.AdminTo = "not an address"; if (s.Problem() == null) throw new Exception("a wrong address was accepted");
+                s.AdminTo = "b@example.com"; s.Webhook = "http://example.com/hook"; if (s.Problem() == null) throw new Exception("a webhook without https was accepted");
+                s.Webhook = ""; s.AllowList = "10.0.0.0/33"; if (s.Problem() == null) throw new Exception("a wrong network in the allow list was accepted");
+                return null;
+            });
+            test("alerts: automatic blocking: threshold, allow list, open sessions, longer blocks for repeat offenders", () =>
+            {
+                var s = new AlertSettings { AllowList = "203.0.113.0/24", BlockThreshold = 10 };
+                var st = new AgentState(); var now = new DateTime(2026, 9, 27, 12, 0, 0);
+                Func<string, int, EventLogs.FailedSource> F = (a, c) => new EventLogs.FailedSource { Address = a, Count = c, First = now, Last = now };
+                var src = new List<EventLogs.FailedSource> { F("198.51.100.9", 12), F("198.51.100.10", 9), F("203.0.113.5", 50), F("192.0.2.1", 40), F("192.0.2.2", 11), F("127.0.0.1", 99) };
+                var add = Agent.PlanBlocks(s, st, src, now, new HashSet<string> { "192.0.2.2" }, new HashSet<string> { "192.0.2.1" }, a => a == "127.0.0.1");
+                if (string.Join(",", add) != "198.51.100.9") throw new Exception("blocked: " + string.Join(",", add) + " (below the threshold, allowed, connected, blocked already and this computer must not be)");
+                var b = st.Blocks["198.51.100.9"];
+                if (b.Until != now.AddHours(1) || b.Strikes != 1) throw new Exception("first block until " + b.Until);
+                var one = src.Take(1).ToList(); var none = new HashSet<string>();
+                b.Until = DateTime.MinValue; Agent.PlanBlocks(s, st, one, now.AddHours(2), none, none, a => false);
+                if (b.Until != now.AddHours(26)) throw new Exception("second block until " + b.Until);
+                b.Until = DateTime.MinValue; Agent.PlanBlocks(s, st, one, now.AddDays(2), none, none, a => false);
+                if (b.Until != now.AddDays(9)) throw new Exception("third block until " + b.Until);
+                b.Until = DateTime.MinValue; Agent.PlanBlocks(s, st, one, now.AddDays(20), none, none, a => false);
+                b = st.Blocks["198.51.100.9"];
+                if (b.Until != now.AddDays(20).AddHours(1) || b.Strikes != 1) throw new Exception("after a quiet week: until " + b.Until + ", strike " + b.Strikes);
+                return null;
+            });
+            test("alerts: uploads of a partner wait 5 minutes and go out together; others are not reported", () =>
+            {
+                var st = new AgentState(); var t0 = new DateTime(2026, 9, 27, 12, 0, 0);
+                var recs = new[]
+                {
+                    new TransferRecord { Time = t0, User = "acme", Action = TransferRecord.Upload, File = "/a.csv", Bytes = 10 },
+                    new TransferRecord { Time = t0.AddMinutes(3), User = "acme", Action = TransferRecord.Upload, File = "/b.csv", Bytes = 20 },
+                    new TransferRecord { Time = t0, User = "alice", Action = TransferRecord.Upload, File = "/x" },
+                    new TransferRecord { Time = t0, User = "acme", Action = TransferRecord.Download, File = "/c" },
+                };
+                Agent.AddPending(st, recs, new HashSet<string> { "acme" });
+                if (st.Pending.Count != 1 || st.Pending["acme"].Count != 2) throw new Exception("waiting: " + string.Join("; ", st.Pending.Select(p => p.Key + " " + p.Value.Count)));
+                if (Agent.DuePending(st, t0.AddMinutes(4)).Count != 0) throw new Exception("sent before 5 minutes");
+                if (string.Join(",", Agent.DuePending(st, t0.AddMinutes(5))) != "acme") throw new Exception("not sent after 5 minutes");
+                return null;
+            });
+            test("alerts: an e-mail and a webhook reach a server (test servers on 127.0.0.1)", () =>
+            {
+                using (var smtp = new TestServer(false))
+                using (var http = new TestServer(true))
+                {
+                    var s = new AlertSettings { SmtpHost = "127.0.0.1", SmtpPort = smtp.Port, SmtpTls = false, From = "osm@example.com", AdminTo = "admin@example.com" };
+                    Agent.SendMail(s, "Test subject", "Body line", null, AlertSettings.Addresses(s.AdminTo), "report.csv", "x,y\r\n");
+                    var mail = smtp.Wait();
+                    if (!mail.Contains("RCPT TO:<admin@example.com>") || !mail.Contains("MAIL FROM:<osm@example.com>") || !mail.Contains("report.csv")) throw new Exception("the mail server got:\n" + mail);
+                    s.Webhook = "http://127.0.0.1:" + http.Port + "/hook"; s.WebhookTeams = true;
+                    Agent.SendHook(s, "Subject \"q\"", "line1\nline2");
+                    var req = http.Wait();
+                    if (!req.StartsWith("POST /hook") || !req.Contains("application/vnd.microsoft.card.adaptive") || !req.Contains("Subject \\\"q\\\"") || !req.Contains("line1\\n\\nline2")) throw new Exception("the webhook got:\n" + req);
+                    if (Agent.HookBody(false, "a\\b", "c") != "{\"text\":\"a\\\\b\\nc\"}") throw new Exception("text body: " + Agent.HookBody(false, "a\\b", "c"));
+                }
+                return null;
+            });
             test("partners: the last day an account can log in, and sizes for people", () =>
             {
                 if (LocalAccounts.LastDay(new DateTime(2026, 10, 1, 0, 0, 0)) != new DateTime(2026, 9, 30)) throw new Exception("LastDay of midnight");
@@ -990,6 +1125,68 @@ namespace OpenSSHServerPNManager
                 if (string.Join("|", sizes) != "0 bytes|1023 bytes|1.5 KB|10 MB|3.0 GB") throw new Exception(string.Join("|", sizes));
                 return null;
             });
+        }
+
+        /// <summary>A one-connection SMTP or HTTP server on 127.0.0.1 for the tests of sending: it records what it receives.</summary>
+        private sealed class TestServer : IDisposable
+        {
+            private readonly System.Net.Sockets.TcpListener _l = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+            private readonly StringBuilder _got = new StringBuilder();
+            private readonly ManualResetEvent _done = new ManualResetEvent(false);
+            public int Port { get { return ((IPEndPoint)_l.LocalEndpoint).Port; } }
+
+            public TestServer(bool http)
+            {
+                _l.Start();
+                new Thread(() =>
+                {
+                    try
+                    {
+                        using (var c = _l.AcceptTcpClient())
+                        {
+                            c.ReceiveTimeout = 20000;
+                            if (http) Http(c.GetStream()); else Smtp(c.GetStream());
+                        }
+                    }
+                    catch (Exception ex) { lock (_got) _got.Append("ERROR " + ex.Message); }
+                    finally { _done.Set(); }
+                }) { IsBackground = true }.Start();
+            }
+
+            private void Smtp(System.Net.Sockets.NetworkStream s)
+            {
+                var r = new StreamReader(s, Encoding.ASCII); var w = new StreamWriter(s, Encoding.ASCII) { NewLine = "\r\n", AutoFlush = true };
+                w.WriteLine("220 test ESMTP");
+                string line; bool data = false;
+                while ((line = r.ReadLine()) != null)
+                {
+                    lock (_got) _got.AppendLine(line);
+                    if (data) { if (line == ".") { data = false; w.WriteLine("250 OK queued"); } continue; }
+                    var u = line.ToUpperInvariant();
+                    if (u.StartsWith("EHLO")) { w.WriteLine("250-test"); w.WriteLine("250 SIZE 10000000"); }
+                    else if (u.StartsWith("DATA")) { data = true; w.WriteLine("354 go on"); }
+                    else if (u.StartsWith("QUIT")) { w.WriteLine("221 bye"); break; }
+                    else w.WriteLine("250 OK");
+                }
+            }
+
+            private void Http(System.Net.Sockets.NetworkStream s)
+            {
+                var r = new StreamReader(s, Encoding.UTF8); string line; int length = 0;
+                while (!string.IsNullOrEmpty(line = r.ReadLine()))
+                {
+                    lock (_got) _got.AppendLine(line);
+                    if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase)) int.TryParse(line.Substring(15).Trim(), out length);
+                }
+                var buf = new char[length]; int read = 0;
+                while (read < length) { int n = r.Read(buf, read, length - read); if (n <= 0) break; read += n; }
+                lock (_got) _got.Append(new string(buf, 0, read));
+                var resp = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                s.Write(resp, 0, resp.Length);
+            }
+
+            public string Wait() { if (!_done.WaitOne(30000)) throw new Exception("the test server received nothing within 30 s"); lock (_got) return _got.ToString(); }
+            public void Dispose() { try { _l.Stop(); } catch { } }
         }
 
         // Test keys made for these tests only, never used anywhere else: ssh-keygen 10.5.3.0 made the OpenSSH files, WinSCP 6.5.7's

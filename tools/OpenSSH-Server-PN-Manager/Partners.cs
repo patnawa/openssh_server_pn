@@ -55,7 +55,7 @@ namespace OpenSSHServerPNManager
         public bool Expired { get { return Expires != null && Expires.Value <= DateTime.Now; } }
         public string Status { get { return Disabled ? "disabled" : Expired ? "expired" : LockedOut ? "locked out" : "active"; } }
         public bool Active { get { return !Disabled && !Expired && !LockedOut; } }
-        public string Access { get { return ReadOnly ? "download only" : "upload and download"; } }
+        public string Access { get { return ReadOnly ? "download only" : "full"; } }
         public string Login { get { return KeyOnly ? (KeyCount == 0 ? "key only (no key yet)" : "key only") : KeyCount > 0 ? "password or key" : "password"; } }
     }
 

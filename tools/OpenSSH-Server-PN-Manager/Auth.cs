@@ -718,7 +718,12 @@ namespace OpenSSHServerPNManager
 
         private static void Register(string name, string description, string command, string arguments, bool atStartup)
         {
-            var xml = TaskXml(description, command, arguments, atStartup);
+            RegisterXml(name, TaskXml(description, command, arguments, atStartup));
+        }
+
+        /// <summary>Creates or replaces a task from its XML definition (schtasks /Create /XML).</summary>
+        public static void RegisterXml(string name, string xml)
+        {
             var file = Path.Combine(Path.GetTempPath(), "osm-task-" + Guid.NewGuid().ToString("N") + ".xml");
             File.WriteAllText(file, xml, Encoding.Unicode);
             try

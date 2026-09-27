@@ -148,6 +148,7 @@ namespace OpenSSHServerPNManager
             _tabs.TabPages.Add(_pgClient = BuildClient());
             _tabs.TabPages.Add(_pgFirewall = BuildFirewall());
             _tabs.TabPages.Add(_pgLogs = BuildLogs());
+            _tabs.TabPages.Add(_pgAlerts = BuildAlerts());
             _tabs.TabPages.Add(_pgHardening = BuildHardening());
             _tabs.TabPages.Add(_pgAbout = BuildAbout());
             _tabs.SelectedIndexChanged += (s, e) => Safe(() => OnTabSelected());
@@ -521,6 +522,7 @@ namespace OpenSSHServerPNManager
             else if (tab == _pgHardening) { if (_lvChecks.Items.Count == 0) RunChecks(); }
             else if (tab == _pgClient) { if (!_clientLoaded) LoadClient(); }
             else if (tab == _pgPartners) { if (!_ptLoaded) LoadPartners(); }
+            else if (tab == _pgAlerts) { if (!_alLoaded) LoadAlerts(); }
         }
 
         // ---------------- Dashboard ----------------
@@ -2017,7 +2019,7 @@ namespace OpenSSHServerPNManager
             _ptState = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(8, 0, 4, 6), ForeColor = Theme.Muted, Text = "..." };
             head.Controls.Add(_ptState);
             root.Controls.Add(head, 0, 0);
-            _lvPartners = Lv("Account|120", "Contact|130", "Company|170", "Access|150", "Login|150", "Status|85", "Last day|90", "Last logon|125");
+            _lvPartners = Lv("Account|110", "Contact|110", "Company|140", "Access|105", "Login|140", "Status|75", "Last day|85", "Last logon|115", "This month|110");
             _lvPartners.AccessibleName = "SFTP partners";
             _lvPartners.ItemActivate += (s, e) => Safe(EditPartner);
             _lvPartners.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Safe(DeletePartner); } };
@@ -2034,6 +2036,7 @@ namespace OpenSSHServerPNManager
                 Btn("Keys...", (s, e) => Safe(PartnerKeys), 90),
                 Btn("Delete...", (s, e) => Safe(DeletePartner), 100),
                 Btn("Open folder", (s, e) => Safe(OpenPartnerFolder), 120),
+                Btn("Transfers...", (s, e) => Safe(ShowTransfers), 110),
                 Btn("Refresh", (s, e) => Safe(LoadPartners), 100),
             };
             foreach (var b in _ptButtons) bar.Controls.Add(b);
@@ -2053,13 +2056,35 @@ namespace OpenSSHServerPNManager
         private string PartnerRoot { get { return _ptSetupState.Root ?? PartnerSetup.DefaultRoot; } }
         private PartnerAccount SelectedPartner() { return _lvPartners.SelectedItems.Count > 0 ? (PartnerAccount)_lvPartners.SelectedItems[0].Tag : null; }
 
+        private Dictionary<string, TransferTotals> _ptMonth = new Dictionary<string, TransferTotals>(StringComparer.OrdinalIgnoreCase);
+
         private void LoadPartners()
         {
             var g = PartnerGroups.Default; var cfg = _cfg;
-            PartnerSetupState st = null; List<PartnerAccount> list = null;
-            Bg("Reading the partner accounts...", () => { st = PartnerSetup.Check(cfg, g); list = Partners.List(g); });
+            PartnerSetupState st = null; List<PartnerAccount> list = null; List<TransferTotals> month = null;
+            Bg("Reading the partner accounts...", () =>
+            {
+                st = PartnerSetup.Check(cfg, g); list = Partners.List(g);
+                var now = DateTime.Now;
+                month = Transfers.Totals(Transfers.Read(new DateTime(now.Year, now.Month, 1), now, CancellationToken.None));
+            });
             _ptSetupState = st; _partners = list; _ptLoaded = true;
+            _ptMonth = month.ToDictionary(t => t.User, StringComparer.OrdinalIgnoreCase);
             FillPartners();
+        }
+
+        /// <summary>What a partner moved this month, from the transfer history ("12 up, 3 down"), or empty.</summary>
+        private string MonthText(string name) { TransferTotals t; return _ptMonth.TryGetValue(name, out t) && (t.Uploads + t.Downloads) > 0 ? t.Short : ""; }
+
+        private void ShowTransfers()
+        {
+            var companies = _partners.ToDictionary(p => p.Name, p => p.Company, StringComparer.OrdinalIgnoreCase);
+            var selected = SelectedPartner();
+            Func<bool> enlarge = null;
+            if (Transfers.LogSize() < Transfers.WantedLogBytes)
+                enlarge = () => Bg("Enlarging the OpenSSH event log...", () => Transfers.EnlargeLog());
+            using (var w = new TransfersWindow((f, t) => Bg("Reading the transfers...", () => Transfers.Read(f, t, CancellationToken.None)), enlarge, companies, selected == null ? null : selected.Name))
+                w.ShowDialog(this);
         }
 
         private void FillPartners(string select = null)
@@ -2070,7 +2095,7 @@ namespace OpenSSHServerPNManager
             {
                 var last = LocalAccounts.LastDay(p.Expires);
                 var item = new ListViewItem(new[] { p.Name, p.FullName, p.Company, p.Access, p.Login, p.Status, last == null ? "" : last.Value.ToString("yyyy-MM-dd"),
-                    p.LastLogon == null ? "never" : p.LastLogon.Value.ToString("yyyy-MM-dd HH:mm") }) { Tag = p };
+                    p.LastLogon == null ? "never" : p.LastLogon.Value.ToString("yyyy-MM-dd HH:mm"), MonthText(p.Name) }) { Tag = p };
                 if (!p.Active) item.ForeColor = p.Disabled ? Theme.Muted : Orange;
                 else if (p.KeyOnly && p.KeyCount == 0) item.ForeColor = Orange;
                 _lvPartners.Items.Add(item);
@@ -2124,6 +2149,7 @@ namespace OpenSSHServerPNManager
                 made = PartnerSetup.CreateGroups(g);
                 if (!Directory.Exists(g.KeysDir)) Acl.CreatePrivateFolder(g.KeysDir);
                 if (!Directory.Exists(root)) Acl.CreatePrivateFolder(root);
+                try { Transfers.EnlargeLog(); } catch (Exception ex) { Log.Error("Enlarging the OpenSSH event log", ex, false); }
             });
             if (backup != null) { UseConfig(cand); running = RestartWithRollback(backup); }
             _ptLoaded = false; LoadPartners();
@@ -2146,10 +2172,10 @@ namespace OpenSSHServerPNManager
         private void NewPartner()
         {
             var g = PartnerGroups.Default; var root = PartnerRoot; string password = null, name = null; bool keyOnly = false;
-            using (var d = new PartnerDialog(null, root, dlg =>
+            using (var d = new PartnerDialog(null, root, "", dlg =>
             {
-                var n = dlg.AccountName; var fn = dlg.FullName; var co = dlg.Company; var ro = dlg.ReadOnlyAccess; var ko = dlg.KeyOnly; var last = dlg.LastDay;
-                password = Bg("Creating the partner " + n + "...", () => Partners.Create(g, root, n, fn, co, ro, ko, last));
+                var n = dlg.AccountName; var fn = dlg.FullName; var co = dlg.Company; var ro = dlg.ReadOnlyAccess; var ko = dlg.KeyOnly; var last = dlg.LastDay; var notify = dlg.Notify;
+                password = Bg("Creating the partner " + n + "...", () => { var pw = Partners.Create(g, root, n, fn, co, ro, ko, last); SetPartnerNotify(n, notify); return pw; });
                 name = n; keyOnly = ko;
             }))
                 if (d.ShowDialog(this) != DialogResult.OK) return;
@@ -2169,15 +2195,26 @@ namespace OpenSSHServerPNManager
         {
             var p = SelectedPartner(); if (p == null) return;
             var g = PartnerGroups.Default; var root = PartnerRoot;
-            using (var d = new PartnerDialog(p, root, dlg =>
+            string current; AlertSettings.Load().PartnerNotify.TryGetValue(p.Name, out current);
+            using (var d = new PartnerDialog(p, root, current, dlg =>
             {
-                var fn = dlg.FullName; var co = dlg.Company; var ro = dlg.ReadOnlyAccess; var ko = dlg.KeyOnly; var last = dlg.LastDay;
-                Bg("Saving " + p.Name + "...", () => Partners.Update(g, root, p, fn, co, ro, ko, last));
+                var fn = dlg.FullName; var co = dlg.Company; var ro = dlg.ReadOnlyAccess; var ko = dlg.KeyOnly; var last = dlg.LastDay; var notify = dlg.Notify;
+                Bg("Saving " + p.Name + "...", () => { Partners.Update(g, root, p, fn, co, ro, ko, last); SetPartnerNotify(p.Name, notify); });
             }))
                 if (d.ShowDialog(this) != DialogResult.OK) return;
             LoadPartners();
             _ptResult.Text = "Saved " + p.Name + ". The changes apply from its next login."; _ptResult.ForeColor = Green;
             Status("Partner saved: " + p.Name);
+        }
+
+        /// <summary>Who is told when a partner's files arrive (the alert settings); empty or null: the admins.</summary>
+        private static void SetPartnerNotify(string name, string notify)
+        {
+            var s = AlertSettings.Load();
+            string old; s.PartnerNotify.TryGetValue(name, out old);
+            if ((old ?? "") == (notify ?? "")) return;
+            if (string.IsNullOrEmpty(notify)) s.PartnerNotify.Remove(name); else s.PartnerNotify[name] = notify;
+            s.Save();
         }
 
         private void ResetPartnerPassword()
@@ -2233,7 +2270,7 @@ namespace OpenSSHServerPNManager
             using (var d = new PartnerDeleteDialog(p, folder, size, dlg =>
             {
                 var withFiles = dlg.DeleteFiles;
-                Bg("Deleting " + p.Name + "...", () => { ended = Partners.Disconnect(p.Name, port); problems = Partners.Delete(g, root, p, withFiles, out note); });
+                Bg("Deleting " + p.Name + "...", () => { ended = Partners.Disconnect(p.Name, port); problems = Partners.Delete(g, root, p, withFiles, out note); try { SetPartnerNotify(p.Name, null); } catch (Exception ex) { Log.Error("Removing the recipients of " + p.Name, ex, false); } });
                 deleted = true;
             }))
                 d.ShowDialog(this);
@@ -2250,6 +2287,142 @@ namespace OpenSSHServerPNManager
             var folder = Partners.FolderOf(PartnerRoot, p.Name);
             if (!Directory.Exists(folder)) throw new ConfigException("The folder " + folder + " does not exist.");
             Proc.OpenExternal("explorer.exe", "\"" + folder + "\"");
+        }
+
+        // ---------------- Alerts (alerts, automatic blocking, the transfer archive) ----------------
+        private TabPage _pgAlerts; private CheckBox _alOn, _alTls, _alSshd, _alFailures, _alUploads, _alDisk, _alReport, _alBlock; private RadioButton _alTeams, _alText;
+        private TextBox _alHost, _alUser, _alPassword, _alFrom, _alAdmins, _alHook, _alAllow; private NumericUpDown _alPort, _alBurst, _alDiskPct, _alThreshold, _alWindow;
+        private Label _alState, _alResult; private bool _alLoaded;
+
+        private TabPage BuildAlerts()
+        {
+            var page = new TabPage("Alerts") { AutoScroll = true };
+            var root = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(8) };
+            _alOn = new CheckBox { Text = "Run alerts, automatic blocking and the transfer archive in the background (scheduled tasks as SYSTEM: every minute, and each night)", AutoSize = true, Margin = new Padding(4, 4, 4, 2), Font = BoldFont() };
+            root.Controls.Add(_alOn);
+            _alState = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(980), 0), Margin = new Padding(22, 0, 4, 8), ForeColor = Theme.Muted };
+            root.Controls.Add(_alState);
+            Func<string, Control> caption = t => new Label { Text = t, AutoSize = true, Margin = new Padding(4, 8, 4, 2), Font = BoldFont() };
+            Func<string, int, bool, TextBox> tb = (name, width, secret) => new TextBox { Width = Ui.Px(width), AccessibleName = name, UseSystemPasswordChar = secret, Margin = new Padding(4, 3, 4, 3) };
+            Func<string, Label> lbl = t => new Label { Text = t, AutoSize = true, Margin = new Padding(4, 7, 4, 3) };
+            Func<Control[], FlowLayoutPanel> row = cs => { var f = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(18, 0, 0, 0) }; f.Controls.AddRange(cs); return f; };
+            Func<string, int, int, int, NumericUpDown> num = (name, min, max, width) => new NumericUpDown { Minimum = min, Maximum = max, Width = Ui.Px(width), AccessibleName = name, Margin = new Padding(4, 3, 4, 3) };
+
+            root.Controls.Add(caption("E-mail"));
+            _alHost = tb("Mail server", 260, false); _alPort = num("Mail server port", 1, 65535, 70); _alTls = new CheckBox { Text = "STARTTLS", AutoSize = true, Margin = new Padding(8, 6, 4, 3), Checked = true };
+            root.Controls.Add(row(new Control[] { lbl("Mail server:"), _alHost, lbl("Port:"), _alPort, _alTls }));
+            _alUser = tb("Mail server user name", 220, false); _alPassword = tb("Mail server password", 180, true);
+            root.Controls.Add(row(new Control[] { lbl("Log in as (optional):"), _alUser, lbl("Password:"), _alPassword }));
+            _alFrom = tb("Sender address", 260, false); _alAdmins = tb("Admins' addresses", 420, false);
+            root.Controls.Add(row(new Control[] { lbl("From:"), _alFrom, lbl("To the admins:"), _alAdmins }));
+            root.Controls.Add(row(new Control[] { Btn("Send a test e-mail", (s, e) => Safe(() => TestAlert(true)), 150),
+                new Label { AutoSize = true, ForeColor = Theme.Muted, MaximumSize = new Size(Ui.Px(760), 0), Margin = new Padding(8, 8, 4, 3), Text = "Port 587 with STARTTLS and a login (Gmail: an app password), or port 25 without a login to a relay or a Microsoft 365 connector that accepts this server's address." } }));
+
+            root.Controls.Add(caption("Webhook (optional)"));
+            _alHook = tb("Webhook address", 560, true);
+            _alTeams = new RadioButton { Text = "Microsoft Teams (Workflows)", AutoSize = true, Checked = true, Margin = new Padding(8, 6, 4, 3) };
+            _alText = new RadioButton { Text = "Text: {\"text\": ...} (Slack, Mattermost, others)", AutoSize = true, Margin = new Padding(8, 6, 4, 3) };
+            root.Controls.Add(row(new Control[] { lbl("Address (https://...):"), _alHook }));
+            var formats = row(new Control[] { lbl("Format:"), _alTeams, _alText, Btn("Send a test", (s, e) => Safe(() => TestAlert(false)), 110) });
+            root.Controls.Add(formats);
+
+            root.Controls.Add(caption("Alert when"));
+            _alSshd = new CheckBox { Text = "sshd stops, and when it runs again", AutoSize = true, Margin = new Padding(22, 3, 4, 2) };
+            root.Controls.Add(_alSshd);
+            _alFailures = new CheckBox { Text = "failed logins pile up: at least", AutoSize = true, Margin = new Padding(4, 6, 4, 2) }; _alBurst = num("Failed logins for an alert", 10, 100000, 70);
+            root.Controls.Add(row(new Control[] { _alFailures, _alBurst, lbl("in the time below, from all addresses together (and when an address is blocked)") }));
+            _alUploads = new CheckBox { Text = "a partner's files arrive: to the people set for the partner (Partners tab, Edit), else to the admins; one message per partner per 5 minutes", AutoSize = true, Margin = new Padding(22, 3, 4, 2), MaximumSize = new Size(Ui.Px(960), 0) };
+            root.Controls.Add(_alUploads);
+            _alDisk = new CheckBox { Text = "free space on the drive of the partners' folders is below", AutoSize = true, Margin = new Padding(4, 6, 4, 2) }; _alDiskPct = num("Free space percentage", 1, 50, 55);
+            root.Controls.Add(row(new Control[] { _alDisk, _alDiskPct, lbl("% (checked every hour, one message a day)") }));
+            _alReport = new CheckBox { Text = "the monthly transfer report: on the 1st, to the admins, with the list of transfers as a CSV file", AutoSize = true, Margin = new Padding(22, 3, 4, 2) };
+            root.Controls.Add(_alReport);
+
+            root.Controls.Add(caption("Automatic blocking"));
+            _alBlock = new CheckBox { Text = "Block an address after", AutoSize = true, Margin = new Padding(4, 6, 4, 2) }; _alThreshold = num("Failed logins before a block", 3, 1000, 60); _alWindow = num("Minutes counted", 1, 1440, 60);
+            root.Controls.Add(row(new Control[] { _alBlock, _alThreshold, lbl("failed logins within"), _alWindow, lbl("minutes: for 1 hour, then 24 hours, then 7 days within a week") }));
+            _alAllow = tb("Never block these addresses", 560, false);
+            root.Controls.Add(row(new Control[] { lbl("Never block (addresses or networks, e.g. 203.0.113.0/24):"), _alAllow }));
+            root.Controls.Add(new Label
+            {
+                AutoSize = true, ForeColor = Theme.Muted, MaximumSize = new Size(Ui.Px(960), 0), Margin = new Padding(22, 4, 4, 4),
+                Text = "Addresses with a logged-in SSH session and this computer are never blocked. A login with an account name that does not exist counts twice (sshd logs it twice). Blocked addresses are in the firewall rule of the Logs tab, which lists and unblocks them."
+            });
+            var bar = Flow();
+            bar.Controls.Add(Btn("Save", (s, e) => Safe(SaveAlerts), 100));
+            bar.Controls.Add(Btn("Undo changes", (s, e) => Safe(LoadAlerts), 130));
+            bar.Controls.Add(Btn("Open the agent log", (s, e) => Safe(() => { if (!File.Exists(Agent.LogPath)) throw new ConfigException("There is no agent log yet: " + Agent.LogPath); Proc.OpenExternal("notepad.exe", "\"" + Agent.LogPath + "\""); }), 160));
+            _alResult = new Label { AutoSize = true, Margin = new Padding(12, 10, 4, 4), MaximumSize = new Size(Ui.Px(700), 0) };
+            bar.Controls.Add(_alResult);
+            root.Controls.Add(bar);
+            page.Controls.Add(root);
+            return page;
+        }
+
+        private void LoadAlerts()
+        {
+            AlertSettings s = null; bool installed = false; string last = null;
+            Bg("Reading the alert settings...", () =>
+            {
+                s = AlertSettings.Load(); installed = Agent.TasksInstalled();
+                try { if (File.Exists(Agent.LogPath)) last = File.ReadAllLines(Agent.LogPath).LastOrDefault(); } catch { }
+            });
+            _alOn.Checked = installed;
+            _alHost.Text = s.SmtpHost; _alPort.Value = Math.Max(1, Math.Min(65535, s.SmtpPort)); _alTls.Checked = s.SmtpTls; _alUser.Text = s.SmtpUser; _alPassword.Text = s.SmtpPassword;
+            _alFrom.Text = s.From; _alAdmins.Text = s.AdminTo; _alHook.Text = s.Webhook; _alTeams.Checked = s.WebhookTeams; _alText.Checked = !s.WebhookTeams;
+            _alSshd.Checked = s.OnSshdStopped; _alFailures.Checked = s.OnFailedLogins; _alBurst.Value = Math.Max(10, s.BurstThreshold); _alUploads.Checked = s.OnUploads;
+            _alDisk.Checked = s.OnDiskLow; _alDiskPct.Value = s.DiskLowPercent; _alReport.Checked = s.MonthlyReport;
+            _alBlock.Checked = s.AutoBlock; _alThreshold.Value = s.BlockThreshold; _alWindow.Value = s.BlockWindowMinutes; _alAllow.Text = s.AllowList;
+            _alState.Text = installed ? "On: the tasks " + Agent.WatchTask + " and " + Agent.DailyTask + " run the manager as SYSTEM." + (last != null ? " Last entry of the agent log: " + last : "")
+                                      : "Off: nothing runs while this window is closed. Saving with the box ticked sets up the scheduled tasks.";
+            _alState.ForeColor = installed ? Theme.Muted : Orange;
+            _alLoaded = true;
+        }
+
+        /// <summary>The settings as they are on the tab (partner recipients from the file: they are set on the Partners tab).</summary>
+        private AlertSettings AlertsFromTab()
+        {
+            var s = AlertSettings.Load();
+            s.SmtpHost = _alHost.Text.Trim(); s.SmtpPort = (int)_alPort.Value; s.SmtpTls = _alTls.Checked; s.SmtpUser = _alUser.Text.Trim(); s.SmtpPassword = _alPassword.Text;
+            s.From = _alFrom.Text.Trim(); s.AdminTo = _alAdmins.Text.Trim(); s.Webhook = _alHook.Text.Trim(); s.WebhookTeams = _alTeams.Checked;
+            s.OnSshdStopped = _alSshd.Checked; s.OnFailedLogins = _alFailures.Checked; s.BurstThreshold = (int)_alBurst.Value; s.OnUploads = _alUploads.Checked;
+            s.OnDiskLow = _alDisk.Checked; s.DiskLowPercent = (int)_alDiskPct.Value; s.MonthlyReport = _alReport.Checked;
+            s.AutoBlock = _alBlock.Checked; s.BlockThreshold = (int)_alThreshold.Value; s.BlockWindowMinutes = (int)_alWindow.Value; s.AllowList = _alAllow.Text.Trim();
+            return s;
+        }
+
+        private void SaveAlerts()
+        {
+            var s = AlertsFromTab();
+            var problem = s.Problem();
+            if (problem != null) throw new ConfigException(problem);
+            bool on = _alOn.Checked;
+            if (on && !s.MailConfigured && !s.WebhookConfigured && !s.AutoBlock)
+                throw new ConfigException("Nothing would run: set up e-mail or a webhook, or automatic blocking, or untick the box at the top.");
+            Bg("Saving the alert settings...", () =>
+            {
+                s.Save();
+                if (on) Agent.InstallTasks(); else if (Agent.TasksInstalled()) Agent.RemoveTasks();
+            });
+            LoadAlerts();
+            _alResult.Text = on ? "Saved; the background tasks run with these settings from their next run (within a minute)." : "Saved; nothing runs in the background.";
+            _alResult.ForeColor = Green;
+            Status("Alert settings saved");
+        }
+
+        private void TestAlert(bool mail)
+        {
+            var s = AlertsFromTab();
+            var problem = s.Problem(); if (problem != null) throw new ConfigException(problem);
+            if (mail && !s.MailConfigured) throw new ConfigException("Enter the mail server, the sender address and the admins' addresses first.");
+            if (!mail && !s.WebhookConfigured) throw new ConfigException("Enter the webhook address first.");
+            var subject = "Test message from " + Program.AppName + " on " + Environment.MachineName;
+            var text = "This is a test. Alerts of the SSH server on " + Environment.MachineName + " reach you this way.";
+            Bg(mail ? "Sending a test e-mail..." : "Sending a test to the webhook...", () =>
+            {
+                if (mail) Agent.SendMail(s, subject, text, null, AlertSettings.Addresses(s.AdminTo), null, null); else Agent.SendHook(s, subject, text);
+            });
+            _alResult.Text = mail ? "Test e-mail sent to " + s.AdminTo + "." : "Test sent to the webhook."; _alResult.ForeColor = Green;
         }
 
         // ---------------- Raw editor ----------------

@@ -139,6 +139,7 @@ namespace OpenSSHServerPNManager
                 }
                 int partnerFailures = PartnerTests(sb, dir, id, baseCfg, cfgPath, service, port, key, knownHosts, authorizedKeys);
                 if (partnerFailures > 0) { failed += partnerFailures; try { StopTestService(service); } catch { } sb.AppendLine(LogTail(logPath, 20)); }
+                failed += AgentTests(sb, dir, "osmta" + id);
             }
             catch (Exception ex) { failed++; sb.AppendLine("FAIL  " + ex.Message); }
             finally
@@ -430,6 +431,88 @@ namespace OpenSSHServerPNManager
                 foreach (var x in left) { failed++; sb.AppendLine("FAIL  cleanup, group " + x.Group + ": " + x.Error); }
                 sb.AppendLine("removed the test groups " + string.Join(", ", g.All));
             }
+            return failed;
+        }
+
+        // ---------------- The agent (Alerts tab) ----------------
+
+        /// <summary>
+        /// The agent against this computer: an address of the documentation range blocked in the firewall rule and unblocked
+        /// by a Watch run when its time is up (the rule is put back as it was); the transfers of the partner test archived
+        /// (in a copy of the configuration folder of this test); and the Watch task run by Task Scheduler as SYSTEM, which
+        /// writes its state (only where the tasks are not set up already; the copy of the program it makes is removed).
+        /// </summary>
+        private static int AgentTests(StringBuilder sb, string dir, string partner)
+        {
+            int failed = 0;
+            Action<string, Func<string>> step = (name, body) =>
+            {
+                try { sb.AppendLine("PASS  " + name + ": " + body()); }
+                catch (Exception ex) { failed++; sb.AppendLine("FAIL  " + name + ": " + Short(ex.Message)); }
+            };
+            step("Agent: an address is blocked after its failed logins and unblocked when its time is up", () =>
+            {
+                var before = Firewall.BlockedAddresses(); var ports = SshdConfig.Load().EffectivePort.ToString();
+                const string address = "192.0.2.77"; // TEST-NET-1, never a real client
+                try
+                {
+                    var s = new AlertSettings { OnSshdStopped = false, OnFailedLogins = false, OnUploads = false, OnDiskLow = false, MonthlyReport = false };
+                    var st = new AgentState(); var now = DateTime.Now;
+                    var src = new List<EventLogs.FailedSource> { new EventLogs.FailedSource { Address = address, Count = 12, First = now, Last = now } };
+                    var added = Agent.Block(s, st, src, now, "test");
+                    if (added.Count != 1 || !Firewall.BlockedAddresses().Contains(address)) throw new Exception("not in the block rule: " + string.Join(", ", Firewall.BlockedAddresses()));
+                    if (st.Blocks[address].Until != now.AddHours(1)) throw new Exception("blocked until " + st.Blocks[address].Until);
+                    st.Blocks[address].Until = now.AddSeconds(-1);
+                    Agent.Watch(s, st, now);
+                    if (Firewall.BlockedAddresses().Contains(address)) throw new Exception("still blocked after its time");
+                    if (!st.Blocks.ContainsKey(address) || st.Blocks[address].Until != DateTime.MinValue || st.Blocks[address].Strikes != 1) throw new Exception("the strike is not remembered for a week");
+                    return "blocked for 1 hour, unblocked by the Watch run when the time was up; the strike is kept for a week";
+                }
+                finally { Firewall.SetBlockedAddresses(before, ports); }
+            });
+            step("Agent: the transfers of the partner test go into the archive", () =>
+            {
+                var old = Ssh.ConfigDirOverride; var cfgCopy = Path.Combine(dir, "agent-config");
+                Directory.CreateDirectory(cfgCopy); File.Copy(Ssh.ConfigPath, Path.Combine(cfgCopy, "sshd_config"), true);
+                Ssh.ConfigDirOverride = cfgCopy;
+                try
+                {
+                    var records = Transfers.Read(DateTime.Today, DateTime.Now.AddMinutes(1), CancellationToken.None).Where(r => r.User.Equals(partner, StringComparison.OrdinalIgnoreCase)).ToList();
+                    if (!records.Any(r => r.Action == TransferRecord.Upload && r.File == "/in.bin" && r.Bytes == 1 << 20)) throw new Exception("the event log has no upload of /in.bin by " + partner + ": " + string.Join("; ", records.Select(r => r.Action + " " + r.File)));
+                    int n = Agent.Archive(records);
+                    int again = Agent.Archive(records);
+                    var back = TransferArchive.Read(DateTime.Today, DateTime.Now.AddMinutes(1));
+                    int distinct = records.Select(r => r.Key).Distinct().Count(); // the same record twice in one second is kept once
+                    if (n != distinct || again != 0 || back.Count != distinct) throw new Exception("archived " + n + " then " + again + ", read back " + back.Count + " of " + distinct);
+                    if (!Acl.IsAdminOnly(TransferArchive.FileOf(DateTime.Today))) throw new Exception("the archive is readable by others");
+                    return records.Count + " record(s) of " + partner + " archived once (a second run added none), readable by SYSTEM and Administrators only";
+                }
+                finally { Ssh.ConfigDirOverride = old; }
+            });
+            step("Agent: Task Scheduler runs the Watch task as SYSTEM", () =>
+            {
+                if (SystemTasks.Exists(Agent.WatchTask)) return "skipped: the tasks are set up on this computer";
+                var stateFile = AgentState.FilePath; var snapshot = FileSnapshot.Take(stateFile); var start = DateTime.Now;
+                var exe = Agent.AgentExe(); bool copied = !exe.StartsWith(Ssh.InstallDir, StringComparison.OrdinalIgnoreCase);
+                try
+                {
+                    Agent.InstallTasks();
+                    var r = Proc.Run(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), "/Run /TN " + Proc.Quote(Agent.WatchTask), 30000);
+                    if (!r.Ok) throw new Exception("schtasks /Run: " + r.Output);
+                    var sw = Stopwatch.StartNew();
+                    while (!(File.Exists(stateFile) && File.GetLastWriteTime(stateFile) >= start.AddSeconds(-1)) && sw.Elapsed.TotalSeconds < 90) Thread.Sleep(1000);
+                    if (!File.Exists(stateFile) || File.GetLastWriteTime(stateFile) < start.AddSeconds(-1)) throw new Exception("the task did not write " + stateFile + " within 90 s; agent log: " + (File.Exists(Agent.LogPath) ? Short(string.Join(" | ", File.ReadAllLines(Agent.LogPath).Reverse().Take(3))) : "none"));
+                    var st = AgentState.Load();
+                    if (st.SshdStatus != "Running" || st.LastRecordId <= 0) throw new Exception("the state after the run: sshd " + st.SshdStatus + ", last event " + st.LastRecordId);
+                    return "the task ran " + exe + " as SYSTEM; it saw sshd running and read the event log up to record " + st.LastRecordId;
+                }
+                finally
+                {
+                    Agent.RemoveTasks();
+                    try { snapshot.Restore(); } catch { }
+                    if (copied) try { Directory.Delete(Path.GetDirectoryName(exe), true); } catch { }
+                }
+            });
             return failed;
         }
 

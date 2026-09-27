@@ -47,7 +47,7 @@ $manifest = Join-Path $PSScriptRoot 'app.manifest'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $out = Join-Path $OutDir 'OpenSSHServerPNManager.exe'
 
-$refs = 'mscorlib.dll','System.dll','System.Core.dll','System.Drawing.dll','System.Windows.Forms.dll','System.ServiceProcess.dll','Microsoft.CSharp.dll' |
+$refs = 'mscorlib.dll','System.dll','System.Core.dll','System.Drawing.dll','System.Windows.Forms.dll','System.ServiceProcess.dll','System.Security.dll','Microsoft.CSharp.dll' |
     ForEach-Object { '/r:' + (Join-Path $fw $_) }
 
 $cscArgs = @('/nologo', '/noconfig', '/nostdlib+', '/target:winexe', '/platform:anycpu', '/optimize+', '/warn:3', '/nowarn:1591', '/warnaserror+',

@@ -17,7 +17,7 @@ namespace OpenSSHServerPNManager
     internal sealed class PartnerDialog : KeyTaskDialog
     {
         private readonly PartnerAccount _existing;
-        private readonly TextBox _name, _fullName, _company;
+        private readonly TextBox _name, _fullName, _company, _notify;
         private readonly RadioButton _full, _readOnly, _password, _keyOnly;
         private readonly CheckBox _expires;
         private readonly DateTimePicker _lastDay;
@@ -30,8 +30,10 @@ namespace OpenSSHServerPNManager
         public bool KeyOnly { get { return _keyOnly.Checked; } }
         /// <summary>The last day the partner may log in, or null.</summary>
         public DateTime? LastDay { get { return _expires.Checked ? (DateTime?)_lastDay.Value.Date : null; } }
+        /// <summary>Who is told when the partner's files arrive (Alerts tab): e-mail addresses, or empty for the admins.</summary>
+        public string Notify { get { return string.Join(", ", AlertSettings.Addresses(_notify.Text)); } }
 
-        public PartnerDialog(PartnerAccount existing, string root, Action<PartnerDialog> run)
+        public PartnerDialog(PartnerAccount existing, string root, string notify, Action<PartnerDialog> run)
             : base(existing == null ? "New SFTP partner" : "SFTP partner " + existing.Name, existing == null ? "Create partner" : "Save")
         {
             _existing = existing; _run = run;
@@ -64,6 +66,9 @@ namespace OpenSSHServerPNManager
             _lastDay.Enabled = _expires.Checked;
             _expires.CheckedChanged += (s, e) => _lastDay.Enabled = _expires.Checked;
             Body.Controls.Add(Row(_expires, _lastDay));
+            Body.Controls.Add(Caption("When its files arrive, tell (e-mail addresses; empty: the admins set on the Alerts tab):"));
+            _notify = new TextBox { Width = Ui.Px(430), AccessibleName = "Who is told when the partner's files arrive", Margin = new Padding(12, 2, 3, 2), Text = notify ?? "" };
+            Body.Controls.Add(_notify);
             Body.Controls.Add(Note("The password never expires and the partner cannot change it (over SFTP it could not anyway); the date above decides until when the account can log in. The account is hidden from the Windows sign-in screen and cannot use a shell, commands or forwarding."));
         }
 
@@ -72,6 +77,7 @@ namespace OpenSSHServerPNManager
             if (_existing == null) { var e = Partners.NameError(AccountName); if (e != null) { _name.Focus(); throw new ConfigException(e); } }
             if (FullName.Any(char.IsControl) || Company.Any(char.IsControl) || FullName.Length > 100 || Company.Length > 100) throw new ConfigException("The contact name and the company are one line each, at most 100 characters.");
             if (LastDay != null && LastDay.Value < DateTime.Today) throw new ConfigException("The last day to log in is in the past. Choose a later date, or disable the partner instead.");
+            AlertSettings.Addresses(_notify.Text); // throws ConfigException for an address that is not valid
             _run(this);
         }
     }
@@ -196,6 +202,145 @@ namespace OpenSSHServerPNManager
         // --screenshot and --selftest
         internal int KeyCountForTest { get { return _list.Items.Count; } }
         internal void AddForTest(string line) { AddLines(new[] { line }); }
+    }
+
+    /// <summary>The transfer history: who uploaded or downloaded which file, when and from where; export and report.</summary>
+    internal sealed class TransfersWindow : ThemedForm
+    {
+        private readonly ComboBox _period, _account;
+        private readonly CheckBox _changes;
+        private readonly ListView _list;
+        private readonly Label _summary;
+        private readonly Button _more;
+        private readonly Func<DateTime, DateTime, List<TransferRecord>> _load;
+        private readonly Func<bool> _enlarge;
+        private readonly IDictionary<string, string> _companies;
+        private List<TransferRecord> _records = new List<TransferRecord>();
+        private DateTime _from, _to;
+
+        private static readonly string[] Periods = { "Today", "Yesterday", "Last 7 days", "This month", "Last month", "Last 30 days", "Last 365 days" };
+
+        /// <summary>load reads a period (in the background); enlarge makes the event log keep more (null when it does already).</summary>
+        public TransfersWindow(Func<DateTime, DateTime, List<TransferRecord>> load, Func<bool> enlarge, IDictionary<string, string> companies, string account)
+        {
+            _load = load; _enlarge = enlarge; _companies = companies ?? new Dictionary<string, string>();
+            Text = "SFTP transfers"; StartPosition = FormStartPosition.CenterParent; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
+            Size = new Size(Ui.Px(1000), Ui.Px(620)); MinimumSize = new Size(Ui.Px(760), Ui.Px(420)); MinimizeBox = false; ShowInTaskbar = false; Font = new Font("Segoe UI", Ui.Pt(9.5f)); Padding = new Padding(Ui.Px(8));
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4 };
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var top = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
+            top.Controls.Add(new Label { Text = "Period:", AutoSize = true, Margin = new Padding(3, 7, 3, 3) });
+            _period = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = Ui.Px(140), AccessibleName = "Period" };
+            _period.Items.AddRange(Periods); _period.SelectedIndex = 3;
+            top.Controls.Add(_period);
+            top.Controls.Add(new Label { Text = "Account:", AutoSize = true, Margin = new Padding(12, 7, 3, 3) });
+            _account = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = Ui.Px(180), AccessibleName = "Account" };
+            _account.Items.Add("All accounts");
+            foreach (var n in _companies.Keys.OrderBy(n => n, StringComparer.OrdinalIgnoreCase)) _account.Items.Add(n);
+            _account.SelectedIndex = Math.Max(0, account == null ? 0 : _account.Items.IndexOf(account));
+            top.Controls.Add(_account);
+            _changes = new CheckBox { Text = "Also renames, removals and refused requests", AutoSize = true, Margin = new Padding(12, 6, 3, 3) };
+            top.Controls.Add(_changes);
+            root.Controls.Add(top, 0, 0);
+            _list = new ListView { View = View.Details, FullRowSelect = true, GridLines = true, Dock = DockStyle.Fill, HideSelection = false, AccessibleName = "SFTP transfers" };
+            foreach (var c in new[] { "Time|135", "Account|110", "Address|115", "Action|95", "File|330", "Size|85", "Detail|110" }) { var p = c.Split('|'); _list.Columns.Add(p[0], Ui.Px(int.Parse(p[1]))); }
+            _list.Columns[5].TextAlign = HorizontalAlignment.Right;
+            _list.ColumnClick += (s, e) => ListSorter.Toggle(_list, e.Column);
+            root.Controls.Add(_list, 0, 1);
+            _summary = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(960), 0), Margin = new Padding(3, 6, 3, 3) };
+            root.Controls.Add(_summary, 0, 2);
+            var bar = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 0) };
+            Func<string, EventHandler, Button> btn = (t, h) => { var b = new Button { Text = t, AutoSize = true, MinimumSize = new Size(Ui.Px(110), Ui.Px(30)) }; b.Click += h; bar.Controls.Add(b); return b; };
+            btn("Refresh", (s, e) => Guard(Reload));
+            btn("Export CSV...", (s, e) => Guard(ExportCsv));
+            btn("Report...", (s, e) => Guard(SaveReport));
+            _more = btn("Keep more history", (s, e) => Guard(() => { if (_enlarge != null && _enlarge()) { _more.Visible = false; _summary.Text += " The event log keeps " + Ui.Bytes(Transfers.WantedLogBytes) + " from now on."; } }));
+            _more.Visible = _enlarge != null;
+            var close = btn("Close", (s, e) => Close());
+            root.Controls.Add(bar, 0, 3);
+            Controls.Add(root);
+            CancelButton = close;
+            _period.SelectedIndexChanged += (s, e) => Guard(Reload);
+            _account.SelectedIndexChanged += (s, e) => Fill();
+            _changes.CheckedChanged += (s, e) => Fill();
+            Shown += (s, e) => Guard(Reload);
+        }
+
+        private void Guard(Action a)
+        {
+            try { a(); }
+            catch (Exception ex) { Log.Error(Text, ex, false); MessageBox.Show(this, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        }
+
+        /// <summary>The first moment and the moment after the last one of a period chosen by name.</summary>
+        public static void Range(string period, DateTime now, out DateTime from, out DateTime to)
+        {
+            var today = now.Date; var month = new DateTime(today.Year, today.Month, 1);
+            to = now;
+            switch (period)
+            {
+                case "Today": from = today; break;
+                case "Yesterday": from = today.AddDays(-1); to = today; break;
+                case "Last 7 days": from = today.AddDays(-6); break;
+                case "This month": from = month; break;
+                case "Last month": from = month.AddMonths(-1); to = month; break;
+                case "Last 30 days": from = today.AddDays(-29); break;
+                default: from = today.AddDays(-364); break;
+            }
+        }
+
+        private void Reload()
+        {
+            Range((string)_period.SelectedItem, DateTime.Now, out _from, out _to);
+            UseWaitCursor = true;
+            try { _records = _load(_from, _to); }
+            finally { UseWaitCursor = false; }
+            foreach (var u in _records.Select(r => r.User).Distinct(StringComparer.OrdinalIgnoreCase)) if (!_account.Items.Contains(u)) _account.Items.Add(u);
+            Fill();
+        }
+
+        private List<TransferRecord> Filtered()
+        {
+            var who = _account.SelectedIndex > 0 ? (string)_account.SelectedItem : null;
+            return _records.Where(r => (who == null || r.User.Equals(who, StringComparison.OrdinalIgnoreCase)) && (_changes.Checked || r.IsTransfer)).ToList();
+        }
+
+        private void Fill()
+        {
+            var shown = Filtered();
+            _list.BeginUpdate(); _list.Items.Clear();
+            foreach (var r in Enumerable.Reverse(shown).Take(5000))
+            {
+                var item = new ListViewItem(new[] { r.Time.ToString("yyyy-MM-dd HH:mm:ss"), r.User, r.Address, r.Action, r.File, r.IsTransfer ? Ui.Bytes(r.Bytes) : "", r.Detail }) { Tag = r };
+                if (r.Action == TransferRecord.Refused) item.ForeColor = Theme.Warn;
+                _list.Items.Add(item);
+            }
+            _list.EndUpdate();
+            var t = Transfers.Totals(shown);
+            _summary.Text = shown.Count == 0 ? "No transfers in this period." + (Transfers.LogSize() < Transfers.WantedLogBytes ? " The OpenSSH event log keeps only " + Ui.Bytes(Transfers.LogSize()) + ": older transfers may be gone." : "")
+                : t.Sum(x => x.Uploads) + " upload(s), " + Ui.Bytes(t.Sum(x => x.UploadBytes)) + "; " + t.Sum(x => x.Downloads) + " download(s), " + Ui.Bytes(t.Sum(x => x.DownloadBytes)) + "; by " + t.Count + " account(s)" +
+                  (shown.Count > 5000 ? ". The newest 5,000 are listed; Export CSV has all " + shown.Count + "." : ".");
+        }
+
+        private void ExportCsv()
+        {
+            using (var d = new SaveFileDialog { Title = "Export the transfers", Filter = "CSV (*.csv)|*.csv", FileName = "sftp-transfers-" + _from.ToString("yyyy-MM-dd") + ".csv" })
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                var lines = new[] { string.Join(",", Transfers.CsvHeader) }.Concat(Filtered().Select(Transfers.CsvLine));
+                File.WriteAllLines(d.FileName, lines, new System.Text.UTF8Encoding(true)); // with a BOM, so that Excel reads UTF-8
+            }
+        }
+
+        private void SaveReport()
+        {
+            using (var d = new SaveFileDialog { Title = "Save the report", Filter = "Web page (*.html)|*.html", FileName = "sftp-report-" + _from.ToString("yyyy-MM-dd") + ".html" })
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                File.WriteAllText(d.FileName, Transfers.ReportHtml(Filtered(), _from, _to, Environment.MachineName, _companies), new System.Text.UTF8Encoding(false));
+                Proc.OpenExternal(d.FileName);
+            }
+        }
     }
 
     /// <summary>The one-time setup of partner accounts: the folder under which partners get theirs, and what changes.</summary>

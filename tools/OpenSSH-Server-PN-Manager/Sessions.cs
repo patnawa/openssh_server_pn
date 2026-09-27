@@ -110,6 +110,32 @@ namespace OpenSSHServerPNManager
             finally { if (tok != IntPtr.Zero) CloseHandle(tok); if (h != IntPtr.Zero) CloseHandle(h); }
         }
 
+        /// <summary>
+        /// The client addresses of logged-in sessions: the sshd-session.exe that holds the connection (SYSTEM) has a child
+        /// sshd-session.exe that runs as the account. Connections still at the login prompt are not counted.
+        /// </summary>
+        public static HashSet<string> LoggedInAddresses(int port)
+        {
+            var set = new HashSet<string>();
+            var all = Snapshot();
+            foreach (var kv in PeersByPid(port))
+            {
+                bool loggedIn = all.Any(p => p.ParentPid == kv.Key && p.Name.Equals("sshd-session.exe", StringComparison.OrdinalIgnoreCase) && OwnerOf(p.Pid).IndexOf("SYSTEM", StringComparison.OrdinalIgnoreCase) < 0);
+                if (!loggedIn) continue;
+                foreach (var peer in kv.Value.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries)) set.Add(AddressOf(peer));
+            }
+            return set;
+        }
+
+        /// <summary>The address of "1.2.3.4:5678" or "[2001:db8::1]:5678".</summary>
+        public static string AddressOf(string peer)
+        {
+            peer = (peer ?? "").Trim();
+            if (peer.StartsWith("[")) { int end = peer.IndexOf(']'); return end > 0 ? peer.Substring(1, end - 1) : peer.Trim('[', ']'); }
+            int colon = peer.LastIndexOf(':');
+            return colon > 0 && peer.IndexOf(':') == colon ? peer.Substring(0, colon) : peer;
+        }
+
         /// <summary>Established connections on the server port: "remote -> owning process".</summary>
         public static List<string[]> Connections(int port)
         {
