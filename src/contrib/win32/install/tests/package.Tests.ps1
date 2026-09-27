@@ -149,7 +149,7 @@ Check 'OpenSSHManagerUninstall: only when the Server feature is removed, not by 
 Check 'OpenSSHManagerUninstall runs the manager from the install folder' ($target['SetOpenSSHManagerUninstall'] -eq '"[INSTALLFOLDER]OpenSSHServerPNManager.exe" --agent uninstall') $target['SetOpenSSHManagerUninstall']
 Before 'InstallFinalize' 'OpenSSHOpenWizard'
 Check 'OpenSSHOpenWizard: immediate, as the user, exit code ignored' (($type['OpenSSHOpenWizard'] -band 0xC40) -eq 0x40) ([string]$type['OpenSSHOpenWizard'])
-Check 'OpenSSHOpenWizard opens the wizard shortcut' ($props['WixShellExecTarget'] -eq ('[ProgramMenuFolder]' + (LongName $shortcuts['WizardShortcut'][2]) + '.lnk')) $props['WixShellExecTarget']
+Check 'OpenSSHOpenWizard starts the installed manager (it opens the wizard when msiexec.exe starts it)' ($props['WixShellExecTarget'] -eq '[#OpenSSHServerPNManager.exe]') $props['WixShellExecTarget']
 Check 'OPEN_WIZARD defaults to 1 and is a secure property' ($props['OPEN_WIZARD'] -eq '1' -and $secure -contains 'OPEN_WIZARD')
 Before 'FindRelatedProducts' 'SetOpenSSHFirstInstall'
 Check 'a first installation: the condition of the fresh firewall step' ($cond['SetOpenSSHFirstInstall'] -eq $cond['SetOpenSSHFirewallSaveFresh']) $cond['SetOpenSSHFirstInstall']

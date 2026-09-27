@@ -1125,6 +1125,14 @@ namespace OpenSSHServerPNManager
                 if (string.Join("|", sizes) != "0 bytes|1023 bytes|1.5 KB|10 MB|3.0 GB") throw new Exception(string.Join("|", sizes));
                 return null;
             });
+            test("after installing: the program that started the manager is found (msiexec.exe opens the wizard)", () =>
+            {
+                var parent = Sessions.ParentNameOf(Process.GetCurrentProcess().Id);
+                if (string.IsNullOrEmpty(parent) || !parent.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) throw new Exception("parent of this process: " + (parent ?? "none"));
+                if (Sessions.ParentNameOf(-1) != null) throw new Exception("a process that does not exist has a parent");
+                if (Program.StartedByInstaller) throw new Exception("this test run counts as started by the installer");
+                return parent;
+            });
         }
 
         /// <summary>A one-connection SMTP or HTTP server on 127.0.0.1 for the tests of sending: it records what it receives.</summary>

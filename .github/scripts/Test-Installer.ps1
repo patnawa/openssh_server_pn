@@ -89,8 +89,8 @@ switch ($Scenario) {
         Invoke-Install @('/i', (Q $releaseMsi)) '1-install.log' | Out-Null
         Test-MsiLog (Join-Path $LogDir '1-install.log') -RequirePreinstall
         Test-OpenSSHInstallation -ProductVersion $Version -FileVersion $Version
-        $wizard = @(Get-ManagerProcess '--wizard')
-        Test-Check 'A silent installation opens no setup wizard' ($wizard.Count -eq 0) (($wizard | ForEach-Object { $_.CommandLine }) -join '; ') | Out-Null
+        $wizard = @(Get-ManagerProcess)   # the package starts the manager, which opens the wizard, only with a window
+        Test-Check 'A silent installation starts no manager (no setup wizard)' ($wizard.Count -eq 0) (($wizard | ForEach-Object { $_.CommandLine }) -join '; ') | Out-Null
         Complete-Checks 'Install'
     }
 
@@ -273,21 +273,28 @@ switch ($Scenario) {
     }
 
     'FirstRun' {
-        # The first installation run with a window (here /qr, the reduced window, which asks nothing) opens the manager's
-        # setup wizard through its Start-menu shortcut; the silent installations of the other scenarios do not.
+        # The first installation run with a window (here /qr, the reduced window, which asks nothing) starts the installed
+        # manager, which opens its setup wizard (msiexec.exe started it) and says so in its log; the silent installations of
+        # the other scenarios do not. The manager runs as the installing user, whose log it writes.
         if (Get-InstalledOpenSSHProduct) { throw 'FirstRun needs a machine without the package: run it after Uninstall.' }
+        $managerLog = Join-Path $env:LOCALAPPDATA 'OpenSSH Server PN Manager\manager.log'
+        $linesBefore = if (Test-Path -LiteralPath $managerLog) { @(Get-Content -LiteralPath $managerLog).Count } else { 0 }
         Invoke-Install @('/i', (Q $releaseMsi)) '9-first-run.log' -Ui '/qr' | Out-Null
         Test-MsiLog (Join-Path $LogDir '9-first-run.log') -RequirePreinstall
-        $wizard = @()
+        $opened = $null
         $deadline = (Get-Date).AddSeconds(60)
-        while ($wizard.Count -eq 0 -and (Get-Date) -lt $deadline) {
-            $wizard = @(Get-ManagerProcess '--wizard')
-            if ($wizard.Count -eq 0) { Start-Sleep -Seconds 2 }
+        while (-not $opened -and (Get-Date) -lt $deadline) {
+            if (Test-Path -LiteralPath $managerLog) { $opened = @(Get-Content -LiteralPath $managerLog | Select-Object -Skip $linesBefore | Where-Object { $_ -match 'Setup wizard opened' }) | Select-Object -First 1 }
+            if (-not $opened) { Start-Sleep -Seconds 2 }
         }
         $log = Get-Content -LiteralPath (Join-Path $LogDir '9-first-run.log') -Raw
         $ran = [regex]::Match($log, 'Action ended [\d:]+: OpenSSHOpenWizard\. Return value (\d+)')
-        Test-Check 'MSI log: the step that opens the wizard ran' $ran.Success "$(if ($ran.Success) { 'return value ' + $ran.Groups[1].Value } else { 'no OpenSSHOpenWizard in the log' })" | Out-Null
-        Test-Check 'The setup wizard of the manager opens after a first installation with a window' ($wizard.Count -gt 0) "$(if ($wizard.Count) { $wizard[0].CommandLine } else { 'no OpenSSHServerPNManager.exe --wizard within 60 s' })" | Out-Null
+        $shellError = [regex]::Match($log, 'WixShellExec:\s+(Error .*)')
+        Test-Check 'MSI log: the step that opens the wizard started the manager' ($ran.Success -and -not $shellError.Success) "$(if ($shellError.Success) { $shellError.Groups[1].Value.Trim() } elseif ($ran.Success) { 'return value ' + $ran.Groups[1].Value } else { 'no OpenSSHOpenWizard in the log' })" | Out-Null
+        $running = @(Get-ManagerProcess | ForEach-Object { $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner; [pscustomobject]@{ Id = $_.ProcessId; User = "$($o.Domain)\$($o.User)"; CommandLine = $_.CommandLine } })
+        $running | ForEach-Object { Write-Host "OpenSSHServerPNManager.exe PID $($_.Id) as $($_.User): $($_.CommandLine)" }
+        Test-Check 'The setup wizard of the manager opens after a first installation with a window' ($null -ne $opened) "$(if ($opened) { $opened } else { "no 'Setup wizard opened' in $managerLog within 60 s; $($running.Count) manager process(es)" })" | Out-Null
+        Test-Check 'The manager runs as the installing user' ($running.Count -gt 0 -and @($running | Where-Object { $_.User -notlike "*\$env:USERNAME" }).Count -eq 0) (($running | ForEach-Object { $_.User }) -join ', ') | Out-Null
         # Its window waits for someone to answer it: end it, then leave the machine as Uninstall did.
         foreach ($p in Get-ManagerProcess) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
         $product = Get-InstalledOpenSSHProduct

@@ -178,6 +178,16 @@ namespace OpenSSHServerPNManager
             return l;
         }
 
+        /// <summary>The program name of a process's parent ("msiexec.exe"), or null when it has none or it has ended.</summary>
+        internal static string ParentNameOf(int pid)
+        {
+            var all = Snapshot();
+            var me = all.FirstOrDefault(p => p.Pid == pid);
+            if (me.Name == null) return null;
+            var parent = all.FirstOrDefault(p => p.Pid == me.ParentPid && p.Pid != pid);
+            return parent.Name;
+        }
+
         /// <summary>
         /// The programs a process started, its children first, then theirs, down to three levels: sshd for Windows starts
         /// a subsystem such as sftp-server.exe through the account's shell (cmd.exe /c ...), so the program that matters is

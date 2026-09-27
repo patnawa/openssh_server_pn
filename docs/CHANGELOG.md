@@ -27,9 +27,13 @@ Installer:
   per-machine package; ICE57, which takes the Start-menu folder for per-user data, is suppressed.
 - **The setup wizard after installing.** After a first installation of the server run with a
   window (a double-click, or `msiexec /i` with `/qr` or no UI switch), the package starts the
-  wizard shortcut through the shell as the installing user (`WixShellExec`, after
-  `InstallFinalize`, never failing the installation). Not after a silent or `/passive`
-  installation, an upgrade, a downgrade or a repair; `OPEN_WIZARD=0` turns it off.
+  installed manager through the shell as the installing user (`WixShellExec`, after
+  `InstallFinalize`, never failing the installation), and the manager, started by `msiexec.exe`,
+  opens its wizard. Not after a silent or `/passive` installation, an upgrade, a downgrade or a
+  repair; `OPEN_WIZARD=0` turns it off. `WixShellExec` passes no arguments, and it cannot start
+  the wizard's shortcut instead: the WiX custom action DLL is 32-bit, and a 32-bit process
+  resolves a shortcut into the 64-bit Program Files as Program Files (x86), which failed with
+  "path not found" in CI run 36316791081.
 - **The manager's tasks go with the server.** When the Server feature is removed (an uninstall or
   `REMOVE=Server`, not the removal of the old package by an upgrade), the package runs
   `OpenSSHServerPNManager.exe --agent uninstall` from the install folder as LocalSystem, before the
@@ -57,7 +61,8 @@ CI (`.github/workflows/openssh.yml`, `.github/scripts`):
   away), and checks after `msiexec /x` that they are gone with their folder, that the agent log
   records the step, and that the manager and its shortcuts are removed.
 - A new scenario, *FirstRun*, installs the package with `msiexec /qr` on the machine the uninstall
-  left and waits for `OpenSSHServerPNManager.exe --wizard` to start, ends it and uninstalls again.
+  left, waits for the manager's log to say that it opened the wizard, checks that the manager runs
+  as the installing user, ends it and uninstalls again.
 - The workflow also runs when the committed manager (`tools/OpenSSH-Server-PN-Manager/bin`)
   changes, since the packages carry it.
 
@@ -120,15 +125,18 @@ Added:
   run when the server is removed). Tasks set up while the manager ran from another folder run a
   copy in `%ProgramFiles%\OpenSSH Server PN Manager`; once a package installs the manager next to
   `sshd.exe`, their next run moves them to that one.
+- Started by `msiexec.exe`, as the packages do after a first installation, the manager opens its
+  setup wizard, as with `--wizard`, and writes a line to its log.
 
 Tests:
 
-- `--unittest` 73 (59 before): passwords, account names, the rules the partner setup writes and
+- `--unittest` 74 (59 before): passwords, account names, the rules the partner setup writes and
   reads back, `AllowGroups` and hand-edited sections, the partner dialog, the last day; transfers
   from `sftp-server` events, CSV that spreadsheets do not run, the report and its periods; networks
   and the allow list, settings with their secrets sealed, the blocking plan, uploads batched per
-  partner, and an e-mail and a webhook sent to test servers on 127.0.0.1.
-- `--selftest` 121 (73 and 48). The window test now lays the window out as on a 1024 x 768 screen,
+  partner, an e-mail and a webhook sent to test servers on 127.0.0.1, and the program that
+  started the manager (from `msiexec.exe`, it opens the wizard).
+- `--selftest` 122 (74 and 48). The window test now lays the window out as on a 1024 x 768 screen,
   at 100% and 150%, wherever it runs: CI run 36315515987 found that the Alerts tab ran past its
   width at 150% on the runners' screens, and the tab now wraps its rows.
 - `--authtest`: five partner tests with partner groups of their own and real logins and transfers
@@ -142,7 +150,9 @@ Tests:
 
 Verified:
 
-- Here, on Windows 11 Pro 26200: `--unittest` 73 of 73; `--selftest` 121 of 121 (it ran elevated);
+- Here, on Windows 11 Pro 26200: `--unittest` 74 of 74; `--selftest` without administrator rights
+  119 of 122, the 3 that need them failing as expected (the build before the last change passed
+  121 of 121 elevated);
   `--screenshot`. The build is reproducible: a fresh build gives the committed file byte for byte.
 - The transfer parser against the events of a local `sshd`: 39 events read in 12 ms with the
   event log query the manager uses.

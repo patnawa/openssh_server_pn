@@ -212,13 +212,16 @@
         <CustomAction Id="OpenSSHManagerUninstall" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
 
         <!-- After a first installation of the Server feature run with its window (double-click, msiexec /i; not /quiet,
-             /passive or /qb, not an upgrade, a downgrade or a repair), the manager opens its setup wizard: the Start-menu
-             shortcut "OpenSSH Server PN setup wizard" (server.wxs) is started through the shell as the installing user; the
-             manager asks for administrator rights as at every start. OPEN_WIZARD=0 turns it off. Starting it
-             never fails the installation (Return="ignore"). -->
+             /passive or /qb, not an upgrade, a downgrade or a repair), the manager opens its setup wizard: the installed
+             OpenSSHServerPNManager.exe is started through the shell as the installing user, and the manager asks for
+             administrator rights as at every start. WixShellExec passes no arguments, so the manager opens the wizard when
+             msiexec.exe started it. It cannot start the wizard's Start-menu shortcut instead: WixCA is a 32-bit DLL, and a
+             32-bit process resolves a shortcut into the 64-bit Program Files as Program Files (x86) (ShellExec returned 3,
+             path not found, in CI run 36316791081). OPEN_WIZARD=0 turns it off. Starting it never fails the installation
+             (Return="ignore"). -->
         <Property Id="OPEN_WIZARD" Value="1" Secure="yes" />
         <SetProperty Id="OpenSSHFirstInstall" Value="1" Sequence="execute" After="FindRelatedProducts"><![CDATA[NOT (Installed OR OPENSSH_PREVIOUS_INSTALLED OR OPENSSH_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchA)_INSTALLED OR OPENSSH_$(var.OtherArchA)_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchB)_INSTALLED OR OPENSSH_$(var.OtherArchB)_NEWER_INSTALLED)]]></SetProperty>
-        <Property Id="WixShellExecTarget" Value="[ProgramMenuFolder]OpenSSH Server PN setup wizard.lnk" />
+        <Property Id="WixShellExecTarget" Value="[#OpenSSHServerPNManager.exe]" />
         <CustomAction Id="OpenSSHOpenWizard" BinaryKey="WixCA" DllEntry="WixShellExec" Execute="immediate" Return="ignore" Impersonate="yes" />
 
         <!-- OpenSSHPreInstall (and with ACTIVE_SESSIONS=abort, OpenSSHCheckSessions) runs for a first install or upgrade, a

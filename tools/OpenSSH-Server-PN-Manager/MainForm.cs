@@ -3664,8 +3664,14 @@ namespace OpenSSHServerPNManager
         private void OfferWizard()
         {
             if (Program.Unattended) return;
-            // --wizard (the Start menu shortcut, or after installing): straight into the wizard.
-            if (Program.StartWizard) { Prefs.WizardOffered = true; RunWizard(); return; }
+            // --wizard (the Start menu shortcut), or started by the package after installing: straight into the wizard.
+            if (Program.StartWizard)
+            {
+                Prefs.WizardOffered = true;
+                Log.Info("Setup wizard opened " + (Program.StartedByInstaller ? "after the installation" : "with --wizard") + ", as " + Environment.UserDomainName + "\\" + Environment.UserName);
+                RunWizard();
+                return;
+            }
             if (Prefs.WizardOffered) return;
             Prefs.WizardOffered = true;
             if (MessageBox.Show(this, "Set up the SSH server now? A short wizard helps with the port and networks, a key for you, how accounts log in, and the recommended settings.\n\nYou can start it any time with \"Setup wizard...\" on the Dashboard.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
