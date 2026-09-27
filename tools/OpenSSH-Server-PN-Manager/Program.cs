@@ -263,9 +263,19 @@ namespace OpenSSHServerPNManager
                         f.DrawToBitmap(bmp, new Rectangle(0, 0, f.Width, f.Height));
                         bmp.Save(Path.Combine(dir, "partners-example.png"), System.Drawing.Imaging.ImageFormat.Png);
                     }
-                    var samplePartner = new PartnerAccount { Name = "globex-audit", FullName = "Jane Doe", Company = "Globex Audit", ReadOnly = true, Expires = DateTime.Today.AddDays(47) };
+                    var samplePartner = new PartnerAccount { Name = "globex-audit", FullName = "Jane Doe", Company = "Globex Audit", ReadOnly = true, Expires = DateTime.Today.AddDays(46) };
                     using (var d = new PartnerDialog(samplePartner, @"D:\SFTP", "jane.doe@example.com", x => { })) shot(d, "dialog-partner");
                     using (var d = new PasswordShownDialog("acme", "Example-Only-7kQ#2mZ", "sftp.example.com", 22, "The partner acme can log in now, with this password, to its folder only.")) shot(d, "dialog-partner-password");
+                    // The Alerts tab with example settings (nothing is saved).
+                    for (int i = 0; i < n; i++) if (f.TabName(i) == "Alerts") f.SelectTabForTest(i);
+                    Application.DoEvents();
+                    f.ShowAlertsExampleForTest();
+                    Application.DoEvents();
+                    using (var bmp = new Bitmap(f.Width, f.Height))
+                    {
+                        f.DrawToBitmap(bmp, new Rectangle(0, 0, f.Width, f.Height));
+                        bmp.Save(Path.Combine(dir, "alerts-example.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    }
                     f.Close();
                 }
                 return 0;

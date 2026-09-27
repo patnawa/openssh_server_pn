@@ -11,6 +11,145 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
+## 10.5.4.0 (not released yet)
+
+The packages install OpenSSH Server PN Manager 2.2.0 (next entry) with the server. OpenSSH 10.5p1,
+LibreSSL 4.3.2, libfido2 1.17.0, libcbor 0.14.0 and zlib 1.3.2 are unchanged from 10.5.3.0.
+
+Installer:
+
+- **The manager is part of the Server feature.** `OpenSSHServerPNManager.exe` and its
+  `.exe.config` go next to `sshd.exe`: the committed build in `tools/OpenSSH-Server-PN-Manager/bin`
+  (`openssh.wixproj` binds that folder), one file for x64, x86 and ARM64, the same as the
+  manager's own release. Two Start-menu shortcuts for all users, *OpenSSH Server PN Manager* and
+  *OpenSSH Server PN setup wizard* (`--wizard`); not advertised, so starting one never starts a
+  repair (which would restart `sshd`). Their component has an HKMU key path, HKLM in this
+  per-machine package; ICE57, which takes the Start-menu folder for per-user data, is suppressed.
+- **The setup wizard after installing.** After a first installation of the server run with a
+  window (a double-click, or `msiexec /i` with `/qr` or no UI switch), the package starts the
+  wizard shortcut through the shell as the installing user (`WixShellExec`, after
+  `InstallFinalize`, never failing the installation). Not after a silent or `/passive`
+  installation, an upgrade, a downgrade or a repair; `OPEN_WIZARD=0` turns it off.
+- **The manager's tasks go with the server.** When the Server feature is removed (an uninstall or
+  `REMOVE=Server`, not the removal of the old package by an upgrade), the package runs
+  `OpenSSHServerPNManager.exe --agent uninstall` from the install folder as LocalSystem, before the
+  pre-install step and before the files are removed: the scheduled tasks of the Alerts tab, their
+  Task Scheduler folder and the copy a portable manager made for them are deleted; the settings and
+  the transfer archive in `%ProgramData%\ssh\manager` stay, like `sshd_config`.
+- Both manager steps run only when .NET Framework 4.5 or later is installed (the `Release` value of
+  its setup): without it the manager cannot start, and the uninstall step would wait for ever on
+  the .NET message that nobody can close under LocalSystem.
+- `preinstall.ps1` also ends the runs of those tasks (`OpenSSHServerPNManager.exe` from the install
+  folder with `--agent` on its command line) that would hold the file during an upgrade or
+  removal; a manager window someone has open is left alone. `tests\preinstall.Tests.ps1`: 126
+  checks pass.
+- `tests\package.Tests.ps1` checks the manager's files and shortcuts in the Server feature, the key
+  path, the order, type and condition of the uninstall step, and the wizard step's conditions for a
+  first installation with a full or reduced window, `/passive`, `/quiet`, `OPEN_WIZARD=0`, no .NET
+  Framework 4.5, and an upgrade or repair: 114 checks (115 on ARM64), all passing on the x64, x86
+  and ARM64 packages built here with WiX 3.14.1.
+
+CI (`.github/workflows/openssh.yml`, `.github/scripts`):
+
+- The install checks compare the installed manager with the committed build (SHA-256) and read both
+  shortcuts (target and arguments); *Install* checks that a silent installation opens no wizard.
+- *Uninstall* first sets up the manager's two tasks, as the Alerts tab does (with a trigger a year
+  away), and checks after `msiexec /x` that they are gone with their folder, that the agent log
+  records the step, and that the manager and its shortcuts are removed.
+- A new scenario, *FirstRun*, installs the package with `msiexec /qr` on the machine the uninstall
+  left and waits for `OpenSSHServerPNManager.exe --wizard` to start, ends it and uninstalls again.
+- The workflow also runs when the committed manager (`tools/OpenSSH-Server-PN-Manager/bin`)
+  changes, since the packages carry it.
+
+## OpenSSH Server PN Manager 2.2.0 (not released yet)
+
+File exchange with partners outside the company, and a server that reports and defends itself
+while the window is closed. The packages of 10.5.4.0 install it; it also has a release of its own
+and runs with the 10.5.3.0 packages and earlier ones.
+
+Added:
+
+- **Partners tab.** SFTP accounts for customers, suppliers and auditors, each with a folder of its
+  own and nothing else. *Set up partner accounts* is done once: it creates the local groups
+  `SFTP-Partners`, `SFTP-Partners-ReadOnly` and `SFTP-Partners-KeyOnly` and writes their rules first
+  in the sections of the SFTP and Authentication tabs (SFTP only, confined to `<folder>\%u`,
+  download only for the second group, public key only for the third, keys in
+  `%ProgramData%\ssh\partner_keys\%u`), switches SFTP and transfer logging on, adds the groups to
+  `AllowGroups` when the file has one, and reports `AllowUsers`, `DenyGroups` and sections edited by
+  hand instead of overwriting them; the usual preview, backup, restart and keep-or-restore question
+  apply. From then on, partners come and go without a change to `sshd_config` or a restart:
+  - *New partner*: account name, contact, company, upload and download or download only, password
+    or key only, a last day, and who is told when its files arrive. The password has 20 characters
+    from a cryptographic random source, without characters that are easy to confuse; it is shown
+    once, with *Copy password* and *Copy login details*, and stored nowhere. It never expires and
+    the partner cannot change it; the account is hidden from the sign-in screen, and its folder is
+    open to it (modify, or read) and to SYSTEM and Administrators only. When a step fails, the
+    account is removed again.
+  - *Edit*, *Reset password* (which also ends a lockout), *Disable* and *Enable*, *Unlock*, *Keys*
+    (public keys only; a private key is refused), *Delete* (the account, its profile and its keys;
+    the folder only when ticked) and *Open folder*. Disabling and deleting end the partner's open
+    sessions.
+  - The list shows contact, company, access, login method, status (active, disabled, expired,
+    locked out), last day, last logon and this month's uploads and downloads.
+- **Transfer history.** *Transfers* on the Partners tab lists the uploads and downloads, and on
+  request the renames, removals and refused requests, from the `sftp-server` events of the
+  *OpenSSH/Operational* log, with the client address of the session: today, yesterday, the last 7
+  days, this month, last month, the last 30 or 365 days; all accounts or one. *Export CSV* (UTF-8,
+  for Excel; a cell that starts with `=`, `+`, `-` or `@` gets a `'` first, so that no file name
+  runs as a formula) and *Report* (HTML with totals per account). The partner setup and *Keep more
+  history* enlarge the event log to 100 MB.
+- **Alerts tab.** Two scheduled tasks run the manager as SYSTEM, *Watch* every minute and at
+  startup, *Daily* each night at 00:30; there is no service of its own. They send e-mail (SMTP with
+  STARTTLS and an optional login) and webhook messages (a Microsoft Teams Workflows card, or
+  `{"text": ...}`) when `sshd` stops or runs again, when failed logins pile up (at most once in 15
+  minutes), when an address is blocked, when a partner's files arrive (one message per partner per
+  5 minutes, to the addresses set for the partner, else to the admins), when the disk of the
+  partners' folders runs low (checked every hour, once a day), and on the 1st a monthly transfer
+  report (HTML, with the transfers as a CSV attachment). *Send a test e-mail* and *Send a test*
+  check the settings. The settings are in `%ProgramData%\ssh\manager\alerts.ini`, readable by SYSTEM
+  and Administrators only, with the SMTP password and the webhook address encrypted by DPAPI for
+  this computer; the agent writes `agent.log` next to it.
+- **Automatic blocking.** An address with 10 failed logins within 10 minutes (both adjustable) goes
+  into the firewall block rule of the Logs tab for 1 hour, then 24 hours, then 7 days when it comes
+  back within a week, and out again when its time is up. Never blocked: the allow list (addresses
+  and networks, IPv4 and IPv6), this computer, and addresses with a logged-in SSH session.
+- **Transfer archive.** Each night the day's transfers are added to
+  `%ProgramData%\ssh\manager\transfers\transfers-<yyyy-MM>.csv` (without duplicates), kept for 365
+  days; the Transfers window reads the archive together with the event log.
+- `--agent watch`, `--agent daily` (what the tasks run) and `--agent uninstall` (what the packages
+  run when the server is removed). Tasks set up while the manager ran from another folder run a
+  copy in `%ProgramFiles%\OpenSSH Server PN Manager`; once a package installs the manager next to
+  `sshd.exe`, their next run moves them to that one.
+
+Tests:
+
+- `--unittest` 73 (59 before): passwords, account names, the rules the partner setup writes and
+  reads back, `AllowGroups` and hand-edited sections, the partner dialog, the last day; transfers
+  from `sftp-server` events, CSV that spreadsheets do not run, the report and its periods; networks
+  and the allow list, settings with their secrets sealed, the blocking plan, uploads batched per
+  partner, and an e-mail and a webhook sent to test servers on 127.0.0.1.
+- `--selftest` 121 (73 and 48). The window test now lays the window out as on a 1024 x 768 screen,
+  at 100% and 150%, wherever it runs: CI run 36315515987 found that the Alerts tab ran past its
+  width at 150% on the runners' screens, and the tab now wraps its rows.
+- `--authtest`: five partner tests with partner groups of their own and real logins and transfers
+  (password, a foreign key and commands refused, an upload landing in the folder; key only with
+  download only; disable and enable, the last day and a new password; access changed to download
+  only; delete, with and without the folder) and four agent tests (an address from TEST-NET-1
+  blocked and unblocked, the partner test's transfers archived once, the Watch task run by Task
+  Scheduler as SYSTEM, `--agent uninstall` removing the tasks and their folder).
+- `--screenshot` adds the Partners tab with example partners, the partner dialog, a new password
+  and the Alerts tab with example settings.
+
+Verified:
+
+- Here, on Windows 11 Pro 26200: `--unittest` 73 of 73; `--selftest` 121 of 121 (it ran elevated);
+  `--screenshot`. The build is reproducible: a fresh build gives the committed file byte for byte.
+- The transfer parser against the events of a local `sshd`: 39 events read in 12 ms with the
+  event log query the manager uses.
+- Elevated, on GitHub's runners (Windows Server 2022, the same with the PowerShell 2.0 engine,
+  Windows Server 2025, Windows 11 on ARM64): the five partner tests passed on all four in run
+  36314606201; partners log in without being members of Users.
+
 ## OpenSSH Server PN Manager 2.1.0 (2026-09-27)
 
 Keys for you, from start to finish: the setup wizard creates one, and the Key generator tab loads

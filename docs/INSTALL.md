@@ -52,6 +52,7 @@ msiexec /i .\OpenSSH-Win64-v10.5.3.0.msi /qn /norestart /l*v "$env:TEMP\openssh-
 | `FIREWALL_PROFILES=` | by edition | Networks the firewall rule applies to: `all`, `domain,private`, `domain` or `private`. Unset: all networks on Windows Server, Domain and Private on Windows 10 and 11 |
 | `SSHD_PORT=<n>` | unset | TCP port for `sshd`, 1 to 65535, digits only (10.5.2.0 and later). The firewall rule gets this port, and `%ProgramData%\ssh\sshd_config` gets `Port <n>` after the services have started (the previous file is kept as `sshd_config.bak.<date>-<time>`); `sshd` is restarted. If `sshd` does not listen on the new port, the previous file is put back and the log has a `preinstall: warning:` line; the install still succeeds |
 | `ACTIVE_SESSIONS=abort` | `close` | What happens to open SSH sessions (10.5.2.0 and later). `close` ends them, as before. `abort` stops the install before anything changes, with exit code 1603 and a `preinstall: error:` line that names the sessions, so a deployment tool can try again later |
+| `OPEN_WIZARD=0` | `1` | Do not open the setup wizard of OpenSSH Server PN Manager after the install (packages after 10.5.3.0). It opens only after a first installation of the server run with a window (double-click, or `msiexec /i` without `/qn`, `/qb` or `/passive`), never after an upgrade, a repair or a silent install |
 
 The installer accepts only these values for `FIREWALL_PROFILES`, `KEEP_INBOX_OPENSSH`, `SSHD_PORT`
 and `ACTIVE_SESSIONS`, and no apostrophe in `INSTALLFOLDER`. Any other value stops the install
@@ -87,6 +88,12 @@ What the installer configures:
   on the command line take precedence. 10.5.1.0 and earlier recreated the rule with the defaults
   above, so after an upgrade *to* 10.5.1.0 pass `FIREWALL_PROFILES` again, and move the port back
   on the Firewall tab if you changed it.
+- OpenSSH Server PN Manager (`OpenSSHServerPNManager.exe` and its `.exe.config`) next to
+  `sshd.exe`, with the server, in the packages after 10.5.3.0, and two Start-menu shortcuts for all
+  users: *OpenSSH Server PN Manager* and *OpenSSH Server PN setup wizard*. It needs .NET Framework
+  4.5 or later (part of Windows 8 and Server 2012 and later; on Windows 7 SP1 and Server 2008 R2,
+  install it first). The file is the one published as the manager's own release; the packages carry
+  it unchanged.
 - The product appears as **OpenSSH Server PN** in *Apps & features*, with links to this project.
 - Registry keys `HKLM\SOFTWARE\OpenSSH` (with `agent` subkey) and the process-mitigation
   entries for `sshd.exe` and `ssh-agent.exe` under `Image File Execution Options`.
@@ -258,6 +265,13 @@ and the account needs NTFS rights on it (`icacls C:\SFTP\alice /grant 'alice:(OI
 Windows, `ChrootDirectory` applies to SFTP sessions only, which is why `ForceCommand internal-sftp`
 goes with it; `internal-sftp` runs `sftp-server.exe`. A domain account's `%u` is `domain\name`.
 
+For people outside the company, the **Partners** tab does all of this for local accounts it
+creates: one setup writes rules for three local groups (`SFTP-Partners`, `SFTP-Partners-ReadOnly`,
+`SFTP-Partners-KeyOnly`), and each partner then gets an account with a generated password, a
+folder of its own under the partners' folder, and optionally download-only access, key-only login
+or a last day, without another change to `sshd_config`. Its *Transfers* window lists the files
+exchanged. See [the manager's README](../tools/OpenSSH-Server-PN-Manager/README.md#sftp-partners).
+
 The client chooses the cipher, and the cipher decides the speed. On x64, from the packages of
 10.5.3.0 on, `aes128-gcm@openssh.com` and `aes256-gcm@openssh.com` are the fastest, about twice
 `chacha20-poly1305@openssh.com`, the first choice of OpenSSH clients: add
@@ -363,8 +377,12 @@ msiexec /x .\OpenSSH-Win64-v10.5.3.0.msi /qn
 or through *Apps & features* / `Programs and Features`. The uninstaller ends open sessions and
 other OpenSSH processes first (the session it was started from is kept), then removes the
 services, the firewall rule and the program files without leaving anything for the next restart.
-It leaves `%ProgramData%\ssh` (configuration, host keys, logs) in place; delete it manually if
-you want a clean slate.
+From the packages after 10.5.3.0 on, it also removes the scheduled tasks of the manager's Alerts tab
+(Task Scheduler folder *OpenSSH Server PN Manager*) and the Start-menu shortcuts. It leaves
+`%ProgramData%\ssh` (configuration, host keys, logs, the manager's alert settings and transfer
+archive in `manager`, the partners' keys in `partner_keys`) in place; delete it manually if you
+want a clean slate. Partner accounts, their groups and their folders stay too: delete the partners
+on the Partners tab first if they should go.
 
 ## 8. Troubleshooting
 

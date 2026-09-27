@@ -274,8 +274,25 @@ namespace OpenSSHServerPNManager
                 new PartnerAccount { Name = "initech", FullName = "Peter G.", Company = "Initech", KeyOnly = true, KeyCount = 2, LastLogon = today.AddDays(-1).AddHours(8) },
                 new PartnerAccount { Name = "umbrella", FullName = "", Company = "Umbrella Trading", Disabled = true, LastLogon = today.AddDays(-40) },
             };
+            _ptMonth = new Dictionary<string, TransferTotals>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "acme", new TransferTotals { User = "acme", Uploads = 42, Downloads = 17 } },
+                { "globex-audit", new TransferTotals { User = "globex-audit", Downloads = 9 } },
+                { "initech", new TransferTotals { User = "initech", Uploads = 128, Downloads = 3 } },
+            };
             _ptLoaded = true;
             FillPartners("acme");
+        }
+        /// <summary>--screenshot: the Alerts tab filled in with example settings (nothing is saved).</summary>
+        public void ShowAlertsExampleForTest()
+        {
+            _alOn.Checked = true; _alHost.Text = "smtp.example.com"; _alPort.Value = 587; _alTls.Checked = true;
+            _alUser.Text = "sftp-alerts@example.com"; _alPassword.Text = "example"; _alFrom.Text = "sftp-alerts@example.com"; _alAdmins.Text = "it-team@example.com";
+            _alHook.Text = "https://example.invalid/webhook"; _alTeams.Checked = true; _alAllow.Text = "203.0.113.0/24, 198.51.100.7";
+            _alState.Text = "On: the tasks " + Agent.WatchTask + " and " + Agent.DailyTask + " run the manager as SYSTEM. Last entry of the agent log: " +
+                            DateTime.Today.AddHours(9.5).ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture) + "  blocked 192.0.2.23 until " +
+                            DateTime.Today.AddHours(10.5).ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) + " after 12 failed logins (strike 1)";
+            _alState.ForeColor = Theme.Muted;
         }
         /// <summary>--screenshot: the Key generator tab showing an example key, as after Load key (the SFTP example is dropped first).</summary>
         public void ShowKeyExampleForTest(KeyFileInfo key) { LoadSftp(); ShowKey(key, "Loaded " + key.FileName + ".", true, Theme.Text); }

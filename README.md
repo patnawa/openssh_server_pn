@@ -3,8 +3,9 @@
 **OpenSSH Server PN** is an OpenSSH server and client for Windows with its own installer and a
 management console. It builds on OpenSSH 10.5p1 and the Windows port of OpenSSH, and adds an
 installer that cleans up whatever was installed before, a GUI with a setup wizard, a key-pair
-generator and security checks, and a firewall rule that stays off public networks on Windows 10
-and 11. Windows password logins stay on after installation, as in the official package, until
+generator and security checks, SFTP accounts for partners outside the company with a transfer
+history, alerts by e-mail or webhook with automatic blocking of attacking addresses, and a
+firewall rule that stays off public networks on Windows 10 and 11. Windows password logins stay on after installation, as in the official package, until
 you have set up keys; the manager's setup wizard switches them off for administrators.
 
 | Folder | Contents |
@@ -91,7 +92,9 @@ and on Domain and Private networks only on Windows 10 and 11, so a laptop on pub
 not expose SSH. An upgrade keeps the rule's ports and networks, `SSHD_PORT=<n>` moves the server
 to another port, and `ACTIVE_SESSIONS=abort` makes the install stop instead of ending open
 sessions. If the install fails, the previous package comes back with its firewall settings.
-Details: [docs/INSTALL.md](docs/INSTALL.md).
+The packages after 10.5.3.0 also install OpenSSH Server PN Manager, with Start-menu shortcuts, and
+open its setup wizard after a first installation run with a window (`OPEN_WIZARD=0` turns that
+off). Details: [docs/INSTALL.md](docs/INSTALL.md).
 
 ```powershell
 # install (elevated)
@@ -106,13 +109,14 @@ Test-NetConnection localhost -Port 22   # TcpTestSucceeded : True
 ## OpenSSH Server PN Manager
 
 OpenSSH has no control panel; this project adds one. **OpenSSH Server PN Manager** is a single
-executable (`OpenSSHServerPNManager.exe`, .NET Framework 4.x, no installation). Up to version 1.6.0,
+executable (`OpenSSHServerPNManager.exe`, .NET Framework 4.5 or later), installed by the packages
+after 10.5.3.0 and running from any folder as well. Up to version 1.6.0,
 released with 10.5.2.0 and earlier, it was called OpenSSH Server Manager (`OpenSSHServerManager.exe`);
 version 2.0.0 takes over its preferences, rules and firewall block list:
 
 - **Setup wizard**: port and networks, a key for you (made in the wizard, or the `.pub` file of
   one you have), key-only login for administrators or everyone, the recommended settings and who
-  may log in, in five steps. Start it from the Dashboard, the Key generator tab, the notification
+  may log in, in five steps. Start it from the Dashboard, the Key generator tab, the Start menu, the notification
   area icon, or with `OpenSSHServerPNManager.exe --wizard`.
 - **Dashboard**: service state, version, listeners, sessions, SFTP, firewall, host key fingerprints;
   start, stop, restart, test the configuration, add your public key, generate host keys.
@@ -132,6 +136,16 @@ version 2.0.0 takes over its preferences, rules and firewall block list:
   accounts and groups: they transfer files and nothing else, optionally confined to a folder they
   see as `/` (one per account with `%u`), optionally download only; *Apply* creates the folders.
   Tested with real transfers and escape attempts (`--authtest`).
+- **Partners**: SFTP accounts for customers, suppliers and auditors, each in a folder of its own,
+  after a one-time setup that never has to touch `sshd_config` again. Create one with a generated
+  password shown once, download-only access, key-only login or a last day; reset its password,
+  disable, unlock, manage its keys, delete it. *Transfers* lists every upload, download, rename
+  and refused request by period and account, exports CSV and makes an HTML report.
+- **Alerts**: e-mail (SMTP) and webhook (Microsoft Teams, Slack and others) when `sshd` stops,
+  failed logins pile up, a partner's files arrive or the disk runs low, and a monthly transfer
+  report; automatic blocking of addresses with many failed logins (1 hour, 24 hours, 7 days),
+  never the allow list or a logged-in session. Two scheduled tasks run it as SYSTEM, with no
+  service of their own.
 - **Keys**: administrator and per-user `authorized_keys` with fingerprints and the ACLs `sshd`
   requires; comments in the files are kept.
 - **Key generator**: creates Ed25519, ECDSA, RSA and post-quantum ML-DSA key pairs, verifies
@@ -156,6 +170,8 @@ version 2.0.0 takes over its preferences, rules and firewall block list:
 
 `--check`, `--unittest`, `--selftest`, `--keytest`, `--authtest` and `--screenshot` run the same code
 unattended. See [tools/OpenSSH-Server-PN-Manager/README.md](tools/OpenSSH-Server-PN-Manager/README.md).
+
+![OpenSSH Server PN Manager: SFTP partners](docs/images/manager-partners.png)
 
 ![OpenSSH Server PN Manager: SFTP-only accounts](docs/images/manager-sftp.png)
 

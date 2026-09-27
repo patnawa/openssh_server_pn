@@ -48,7 +48,10 @@ Authenticode-signed only when a signing service is configured; the release notes
   in the package and cannot be replaced from the command line. The public properties that reach
   it (`FIREWALL_PROFILES`, `KEEP_INBOX_OPENSSH`, `INSTALLFOLDER`) are limited by launch conditions
   to known values, so no property value can change the command. The steps never fail an install,
-  and everything they do is written to the MSI log.
+  and everything they do is written to the MSI log. When the server is removed, the installed
+  manager runs as LocalSystem from the install folder to delete its scheduled tasks
+  (packages after 10.5.3.0). The setup wizard that opens after an interactive first install runs
+  as the installing user and asks for administrator rights like any start of the manager.
 - **Exposure.** On Windows 10 and 11 the firewall rule applies to Domain and Private networks
   only; on Windows Server to all networks. Password logins are allowed after install so that
   the first login works. INSTALL.md section 5 lists the hardening to apply once keys are set up.
@@ -83,3 +86,22 @@ Authenticode-signed only when a signing service is configured; the release notes
   Windows itself, so the account's NTFS permissions are the second line of defence: keep folders
   outside an account's reach closed to it. `--authtest` tries to leave the folder with `..`, a
   drive letter and an upload outside it, and fails if any of them works.
+- **SFTP partners.** Partners are local accounts in groups whose rules force `internal-sftp` in a
+  folder of their own, as above. Their passwords are generated from a cryptographic random source
+  (20 characters), shown once and stored nowhere; they never expire, the partner cannot change
+  them, and the accounts are hidden from the Windows sign-in screen. Their public keys are in
+  `%ProgramData%\ssh\partner_keys`, which only SYSTEM and Administrators can change, so a partner
+  cannot add a key of its own. Disabling or deleting a partner ends its open sessions. Rules that
+  keep partners out (`AllowUsers`, `DenyGroups`) and a section changed by hand are reported, not
+  overwritten.
+- **Alerts and automatic blocking.** Two scheduled tasks run the manager as SYSTEM: the copy
+  installed next to `sshd.exe`, or a copy in `%ProgramFiles%\OpenSSH Server PN Manager`, both
+  folders only administrators can change. There is no service and no listening port. Settings,
+  state, the agent's log and the transfer archive are in `%ProgramData%\ssh\manager`, which only
+  SYSTEM and Administrators can open; the SMTP password and the webhook address are encrypted
+  there with DPAPI for this computer. Mail is encrypted with STARTTLS when *STARTTLS* is ticked (the
+  default); webhook addresses must be `https://`, and TLS 1.2 and 1.3 are enabled also where .NET
+  would not offer them by default. Automatic blocking adds addresses to the one inbound block rule
+  of the Logs tab; it never blocks this computer, the allow list or an address with a logged-in
+  session, so failed attempts from the address of someone logged in (an administrator's included)
+  do not cut that address off. Uninstalling the package removes the tasks.
