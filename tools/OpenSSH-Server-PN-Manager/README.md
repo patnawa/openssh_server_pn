@@ -1,5 +1,11 @@
 # OpenSSH Server PN Manager
 
+Version 2.2.1 is the audit maintenance update: corrected partner radio choices, preserved
+disabled firewall rules in the wizard, saved shell-option edits, dirty-state warnings for
+Alerts and Firewall, stale-refresh protection, and fixes for scaled dark tabs and high contrast.
+Configuration, transfer reporting, and background-job fixes are in the
+[changelog](../../docs/CHANGELOG.md). The unit suite now contains 100 tests.
+
 <img src="icon/app-256.png" alt="OpenSSH Server PN Manager icon: a blue tile with a white key whose head is a terminal showing a >_ prompt" width="96" align="right">
 
 The management console of OpenSSH Server PN, in the spirit of the control panels

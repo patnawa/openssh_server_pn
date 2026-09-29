@@ -49,7 +49,7 @@ namespace OpenSSHServerPNManager
         private static readonly Regex Line = new Regex(@"^user: (?<user>.+?): (?<rest>.*?)(?: \[postauth\])?$", RegexOptions.Compiled);
         private static readonly Regex SessionOpened = new Regex(@"^session opened for local user .+ from \[(?<ip>[^\]]*)\]", RegexOptions.Compiled);
         private static readonly Regex Open = new Regex("^open \"(?<f>.*)\" flags (?<flags>\\S+)", RegexOptions.Compiled);
-        private static readonly Regex Close = new Regex("^close \"(?<f>.*)\" bytes read (?<r>\\d+) written (?<w>\\d+)$", RegexOptions.Compiled);
+        private static readonly Regex Close = new Regex("^(?:forced )?close \"(?<f>.*)\" bytes read (?<r>\\d+) written (?<w>\\d+)$", RegexOptions.Compiled);
         private static readonly Regex Remove = new Regex("^remove name \"(?<f>.*)\"$", RegexOptions.Compiled);
         private static readonly Regex Rename = new Regex("^(?:posix-)?rename old \"(?<o>.*)\" new \"(?<n>.*)\"$", RegexOptions.Compiled);
         private static readonly Regex Mkdir = new Regex("^mkdir name \"(?<f>.*)\"", RegexOptions.Compiled);
@@ -60,28 +60,42 @@ namespace OpenSSHServerPNManager
         {
             var l = new List<TransferRecord>();
             var address = new Dictionary<int, string>(); var lastOpen = new Dictionary<int, KeyValuePair<string, string>>(); // pid => (file, flags)
+            var active = new Dictionary<int, List<KeyValuePair<string, string>>>();
             foreach (var e in events)
             {
                 var m = Line.Match(e.Text ?? "");
                 if (!m.Success) continue;
                 var user = m.Groups["user"].Value; var rest = m.Groups["rest"].Value;
+                List<KeyValuePair<string, string>> files;
+                if (!active.TryGetValue(e.Pid, out files)) active[e.Pid] = files = new List<KeyValuePair<string, string>>();
+                // Only the preceding open request can be identified as refused. VERBOSE/DEBUG3 may emit
+                // explanatory lines before its status; those lines do not start another request.
+                KeyValuePair<string, string> pending;
+                bool hadPending = lastOpen.TryGetValue(e.Pid, out pending);
+                if (rest == "Refusing open request in read-only mode" || Regex.IsMatch(rest, @"^request \d+: sent status \d+$")) continue;
+                lastOpen.Remove(e.Pid);
                 Func<string, string, long, string, TransferRecord> rec = (action, file, bytes, detail) =>
                 {
                     string ip; address.TryGetValue(e.Pid, out ip);
                     return new TransferRecord { Time = e.Time, User = user, Address = ip ?? "", Action = action, File = file, Bytes = bytes, Detail = detail ?? "" };
                 };
                 Match x;
-                if ((x = SessionOpened.Match(rest)).Success) { address[e.Pid] = x.Groups["ip"].Value; lastOpen.Remove(e.Pid); continue; }
-                if ((x = Open.Match(rest)).Success) { lastOpen[e.Pid] = new KeyValuePair<string, string>(x.Groups["f"].Value, x.Groups["flags"].Value); continue; }
+                if ((x = SessionOpened.Match(rest)).Success) { address[e.Pid] = x.Groups["ip"].Value; files.Clear(); continue; }
+                if (rest.StartsWith("session closed for local user ", StringComparison.Ordinal)) { address.Remove(e.Pid); active.Remove(e.Pid); continue; }
+                if ((x = Open.Match(rest)).Success)
+                {
+                    var openedFile = new KeyValuePair<string, string>(x.Groups["f"].Value, x.Groups["flags"].Value);
+                    lastOpen[e.Pid] = openedFile; files.Add(openedFile); continue;
+                }
                 if ((x = Close.Match(rest)).Success)
                 {
                     long read = long.Parse(x.Groups["r"].Value, CultureInfo.InvariantCulture), written = long.Parse(x.Groups["w"].Value, CultureInfo.InvariantCulture);
                     var file = x.Groups["f"].Value;
-                    KeyValuePair<string, string> open; bool opened = lastOpen.TryGetValue(e.Pid, out open) && open.Key == file;
-                    bool forWriting = opened && open.Value.Contains("WRITE");
+                    int index = files.FindIndex(o => o.Key == file);
+                    bool forWriting = index >= 0 && files[index].Value.Contains("WRITE");
                     if (written > 0 || forWriting && read == 0) l.Add(rec(TransferRecord.Upload, file, written, null));
                     if (read > 0) l.Add(rec(TransferRecord.Download, file, read, null));
-                    lastOpen.Remove(e.Pid);
+                    if (index >= 0) files.RemoveAt(index);
                     continue;
                 }
                 if ((x = Remove.Match(rest)).Success) { l.Add(rec(TransferRecord.Delete, x.Groups["f"].Value, 0, null)); continue; }
@@ -92,12 +106,17 @@ namespace OpenSSHServerPNManager
                 {
                     // The file opened just before was refused: an upload or a download the account may not make. Other refusals
                     // (a folder outside its own, a change in download-only mode) name no file in the log and are left out.
-                    KeyValuePair<string, string> open;
-                    if (lastOpen.TryGetValue(e.Pid, out open))
+                    if (hadPending)
                     {
-                        l.Add(rec(TransferRecord.Refused, open.Key, 0, open.Value.Contains("WRITE") ? "upload refused" : "download refused"));
-                        lastOpen.Remove(e.Pid);
+                        l.Add(rec(TransferRecord.Refused, pending.Key, 0, pending.Value.Contains("WRITE") ? "upload refused" : "download refused"));
+                        int index = files.FindLastIndex(o => o.Equals(pending));
+                        if (index >= 0) files.RemoveAt(index);
                     }
+                }
+                else if (hadPending && rest.StartsWith("sent status ", StringComparison.Ordinal) && rest != "sent status Success")
+                {
+                    int index = files.FindLastIndex(o => o.Equals(pending));
+                    if (index >= 0) files.RemoveAt(index);
                 }
             }
             return l;

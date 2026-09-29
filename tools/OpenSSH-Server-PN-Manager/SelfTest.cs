@@ -43,6 +43,12 @@ namespace OpenSSHServerPNManager
             try
             {
                 Unit(test, tmpDir);
+                AuditTransferTests.Run(test, tmpDir);
+                AuditAgentTests.Run(test);
+                AuditConfigTests.Run(test, tmpDir);
+                AuditDialogTests.Run(test, tmpDir);
+                AuditStateTests.Run(test, tmpDir);
+                AuditGuiTests.Run(test, tmpDir);
                 if (!unitOnly) Server(test, tmpDir);
             }
             finally { try { Directory.Delete(tmpDir, true); } catch { } }

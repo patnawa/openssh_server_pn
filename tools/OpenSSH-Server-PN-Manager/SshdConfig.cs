@@ -180,6 +180,17 @@ namespace OpenSSHServerPNManager
                 string k, v, comment; Split(Lines[occ[0].Key], out k, out v, out comment);
                 Lines[occ[0].Key] = newLine + (string.IsNullOrEmpty(comment) ? "" : " " + comment);
                 if (!firstOnly) for (int i = 1; i < occ.Count; i++) Lines[occ[i].Key] = "#" + Lines[occ[i].Key].TrimStart();
+                // An existing scalar below Include must move too: sshd uses the first value, including values read
+                // from those files. Repeatable and cumulative directives keep their ordering and additive meaning.
+                var priorInclude = GetAll("Include").FirstOrDefault();
+                if (priorInclude.Value != null && priorInclude.Key < occ[0].Key &&
+                    !RepeatableKeywords.Contains(keyword, StringComparer.OrdinalIgnoreCase) &&
+                    !CumulativeKeywords.Contains(keyword, StringComparer.OrdinalIgnoreCase))
+                {
+                    var edited = Lines[occ[0].Key];
+                    Lines.RemoveAt(occ[0].Key);
+                    Lines.Insert(priorInclude.Key, edited);
+                }
                 return;
             }
             // Prefer to replace a commented-out example of the same keyword ("#Port 22" in sshd_config_default: no space

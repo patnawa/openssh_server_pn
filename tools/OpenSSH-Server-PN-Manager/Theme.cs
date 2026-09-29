@@ -121,7 +121,7 @@ namespace OpenSSHServerPNManager
             var form = root as Form;
             if (form != null) TitleBar(form);
             // The light palette is what the controls show by themselves: nothing to change unless the window was dark before.
-            if (!p.Dark && (previous == null || !previous.Dark)) return;
+            if (!p.Dark && !p.HighContrast && (previous == null || (!previous.Dark && !previous.HighContrast))) return;
             var map = new Dictionary<int, Color>();
             if (previous != null)
             {
@@ -147,6 +147,8 @@ namespace OpenSSHServerPNManager
             Color mapped; bool semantic = !(c is Form) && !IsSurface(c) && !(c is Button) && map.TryGetValue(c.ForeColor.ToArgb(), out mapped);
             Color newFore = semantic ? map[c.ForeColor.ToArgb()] : Color.Empty;
             if (c is TabPage) { if (dark) c.BackColor = p.Back; else c.ResetBackColor(); }
+            // The themed GroupBox renderer ignores inherited ForeColor unless it is explicitly set.
+            else if (c is GroupBox) { if (dark) c.ForeColor = p.Text; else c.ResetForeColor(); }
             else if (IsSurface(c))
             {
                 if (dark) { c.BackColor = p.Surface; c.ForeColor = p.SurfaceText; } else { c.ResetBackColor(); c.ResetForeColor(); }
@@ -246,6 +248,29 @@ namespace OpenSSHServerPNManager
     /// <summary>A TabControl that draws its tab strip itself in the dark palette (the system draws it light only).</summary>
     internal sealed class ThemedTabControl : TabControl
     {
+        [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+        [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr value);
+        private IntPtr _nativeFont;
+
+        // UserPaint stops WinForms sending WM_SETFONT. Native tabs still calculate the hit areas
+        // and page bounds, so they must use the same font as our painted captions.
+        private void SyncNativeFont()
+        {
+            if (!IsHandleCreated) return;
+            var font = Font.ToHfont();
+            SendMessage(Handle, 0x0030 /*WM_SETFONT*/, font, new IntPtr(1));
+            var old = _nativeFont; _nativeFont = font;
+            if (old != IntPtr.Zero) DeleteObject(old);
+        }
+
+        protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); SyncNativeFont(); }
+        protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); SyncNativeFont(); }
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            if (_nativeFont != IntPtr.Zero) { DeleteObject(_nativeFont); _nativeFont = IntPtr.Zero; }
+        }
+
         public void UpdateTheme()
         {
             bool dark = Theme.Dark;

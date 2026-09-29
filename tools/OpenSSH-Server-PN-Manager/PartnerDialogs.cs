@@ -53,11 +53,15 @@ namespace OpenSSHServerPNManager
             Body.Controls.Add(Caption("Access to its folder:"));
             _full = new RadioButton { Text = "Upload and download", AutoSize = true, Margin = new Padding(12, 2, 3, 2), Checked = existing == null || !existing.ReadOnly };
             _readOnly = new RadioButton { Text = "Download only: no upload, rename, removal or new folders", AutoSize = true, Margin = new Padding(12, 2, 3, 2), Checked = existing != null && existing.ReadOnly };
-            Body.Controls.Add(Row(_full)); Body.Controls.Add(Row(_readOnly));
+            var accessChoices = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Margin = new Padding(0) };
+            accessChoices.Controls.Add(_full); accessChoices.Controls.Add(_readOnly);
+            Body.Controls.Add(accessChoices);
             Body.Controls.Add(Caption("Login:"));
             _password = new RadioButton { Text = "Password (a public key can be added as well, with Keys...)", AutoSize = true, Margin = new Padding(12, 2, 3, 2), Checked = existing == null || !existing.KeyOnly };
             _keyOnly = new RadioButton { Text = "Public key only: the password is refused", AutoSize = true, Margin = new Padding(12, 2, 3, 2), Checked = existing != null && existing.KeyOnly };
-            Body.Controls.Add(Row(_password)); Body.Controls.Add(Row(_keyOnly));
+            var loginChoices = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Margin = new Padding(0) };
+            loginChoices.Controls.Add(_password); loginChoices.Controls.Add(_keyOnly);
+            Body.Controls.Add(loginChoices);
             _expires = new CheckBox { Text = "Can log in until the end of", AutoSize = true, Margin = new Padding(3, 12, 3, 2) };
             _lastDay = new DateTimePicker { Format = DateTimePickerFormat.Long, Width = Ui.Px(220), AccessibleName = "Last day the partner can log in", Margin = new Padding(3, 9, 3, 2) };
             var lastDay = existing == null ? null : LocalAccounts.LastDay(existing.Expires);
@@ -348,7 +352,15 @@ namespace OpenSSHServerPNManager
     {
         private readonly TextBox _root;
         private readonly Action<PartnerSetupDialog> _run;
-        public string Root { get { return _root.Text.Trim().TrimEnd('\\'); } }
+        public string Root
+        {
+            get
+            {
+                var root = _root.Text.Trim().TrimEnd('\\');
+                // Keep drive roots absolute; Path.Combine("C:", name) is relative to that drive's current directory.
+                return root.Length == 2 && root[1] == ':' ? root + "\\" : root;
+            }
+        }
 
         public PartnerSetupDialog(PartnerSetupState st, PartnerGroups g, Action<PartnerSetupDialog> run) : base("Set up SFTP partners", "Set up")
         {

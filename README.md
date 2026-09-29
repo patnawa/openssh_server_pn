@@ -18,7 +18,15 @@ you have set up keys; the manager's setup wizard switches them off for administr
 
 This project is independent: it is not affiliated with Microsoft or the OpenBSD OpenSSH project.
 
-## Current build: 10.5.4.0 (2026-09-27)
+## Release preparation: 10.5.5.0 / Manager 2.2.1 (2026-09-29)
+
+This maintenance release fixes configuration precedence, transfer reporting, background-job
+state races, installer rollback ports, and GUI save, selection, refresh, and theme defects.
+The manager passes 100 unit tests. The full Windows release matrix is being verified before
+publication. See the [changelog](docs/CHANGELOG.md), [project audit](docs/AUDIT-2026-09-29.md),
+and [GUI audit](docs/GUI-AUDIT-2026-09-29.md).
+
+## Previous build: 10.5.4.0 (2026-09-27)
 
 | Package | Target | Size | SHA-256 |
 |---|---|---|---|
@@ -49,7 +57,7 @@ Details in [docs/CHANGELOG.md](docs/CHANGELOG.md) and [docs/COMPATIBILITY.md](do
 
 Download them from the release [v10.5.4.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.4.0), together with
 `OpenSSHServerPNManager.exe.config` (keep it next to the executable), `SHA256SUMS.txt` and the SBOM
-`OpenSSH-Server-PN-v10.5.4.0.cdx.json`. The management console also has releases of its own; the newest is
+`OpenSSH-Server-PN-v10.5.4.0.cdx.json`. The matching management console release is
 [manager-v2.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.0), the same file. The files are **unsigned**: always compare
 the SHA-256 hash before installing (`Get-FileHash .\OpenSSH-Win64-v10.5.4.0.msi`, or the check in
 [docs/INSTALL.md](docs/INSTALL.md#1-choose-a-package)). `gh attestation verify <file> --repo patnawa/openssh_server_pn`

@@ -36,6 +36,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Build script regression tests
+        run: '& "./$env:TOOL/build.Tests.ps1"'
+
       - name: Build
         # The call operator: PowerShell does not expand $env:TOOL in a bare command name.
         run: |
