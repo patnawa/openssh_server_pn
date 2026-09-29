@@ -18,13 +18,24 @@ you have set up keys; the manager's setup wizard switches them off for administr
 
 This project is independent: it is not affiliated with Microsoft or the OpenBSD OpenSSH project.
 
-## Release preparation: 10.5.5.0 / Manager 2.2.1 (2026-09-29)
+## Current build: 10.5.5.0 / Manager 2.2.1 (2026-09-29)
 
 This maintenance release fixes configuration precedence, transfer reporting, background-job
 state races, installer rollback ports, and GUI save, selection, refresh, and theme defects.
-The manager passes 100 unit tests. The full Windows release matrix is being verified before
-publication. See the [changelog](docs/CHANGELOG.md), [project audit](docs/AUDIT-2026-09-29.md),
+The manager passes 100 unit tests. See the [changelog](docs/CHANGELOG.md), [project audit](docs/AUDIT-2026-09-29.md),
 and [GUI audit](docs/GUI-AUDIT-2026-09-29.md).
+
+Download [product 10.5.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.5.0)
+or [Manager 2.2.1](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.1).
+Keep the manager's `.exe.config` beside the executable. The release includes `SHA256SUMS.txt`,
+a CycloneDX SBOM, and GitHub provenance attestations. Files are unsigned.
+
+| File | SHA-256 |
+|---|---|
+| `OpenSSH-Win64-v10.5.5.0.msi` | `65C0CEF5C666D344C51E670F4AF8F431254444BC31EAD5089F90C5A6CC3A8A12` |
+| `OpenSSH-Win32-v10.5.5.0.msi` | `43405B185408AAF330A16DA90BBF71CB8503AE66ACA7C1D8C74B126223A64A9D` |
+| `OpenSSH-ARM64-v10.5.5.0.msi` | `C3B3479C476E6D8754F04C19C4A4203D3C5048742443D0655861BDFBDEC71ECE` |
+| `OpenSSHServerPNManager.exe` (2.2.1) | `88D2C3F7BCCEBF925406FC365498B8ABE193485DF08024B0A15A763302EB1FA2` |
 
 ## Previous build: 10.5.4.0 (2026-09-27)
 
@@ -69,11 +80,11 @@ What is in this build:
 
 | Component | Version | Note |
 |---|---|---|
-| OpenSSH | 10.5p1, file version 10.5.4.0 | Three releases ahead of the Windows port's `latestw_all` branch (10.2p1). How the 10.3, 10.4 and 10.5 releases were merged is in the changelog |
+| OpenSSH | 10.5p1, file version 10.5.5.0 | Three releases ahead of the Windows port's `latestw_all` branch (10.2p1). How the 10.3, 10.4 and 10.5 releases were merged is in the changelog |
 | LibreSSL | 4.3.2 (2026-05-26) | The official 10.0.0.0 Windows package shipped 4.2.0, without AES-NI. x64: with the CPU detection for Visual Studio builds, so AES-NI and PCLMULQDQ are used. ARM64: with LibreSSL's workaround for the compiler defect ([libressl/portable#1403](https://github.com/libressl/portable/issues/1403)) |
 | libfido2 | 1.17.0 (2026-04-15) | Includes YSA-2026-01 (restricted `webauthn.dll` search path) |
 | libcbor, zlib | 0.14.0, 1.3.2 | |
-| Installer | WiX 3.14 | Removes whatever is installed first, installs OpenSSH Server PN Manager 2.2.0; see below |
+| Installer | WiX 3.14 | Removes whatever is installed first, installs OpenSSH Server PN Manager 2.2.1; see below |
 
 Highlights of OpenSSH 10.3 to 10.5 on the server side: a GSSAPI pre-authentication
 denial-of-service fix, complete `PubkeyAcceptedAlgorithms` enforcement for ECDSA keys, the
