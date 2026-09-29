@@ -18,6 +18,9 @@ the builds before them were not published.
 Audit maintenance release. The packages include Manager 2.2.1; OpenSSH 10.5p1 and the bundled
 cryptographic libraries are unchanged. The release files were built by
 [tag run 36585898657](https://github.com/patnawa/openssh_server_pn/actions/runs/36585898657).
+That run passed every job, including Pester, the three native unit suites, and all four
+installation configurations. Uploaded release files matched the build artifacts and their
+SHA-256 manifest; the three MSI provenance attestations were verified against the release tag.
 The preceding [PR run](https://github.com/patnawa/openssh_server_pn/actions/runs/36583305646)
 passed all required jobs and Pester, including 767 native tests per architecture and 148 manager
 self-tests plus key/authentication suites on all four Windows configurations.
