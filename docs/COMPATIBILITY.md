@@ -1,5 +1,13 @@
 # Windows compatibility
 
+The 10.5.5.0 / Manager 2.2.1 release passed
+[PR #12 CI](https://github.com/patnawa/openssh_server_pn/actions/runs/36583305646): 767 native
+tests per architecture; 148 manager self-tests plus key/authentication tests and install,
+upgrade, rollback, downgrade, session, uninstall, and wizard checks on Windows Server 2022,
+Server 2025, Windows 11 ARM64, and Server 2022 with PowerShell 2.0 installer steps.
+The [tagged release run](https://github.com/patnawa/openssh_server_pn/actions/runs/36585898657)
+also passed every job on the same matrix, including Pester.
+
 This page records which Windows versions and architectures the packages built by this repository run
 on, what that claim is based on, and where the limits are. It applies to builds 10.2.0.0 through
 10.5.4.0 (2026-09-27), which share the toolchain, the Windows SDK and the minimum Windows target;

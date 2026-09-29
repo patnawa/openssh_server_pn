@@ -16,8 +16,20 @@ the builds before them were not published.
 ## 10.5.5.0 / Manager 2.2.1 (2026-09-29)
 
 Audit maintenance release. The packages include Manager 2.2.1; OpenSSH 10.5p1 and the bundled
-cryptographic libraries are unchanged. Release CI results and package hashes are recorded
-after the Windows build and installation matrix finishes.
+cryptographic libraries are unchanged. The release files were built by
+[tag run 36585898657](https://github.com/patnawa/openssh_server_pn/actions/runs/36585898657).
+That run passed every job, including Pester, the three native unit suites, and all four
+installation configurations. Uploaded release files matched the build artifacts and their
+SHA-256 manifest; the three MSI provenance attestations were verified against the release tag.
+The preceding [PR run](https://github.com/patnawa/openssh_server_pn/actions/runs/36583305646)
+passed all required jobs and Pester, including 767 native tests per architecture and 148 manager
+self-tests plus key/authentication suites on all four Windows configurations.
+
+| Package | SHA-256 |
+|---|---|
+| `OpenSSH-Win64-v10.5.5.0.msi` | `65C0CEF5C666D344C51E670F4AF8F431254444BC31EAD5089F90C5A6CC3A8A12` |
+| `OpenSSH-Win32-v10.5.5.0.msi` | `43405B185408AAF330A16DA90BBF71CB8503AE66ACA7C1D8C74B126223A64A9D` |
+| `OpenSSH-ARM64-v10.5.5.0.msi` | `C3B3479C476E6D8754F04C19C4A4203D3C5048742443D0655861BDFBDEC71ECE` |
 
 Manager executable SHA-256: `88D2C3F7BCCEBF925406FC365498B8ABE193485DF08024B0A15A763302EB1FA2`.
 
