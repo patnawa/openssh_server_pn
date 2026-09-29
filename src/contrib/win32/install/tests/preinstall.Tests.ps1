@@ -179,6 +179,7 @@ $cases = @(
     @('prose is not an example', "# Port forwarding is off`nAllowTcpForwarding no`n", "# Port forwarding is off`nAllowTcpForwarding no`nPort 2222`n"),
     @('before the Match block, with a blank line', "LogLevel INFO`nMatch Group administrators`n       Port 22`n", "LogLevel INFO`nPort 2222`n`nMatch Group administrators`n       Port 22`n"),
     @('a Port line inside Match is not the global one', "Match User x`nPort 22`n", "Port 2222`n`nMatch User x`nPort 22`n"),
+    @('equals-delimited Match stays after the global Port', "Match=all`nPasswordAuthentication no`n", "Port 2222`n`nMatch=all`nPasswordAuthentication no`n"),
     @('before the first Include', "LogLevel INFO`nInclude conf.d/*.conf`nMatch all`n", "LogLevel INFO`nPort 2222`nInclude conf.d/*.conf`nMatch all`n"),
     @('commented example before Match', "#Port 22`nMatch all`n#Port 23`n", "Port 2222`nMatch all`n#Port 23`n"),
     @('no final line break is kept', "#Port 22`nLogLevel INFO", "Port 2222`nLogLevel INFO"),
@@ -194,9 +195,14 @@ foreach ($c in $cases) {
     Check ('Set-SshdConfigPortText: ' + $c[0]) ($got -ceq $c[2]) ('expected [' + (Show $c[2]) + '] got [' + (Show $got) + ']')
 }
 Same 'Get-SshdConfigPorts: several Port lines' '2222,2200' ((Get-SshdConfigPorts "Port 2222`nPort 2200`nPort 2222`n") -join ',')
-Same 'Get-SshdConfigPorts: ListenAddress ports' '2022,2023' ((Get-SshdConfigPorts "ListenAddress 0.0.0.0:2022`nListenAddress [::1]:2023`nListenAddress ::1`n") -join ',')
-Same 'Get-SshdConfigPorts: Port wins over ListenAddress' '2200' ((Get-SshdConfigPorts "ListenAddress 0.0.0.0:2022`nPort 2200`n") -join ',')
+Same 'Get-SshdConfigPorts: explicit ListenAddress ports and default for a bare IPv6 address' '2022,2023,22' ((Get-SshdConfigPorts "ListenAddress 0.0.0.0:2022`nListenAddress [::1]:2023`nListenAddress ::1`n") -join ',')
+Same 'Get-SshdConfigPorts: explicit ListenAddress overrides Port' '2022' ((Get-SshdConfigPorts "ListenAddress 0.0.0.0:2022`nPort 2200`n") -join ',')
+Same 'Get-SshdConfigPorts: portless ListenAddress expands all global ports' '2022,2200,2201' ((Get-SshdConfigPorts "ListenAddress 127.0.0.1:2022`nListenAddress [::1]`nPort 2200`nPort 2201`n") -join ',')
+Same 'Get-SshdConfigPorts: explicit IPv6 port excludes default' '2022' ((Get-SshdConfigPorts "ListenAddress [::1]:2022`n") -join ',')
+Same 'Get-SshdConfigPorts: deduplicates explicit and global ports' '2200' ((Get-SshdConfigPorts "ListenAddress 127.0.0.1:2200`nListenAddress ::1`nPort 2200`n") -join ',')
+Same 'Get-SshdConfigPorts: IPv6 tail is not a port' '22' ((Get-SshdConfigPorts "ListenAddress ::2022`n") -join ',')
 Same 'Get-SshdConfigPorts: inside Match ignored' '22' ((Get-SshdConfigPorts "Match all`nPort 2200`n") -join ',')
+Same 'Get-SshdConfigPorts: equals-delimited Match ignored' '22' ((Get-SshdConfigPorts "Match=all`nPort 2200`n") -join ',')
 
 # ---------------------------------------------------------------- files: backup name, ReplaceFile, permissions
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('preinstall-tests-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))

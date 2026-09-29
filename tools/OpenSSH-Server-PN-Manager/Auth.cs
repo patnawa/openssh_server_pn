@@ -448,7 +448,8 @@ namespace OpenSSHServerPNManager
             cfg.Set("KbdInteractiveAuthentication", "no");
             cfg.Set("ChallengeResponseAuthentication", ""); // older name of KbdInteractiveAuthentication; its first value would win
             var req = global.Requirement;
-            cfg.Set("AuthenticationMethods", req == "any" ? "" : req);
+            // Removing the directive restores the default only when no included file can supply a requirement.
+            cfg.Set("AuthenticationMethods", req == "any" && cfg.GetAll("Include").Count == 0 ? "" : req);
             if (rules == null) return;
             FindRegion(cfg.Lines, out begin, out end); // Set may have inserted lines above the section
             int at;

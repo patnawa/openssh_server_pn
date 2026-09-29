@@ -369,7 +369,7 @@ function Set-SshdConfigPortText([string]$text, [int]$port) {
     if ($final) { $lines.RemoveAt($lines.Count - 1) }
     $new = 'Port ' + $port
     $end = $lines.Count
-    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*Match(\s|$)' -or $managerRegions -ccontains $lines[$i].Trim()) { $end = $i; break } }
+    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\s*Match(\s|=|$)' -or $managerRegions -ccontains $lines[$i].Trim()) { $end = $i; break } }
     $at = -1
     for ($i = 0; $i -lt $end -and $at -lt 0; $i++) {
         if ($lines[$i] -match '^\s*Port(\s*=\s*|\s+)[^#]*(#.*)?$') {
@@ -392,19 +392,28 @@ function Set-SshdConfigPortText([string]$text, [int]$port) {
     return $out
 }
 
-# The ports sshd listens on with this configuration: top-level Port lines, else the ports named
-# by ListenAddress lines, else 22.
+# The ports named by top-level ListenAddress lines. An address without a port uses every Port
+# value (22 if none); an explicit address:port uses only that port. Without ListenAddress, all
+# Port values apply. Includes are not expanded by this text-only fallback.
 function Get-SshdConfigPorts([string]$text) {
     $ports = @()
     $listen = @()
+    $hasListen = $false
+    $useGlobal = $false
     foreach ($l in ($text -split "`r?`n")) {
-        if ($l -match '^\s*Match(\s|$)' -or $managerRegions -ccontains $l.Trim()) { break }
+        if ($l -match '^\s*Match(\s|=|$)' -or $managerRegions -ccontains $l.Trim()) { break }
         if ($l -match '^\s*Port(?:\s*=\s*|\s+)([0-9]{1,5})\s*(#.*)?$') { $p = [string][int]$matches[1]; if ($ports -notcontains $p) { $ports += $p } }
-        elseif ($l -match '^\s*ListenAddress(?:\s*=\s*|\s+)(?:\[[^\]]*\]|[^\s:#\[]+):([0-9]{1,5})(\s|#|$)') { $p = [string][int]$matches[1]; if ($listen -notcontains $p) { $listen += $p } }
+        elseif ($l -match '^\s*ListenAddress(?:\s*=\s*|\s+)') {
+            $hasListen = $true
+            if ($l -match '^\s*ListenAddress(?:\s*=\s*|\s+)(?:\[[^\]]*\]|[^\s:#\[]+):([0-9]{1,5})(\s|#|$)') {
+                $p = [string][int]$matches[1]; if ($listen -notcontains $p) { $listen += $p }
+            } else { $useGlobal = $true }
+        }
     }
-    if ($ports.Count -eq 0) { $ports = $listen }
     if ($ports.Count -eq 0) { $ports = @('22') }
-    return $ports
+    if (-not $hasListen) { return $ports }
+    if ($useGlobal) { foreach ($p in $ports) { if ($listen -notcontains $p) { $listen += $p } } }
+    return $listen
 }
 
 # sshd_config.bak.yyyyMMdd-HHmmss, with -2, -3 ... when a backup of that second exists already

@@ -9,6 +9,8 @@ using System.Linq;
 using System.Net;
 using System.Net.Mail;
 using System.Security.Cryptography;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -285,6 +287,30 @@ namespace OpenSSHServerPNManager
         public static readonly TimeSpan[] BlockTimes = { TimeSpan.FromHours(1), TimeSpan.FromHours(24), TimeSpan.FromDays(7) };
         public static readonly TimeSpan UploadBatch = TimeSpan.FromMinutes(5);
 
+        /// <summary>Both scheduled jobs replace the same state file; hold one machine-wide lock from load through save.</summary>
+        internal static bool WithStateLock(string name, int timeoutMilliseconds, Action action)
+        {
+            var security = new MutexSecurity();
+            foreach (var sid in new[] { WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid })
+                security.AddAccessRule(new MutexAccessRule(new SecurityIdentifier(sid, null), MutexRights.FullControl, AccessControlType.Allow));
+            using (var identity = WindowsIdentity.GetCurrent())
+                security.AddAccessRule(new MutexAccessRule(identity.User, MutexRights.FullControl, AccessControlType.Allow));
+            bool created;
+            using (var mutex = new Mutex(false, name, out created, security))
+            {
+                bool owned = false;
+                try
+                {
+                    try { owned = mutex.WaitOne(timeoutMilliseconds); }
+                    catch (AbandonedMutexException) { owned = true; } // the failed job's lock now belongs to this thread
+                    if (!owned) return false;
+                    action();
+                    return true;
+                }
+                finally { if (owned) mutex.ReleaseMutex(); }
+            }
+        }
+
         /// <summary>
         /// --agent watch | daily: what the scheduled tasks run; --agent uninstall: what the MSI runs (as SYSTEM) before it
         /// removes the program files; --agent open-wizard: what it runs during a first installation with a window
@@ -300,13 +326,18 @@ namespace OpenSSHServerPNManager
             }
             try
             {
-                if (job == "watch") MoveToInstalled();
-                var s = AlertSettings.Load(); var st = AgentState.Load();
-                if (job == "watch") Watch(s, st, DateTime.Now);
-                else if (job == "daily") Daily(s, st, DateTime.Now);
-                else { Note("unknown job " + job); return 2; }
-                st.Save();
-                return 0;
+                if (job != "watch" && job != "daily") { Note("unknown job " + job); return 2; }
+                // Watch retries next minute. Daily waits beyond Watch's five-minute scheduler execution limit.
+                bool completed = WithStateLock("Global\\OpenSSHServerPNManager.AgentState", job == "daily" ? 360000 : 1000, () =>
+                {
+                    if (job == "watch") MoveToInstalled();
+                    var s = AlertSettings.Load(); var st = AgentState.Load();
+                    if (job == "watch") Watch(s, st, DateTime.Now);
+                    else Daily(s, st, DateTime.Now);
+                    st.Save();
+                });
+                if (!completed) Note("the " + job + " run deferred: another agent job is still running");
+                return completed || job == "watch" ? 0 : 1;
             }
             catch (Exception ex) { Note("the " + job + " run failed: " + ex); return 1; }
         }
@@ -616,7 +647,20 @@ namespace OpenSSHServerPNManager
         /// <summary>The webhook body: an Adaptive Card for Teams (Workflows), or {"text": ...} for Slack, Mattermost and most others.</summary>
         internal static string HookBody(bool teams, string subject, string text)
         {
-            Func<string, string> j = v => "\"" + (v ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n").Replace("\t", "\\t") + "\"";
+            Func<string, string> j = v =>
+            {
+                var quoted = new StringBuilder("\"");
+                foreach (char c in v ?? "")
+                {
+                    if (c == '\\' || c == '"') quoted.Append('\\').Append(c);
+                    else if (c == '\n') quoted.Append("\\n");
+                    else if (c == '\r') quoted.Append("\\r");
+                    else if (c == '\t') quoted.Append("\\t");
+                    else if (c < 32) quoted.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                    else quoted.Append(c);
+                }
+                return quoted.Append('"').ToString();
+            };
             if (!teams) return "{\"text\":" + j(subject + "\n" + text) + "}";
             return "{\"type\":\"message\",\"attachments\":[{\"contentType\":\"application/vnd.microsoft.card.adaptive\",\"content\":{\"$schema\":\"http://adaptivecards.io/schemas/adaptive-card.json\",\"type\":\"AdaptiveCard\",\"version\":\"1.4\",\"body\":[" +
                    "{\"type\":\"TextBlock\",\"size\":\"Medium\",\"weight\":\"Bolder\",\"wrap\":true,\"text\":" + j(subject) + "},{\"type\":\"TextBlock\",\"wrap\":true,\"text\":" + j(text.Replace("\n", "\n\n")) + "}]}}]}";

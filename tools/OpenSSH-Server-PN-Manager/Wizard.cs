@@ -21,11 +21,13 @@ namespace OpenSSHServerPNManager
         public string AllowGroups;
 
         /// <summary>The changes in words, for the summary page and the preview.</summary>
-        public List<string> Describe(int currentPort, int currentProfiles, bool firewallExists)
+        public List<string> Describe(int currentPort, int currentProfiles, bool firewallExists, bool firewallEnabled = true)
         {
             var l = new List<string>();
             if (Port != currentPort) l.Add("sshd listens on port " + Port + " instead of " + currentPort + ".");
-            if (!firewallExists || Profiles != currentProfiles || Port != currentPort) l.Add("The firewall rule allows port " + Port + " on the " + FirewallRule.ProfileText(Profiles) + " network profile(s).");
+            if (!firewallExists || Profiles != currentProfiles || Port != currentPort || FirewallEnabled != firewallEnabled)
+                l.Add(FirewallEnabled ? "The firewall rule is enabled and allows port " + Port + " on the " + FirewallRule.ProfileText(Profiles) + " network profile(s)."
+                    : "The firewall rule is disabled; other computers cannot connect through this rule.");
             if (Login == WizardLogin.AdministratorsKeyOnly) l.Add("Administrators log in with a public key only; other accounts as before.");
             if (Login == WizardLogin.EveryoneKeyOnly) l.Add("Every account logs in with a public key only (no Windows password over SSH).");
             if (Recommended) l.Add("Recommended settings: ClientAliveInterval 300, MaxAuthTries 4, LoginGraceTime 60, RequiredRSASize 2048, LogLevel VERBOSE, keyboard-interactive off.");
@@ -46,19 +48,20 @@ namespace OpenSSHServerPNManager
         private readonly Button _back, _next, _cancel;
         private readonly Label _title, _step;
         private readonly NumericUpDown _port;
-        private readonly CheckBox _dom, _priv, _pub, _recommended, _restrict;
+        private readonly CheckBox _firewallEnabled, _dom, _priv, _pub, _recommended, _restrict;
         private readonly RadioButton _keep, _adminKeys, _allKeys;
         private readonly TextBox _groups;
         private readonly Label _keysState, _summary, _keyNote;
         private readonly Func<int> _myKeyCount;
         private readonly Action _addKey;
         private readonly Func<IWin32Window, string> _createKey;
-        private readonly int _currentPort, _currentProfiles; private readonly bool _fwExists, _hadRestriction;
+        private readonly int _currentPort, _currentProfiles; private readonly bool _fwExists, _fwEnabled, _hadRestriction;
         public WizardPlan Plan;
 
         public SetupWizard(int currentPort, FirewallRule fw, string allowGroups, Func<int> myKeyCount, Action addKey, Func<IWin32Window, string> createKey)
         {
             _myKeyCount = myKeyCount; _addKey = addKey; _createKey = createKey; _currentPort = currentPort; _fwExists = fw != null; _hadRestriction = !string.IsNullOrEmpty(allowGroups);
+            _fwEnabled = fw != null && fw.Enabled;
             _currentProfiles = fw == null ? DefaultProfiles() : ((fw.Profiles & 0x7fffffff) == 0x7fffffff ? 7 : fw.Profiles & 7);
             Text = "Set up the SSH server"; StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
             MinimizeBox = MaximizeBox = false; ShowInTaskbar = false; ClientSize = new Size(Ui.Px(720), Ui.Px(470)); Font = new Font("Segoe UI", Ui.Pt(9.5f));
@@ -80,10 +83,14 @@ namespace OpenSSHServerPNManager
             portRow.Controls.Add(_port);
             portRow.Controls.Add(new Label { Text = "22 is the standard; another port only reduces the noise of scanners, it is not a protection.", AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(10, 7, 3, 3) });
             Add(p1, portRow);
+            _firewallEnabled = new CheckBox { Text = "Enable the inbound SSH firewall rule", AutoSize = true, Checked = fw == null || fw.Enabled };
+            Add(p1, _firewallEnabled);
             _dom = new CheckBox { Text = "Domain networks (the domain of a domain member)", AutoSize = true, Checked = (_currentProfiles & 1) != 0 };
             _priv = new CheckBox { Text = "Private networks (home, office)", AutoSize = true, Checked = (_currentProfiles & 2) != 0 };
             _pub = new CheckBox { Text = "Public networks (cafés, hotels, other untrusted networks)", AutoSize = true, Checked = (_currentProfiles & 4) != 0 };
             Add(p1, _dom); Add(p1, _priv); Add(p1, _pub);
+            _firewallEnabled.CheckedChanged += (s, e) => _dom.Enabled = _priv.Enabled = _pub.Enabled = _firewallEnabled.Checked;
+            _dom.Enabled = _priv.Enabled = _pub.Enabled = _firewallEnabled.Checked;
             Add(p1, Note("A laptop should not accept SSH on public networks. A server on the internet uses the network profile of its connection, often Public."));
 
             // 2. Your key
@@ -172,7 +179,7 @@ namespace OpenSSHServerPNManager
             if (_page == _pages.Length - 1)
             {
                 var plan = BuildPlan();
-                var l = plan.Describe(_currentPort, _currentProfiles, _fwExists);
+                var l = plan.Describe(_currentPort, _currentProfiles, _fwExists, _fwEnabled);
                 _summary.Text = l.Count == 0 ? "Nothing to change: everything stays as it is." : string.Join("\n\n", l.Select(x => "• " + x));
             }
             AcceptButton = _next;
@@ -186,7 +193,7 @@ namespace OpenSSHServerPNManager
             int profiles = (_dom.Checked ? 1 : 0) | (_priv.Checked ? 2 : 0) | (_pub.Checked ? 4 : 0);
             return new WizardPlan
             {
-                Port = (int)_port.Value, Profiles = profiles, FirewallEnabled = profiles != 0,
+                Port = (int)_port.Value, Profiles = profiles, FirewallEnabled = _firewallEnabled.Checked && profiles != 0,
                 Login = _allKeys.Checked ? WizardLogin.EveryoneKeyOnly : _adminKeys.Checked ? WizardLogin.AdministratorsKeyOnly : WizardLogin.Keep,
                 Recommended = _recommended.Checked,
                 // Unticked: a restriction that was there is removed; none there, nothing is written.
@@ -197,7 +204,7 @@ namespace OpenSSHServerPNManager
         private void Finish()
         {
             var plan = BuildPlan();
-            if (plan.Profiles == 0 && MessageBox.Show(this, "No network profile is ticked: the firewall rule is switched off and other computers cannot connect. Go on?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            if (!plan.FirewallEnabled && (_fwEnabled || !_fwExists) && MessageBox.Show(this, "The inbound SSH firewall rule will be disabled: other computers cannot connect through this rule. Go on?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
             if (plan.AllowGroups != null && plan.AllowGroups.Length > 0) { string err; if (SshdArgs.ParseTyped(plan.AllowGroups, out err) == null) { MessageBox.Show(this, "Groups: " + err + ".", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; } }
             Plan = plan;
             DialogResult = DialogResult.OK;

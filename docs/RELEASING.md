@@ -4,9 +4,9 @@ How a release is made since the packages are built by GitHub Actions: what the w
 person still does, how to set up code signing, and how anyone can verify the published files. The
 manual build in [BUILDING.md](BUILDING.md) stays the reference for building on your own machine.
 
-> **Not run yet.** The workflow `openssh.yml`, the release job and the signing steps described here were
-> written on 26 September 2026 and checked with actionlint, but have not run on GitHub. Until the first
-> tag has gone through them, treat every step below as a plan and check its result.
+The workflows have published releases through 10.5.4.0. Each new release still needs its own
+successful build and test matrix, artifact review, and checksum verification. Authenticode
+signing remains optional; published files are unsigned unless the release states otherwise.
 
 ## 1. What runs where
 

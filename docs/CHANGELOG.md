@@ -13,6 +13,32 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
+## 10.5.5.0 / Manager 2.2.1 (2026-09-29)
+
+Audit maintenance release. The packages include Manager 2.2.1; OpenSSH 10.5p1 and the bundled
+cryptographic libraries are unchanged. Release CI results and package hashes are recorded
+after the Windows build and installation matrix finishes.
+
+Manager executable SHA-256: `88D2C3F7BCCEBF925406FC365498B8ABE193485DF08024B0A15A763302EB1FA2`.
+
+The GUI follow-up fixes partner radio-button grouping and drive-root input, preserves disabled
+firewall rules in the wizard, rejects stale background refresh results, warns about unsaved
+Alerts and Firewall edits, and saves the edited default-shell option. High-contrast transitions,
+scaled dark tabs, and dark group headings now render correctly. Added 15 GUI regressions; the
+manager unit suite now passes 100 tests. See [the GUI audit](GUI-AUDIT-2026-09-29.md).
+
+Fixed configuration edits overridden by Includes, authentication requirements inherited after
+choosing any method, escaped SFTP folder tokens, drive-root partner folders, reserved partner
+names, webhook control characters, and overlapping Watch/Daily state updates. Transfer history
+now retains concurrent empty uploads and interrupted-transfer byte counts and avoids attributing
+a directory refusal to an open file. Installer rollback ports follow ListenAddress semantics,
+port editing recognizes `Match=all`, and the manager build honors `-Csc`.
+
+Added regression coverage and rebuilt the manager executable. The initial manager audit passed 85
+tests; installer helpers pass 126 checks and compiler selection passes two. Native x64 tests
+pass 686 cases; the symbolic-link suite and elevated manager integration remain limited by the
+non-admin session. See [the audit record](AUDIT-2026-09-29.md) for evidence and remaining work.
+
 ## 10.5.4.0 (2026-09-27)
 
 The packages install OpenSSH Server PN Manager 2.2.0 (next entry) with the server. OpenSSH 10.5p1,

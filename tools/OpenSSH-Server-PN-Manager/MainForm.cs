@@ -84,6 +84,7 @@ namespace OpenSSHServerPNManager
         private readonly Dictionary<string, string> _hintText = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly ErrorProvider _errors = new ErrorProvider { BlinkStyle = ErrorBlinkStyle.NeverBlink };
         private string _pwshShown, _shellShown, _shellOptionShown, _rawShown = "";
+        private Action<string, string> _writeDefaultShell = DefaultShell.Set;
         private bool _loadingSettings;
         private TabPage _pgSettings, _pgAuth, _pgSftp, _pgRaw;
         private Label _setPending, _rawPending, _setIncludeNote;
@@ -434,6 +435,8 @@ namespace OpenSSHServerPNManager
         {
             if (_busyDepth++ == 0)
             {
+                // Queries started before this operation must not paint pre-operation state afterwards.
+                ++_refreshGeneration; _refreshRunning = false;
                 _timerWasRunning = _timer.Enabled; _timer.Stop();
                 _busy.Visible = true; UseWaitCursor = true; _tabs.Enabled = false;
             }
@@ -679,7 +682,7 @@ namespace OpenSSHServerPNManager
             }
         }
 
-        private bool _refreshRunning; private DateTime _refreshStarted;
+        private bool _refreshRunning; private DateTime _refreshStarted; private long _refreshGeneration;
         /// <summary>
         /// Collects on a background thread (STA, for the COM objects of the firewall API) and shows the result on the
         /// window's thread. At most one runs at a time; a timer tick while one runs is skipped. One that has not finished
@@ -689,8 +692,9 @@ namespace OpenSSHServerPNManager
         private bool RefreshInBackground<T>(Func<SshdConfig, T> collect, Action<T> show)
         {
             if (_refreshRunning && DateTime.UtcNow - _refreshStarted > TimeSpan.FromMinutes(1)) { Log.Info("Background refresh gave up after a minute"); _refreshRunning = false; }
-            if (_refreshRunning || _cfg == null || IsDisposed) return false;
+            if (_refreshRunning || _cfg == null || IsDisposed || Disposing || !IsHandleCreated || _busyDepth > 0) return false;
             _refreshRunning = true; _refreshStarted = DateTime.UtcNow;
+            var generation = ++_refreshGeneration;
             var cfg = _cfg;
             var worker = new Thread(() =>
             {
@@ -700,6 +704,7 @@ namespace OpenSSHServerPNManager
                 {
                     BeginInvoke((Action)(() =>
                     {
+                        if (IsDisposed || Disposing || generation != _refreshGeneration) return;
                         _refreshRunning = false;
                         if (error != null) { Log.Error("Refresh", error, false); return; }
                         if (_busyDepth == 0) Safe(() => show(data), false); // not while an operation (Busy) runs
@@ -1075,6 +1080,8 @@ namespace OpenSSHServerPNManager
             if (AuthEdited()) l.Add("the Authentication tab");
             if (SftpEdited()) l.Add("the SFTP tab");
             if (RawEdited()) l.Add("the sshd_config (text) tab");
+            if (AlertsEdited()) l.Add("the Alerts tab");
+            if (FirewallEdited()) l.Add("the Firewall tab");
             return l;
         }
 
@@ -1084,6 +1091,8 @@ namespace OpenSSHServerPNManager
             if (_pgSettings == null || _pgSftp == null || _setPending == null || _rawPending == null) return; // still building
             bool s = SettingsEdited(), r = RawEdited();
             MarkTab(_pgSettings, "Settings", s); MarkTab(_pgAuth, "Authentication", AuthEdited()); MarkTab(_pgSftp, "SFTP", SftpEdited()); MarkTab(_pgRaw, "sshd_config (text)", r);
+            if (_pgAlerts != null) MarkTab(_pgAlerts, "Alerts", AlertsEdited());
+            if (_pgFirewall != null) MarkTab(_pgFirewall, "Firewall", FirewallEdited());
             _setPending.Text = s ? "Changes not saved yet" : "";
             if (!r) _rawPending.Text = "";
             else if (_rawPending.Text.Length == 0) _rawPending.Text = "Changes not saved yet";
@@ -1094,6 +1103,8 @@ namespace OpenSSHServerPNManager
         private void SaveSettings(bool restart)
         {
             var shell = _cmbShell.Text.Trim();
+            var shellOption = _txtShellOption.Text.Trim();
+            bool optionChanged = shellOption != (DefaultShell.GetOption() ?? "").Trim();
             // Validate only a changed shell: an existing registry value must not block saving unrelated settings.
             bool shellChanged = !string.Equals(shell, (DefaultShell.Get() ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
             if (shellChanged && shell.Length > 0 && !File.Exists(shell)) throw new ConfigException("Default shell not found:\n" + shell + "\n\nEnter the full path of an existing program, or leave the field empty for cmd.exe.");
@@ -1124,8 +1135,16 @@ namespace OpenSSHServerPNManager
             // The window adopts the saved file first, so that nothing below can leave it with the old file's state.
             UseConfig(cand, false, true);
             // The registry value is written only when it changed (HKLM\SOFTWARE\OpenSSH\DefaultShell applies to new sessions at once).
-            bool optionChanged = _txtShellOption.Text.Trim() != (DefaultShell.GetOption() ?? "").Trim();
-            if (shellChanged || optionChanged) { try { DefaultShell.Set(shell, _txtShellOption.Text); } catch (Exception ex) { Log.Error("sshd_config was saved, but the default shell could not be set", ex, true); } }
+            if (shellChanged || optionChanged)
+            {
+                try { _writeDefaultShell(shell, shellOption); LoadSettings(true); }
+                catch (Exception ex)
+                {
+                    // Keep a rejected registry edit available for correction or retry.
+                    _cmbShell.Text = shell; _txtShellOption.Text = shellOption; UpdatePending();
+                    Log.Error("sshd_config was saved, but the default shell could not be set", ex, true);
+                }
+            }
             ReportOverridden(changed);
             var firewallBack = OpenFirewallForPort(_cfg.EffectivePort);
             if (restart)
@@ -2346,6 +2365,18 @@ namespace OpenSSHServerPNManager
         private TabPage _pgAlerts; private CheckBox _alOn, _alTls, _alSshd, _alFailures, _alUploads, _alDisk, _alReport, _alBlock; private RadioButton _alTeams, _alText;
         private TextBox _alHost, _alUser, _alPassword, _alFrom, _alAdmins, _alHook, _alAllow; private NumericUpDown _alPort, _alBurst, _alDiskPct, _alThreshold, _alWindow;
         private Label _alState, _alResult; private bool _alLoaded;
+        private Dictionary<Control, string> _alShown;
+
+        private Dictionary<Control, string> AlertInputs()
+        {
+            return Descendants(_pgAlerts).Where(c => c is CheckBox || c is RadioButton || c is NumericUpDown || (c is TextBox && !(c.Parent is UpDownBase)))
+                .ToDictionary(c => c, c => c is CheckBox ? ((CheckBox)c).Checked.ToString() : c is RadioButton ? ((RadioButton)c).Checked.ToString() : c is NumericUpDown ? ((NumericUpDown)c).Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : c.Text);
+        }
+
+        private bool AlertsEdited()
+        {
+            return _alLoaded && _alShown != null && AlertInputs().Any(p => !_alShown.ContainsKey(p.Key) || _alShown[p.Key] != p.Value);
+        }
 
         private TabPage BuildAlerts()
         {
@@ -2410,6 +2441,13 @@ namespace OpenSSHServerPNManager
             root.Controls.Add(bar);
             page.Controls.Add(root);
             FitRows(root);
+            foreach (var control in Descendants(page))
+            {
+                if (control is CheckBox) ((CheckBox)control).CheckedChanged += (s, e) => UpdatePending();
+                else if (control is RadioButton) ((RadioButton)control).CheckedChanged += (s, e) => UpdatePending();
+                else if (control is NumericUpDown) ((NumericUpDown)control).ValueChanged += (s, e) => UpdatePending();
+                else if (control is TextBox && !(control.Parent is UpDownBase)) control.TextChanged += (s, e) => UpdatePending();
+            }
             return page;
         }
 
@@ -2431,6 +2469,8 @@ namespace OpenSSHServerPNManager
                                       : "Off: nothing runs while this window is closed. Saving with the box ticked sets up the scheduled tasks.";
             _alState.ForeColor = installed ? Theme.Muted : Orange;
             _alLoaded = true;
+            _alShown = AlertInputs();
+            UpdatePending();
         }
 
         /// <summary>The settings as they are on the tab (partner recipients from the file: they are set on the Partners tab).</summary>
@@ -3271,6 +3311,11 @@ namespace OpenSSHServerPNManager
         }
 
         // ---------------- Firewall ----------------
+        private string _fwShown;
+        private string FirewallInputs() { return _fwEnabled.Checked + "|" + _fwDomain.Checked + "|" + _fwPrivate.Checked + "|" + _fwPublic.Checked + "|" + _fwPort.Value; }
+        private bool FirewallEdited() { return _fwShown != null && _fwShown != FirewallInputs(); }
+        private void CaptureFirewall() { _fwShown = FirewallInputs(); UpdatePending(); }
+
         private TabPage BuildFirewall()
         {
             var page = new TabPage("Firewall");
@@ -3295,6 +3340,8 @@ namespace OpenSSHServerPNManager
             flow.Controls.Add(bar);
             flow.Controls.Add(new Label { AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(4, 12, 4, 4), MaximumSize = new Size(Ui.Px(800), 0), Text = "The rule is scoped to sshd.exe. Domain-joined Windows Servers use the Domain profile; laptops on untrusted networks use Public. Restrict remote addresses in the Windows Firewall console if the server must only be reachable from specific networks." });
             page.Controls.Add(flow);
+            foreach (var box in new[] { _fwEnabled, _fwDomain, _fwPrivate, _fwPublic }) box.CheckedChanged += (s, e) => UpdatePending();
+            _fwPort.ValueChanged += (s, e) => UpdatePending();
             return page;
         }
 
@@ -3326,7 +3373,7 @@ namespace OpenSSHServerPNManager
         {
             var fw = Firewall.Get();
             _fwLoadedPorts = fw == null ? null : fw.Ports;
-            if (fw == null) { _fwState.Text = "No inbound rule for sshd found. Choose profiles and click Apply to create one."; _fwState.ForeColor = Red; _fwEnabled.Checked = true; _fwDomain.Checked = _fwPrivate.Checked = _fwPublic.Checked = true; _fwPort.Value = _cfg == null ? 22 : _cfg.EffectivePort; return; }
+            if (fw == null) { _fwState.Text = "No inbound rule for sshd found. Choose profiles and click Apply to create one."; _fwState.ForeColor = Red; _fwEnabled.Checked = true; _fwDomain.Checked = _fwPrivate.Checked = _fwPublic.Checked = true; _fwPort.Value = _cfg == null ? 22 : _cfg.EffectivePort; CaptureFirewall(); return; }
             _fwState.Text = "Rule \"" + fw.Name + "\": " + (fw.Enabled ? "enabled" : "disabled") + ", profiles " + fw.ProfilesText + ", port " + fw.Ports + ", program " + fw.Program;
             _fwState.ForeColor = fw.Enabled ? Green : Red;
             _fwEnabled.Checked = fw.Enabled;
@@ -3335,6 +3382,7 @@ namespace OpenSSHServerPNManager
             // A multi-port rule shows sshd's port in the field; Apply keeps the whole list (see the Apply button).
             int p; int sshdPort = _cfg == null ? 22 : _cfg.EffectivePort;
             _fwPort.Value = int.TryParse(fw.Ports, out p) && p >= 1 && p <= 65535 ? p : (sshdPort >= 1 && sshdPort <= 65535 ? sshdPort : 22);
+            CaptureFirewall();
         }
 
         // ---------------- Logs ----------------

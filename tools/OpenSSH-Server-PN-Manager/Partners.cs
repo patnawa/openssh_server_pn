@@ -104,7 +104,7 @@ namespace OpenSSHServerPNManager
             else if (!sftp.LogTransfers) st.Problems.Add("file transfers are not logged (SFTP tab), so the transfer history of partners stays empty");
             var full = sftp.Rules.FirstOrDefault(r => r.IsGroup && r.Name == PartnerGroups.Sshd(g.Full));
             var ro = sftp.Rules.FirstOrDefault(r => r.IsGroup && r.Name == PartnerGroups.Sshd(g.ReadOnly));
-            if (full != null && full.Folder != null && full.Folder.EndsWith("\\%u", StringComparison.Ordinal)) st.Root = full.Folder.Substring(0, full.Folder.Length - 3);
+            if (full != null && full.Folder != null && full.Folder.EndsWith("\\%u", StringComparison.Ordinal)) st.Root = Path.GetDirectoryName(full.Folder);
             foreach (var want in new[] { SftpRuleFor(g.Full, st.Root ?? DefaultRoot, false, g), SftpRuleFor(g.ReadOnly, st.Root ?? DefaultRoot, true, g) })
             {
                 var have = want.ReadOnly ? ro : full;
@@ -188,6 +188,8 @@ namespace OpenSSHServerPNManager
             if (string.IsNullOrEmpty(name)) return "Enter the account name the partner logs in with.";
             if (name.Length > 20) return "An account name has at most 20 characters.";
             if (!Regex.IsMatch(name, @"^[A-Za-z0-9][A-Za-z0-9._-]*$") || name.EndsWith(".")) return "Use letters, digits, - _ and . only, starting with a letter or digit (the name also names the partner's folder).";
+            if (Regex.IsMatch(name, @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|\z)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                return "Choose another account name: Windows reserves this name for a device, so it cannot name the partner's folder or keys file.";
             if (Acl.SidOfAccount(name) != null) return "An account or group called " + name + " exists already on this computer.";
             return null;
         }

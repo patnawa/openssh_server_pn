@@ -258,7 +258,14 @@ namespace OpenSSHServerPNManager
             // (C:\Users\name), is one, so it can only stand at the start.
             bool home = Regex.IsMatch(folder, @"^%h([\\/]|$)");
             if (!home && !Regex.IsMatch(folder, @"^[A-Za-z]:[\\/]")) return "The folder must be a full path that starts with a drive letter or with %h, for example C:\\SFTP\\%u.";
-            if (folder.IndexOf("%h", home ? 2 : 0, StringComparison.Ordinal) >= 0) return "%h, the profile folder, can only stand at the start of the folder, as in %h\\sftp.";
+            // Read percent tokens once: %%h is the literal text %h, not the account's profile folder.
+            for (int i = 0; i < folder.Length; i++)
+            {
+                if (folder[i] != '%') continue;
+                if (i + 1 >= folder.Length || "uh%".IndexOf(folder[i + 1]) < 0) return "Only %u (the account name) and %h (its profile folder) can stand in the folder.";
+                if (folder[i + 1] == 'h' && i != 0) return "%h, the profile folder, can only stand at the start of the folder, as in %h\\sftp.";
+                i++;
+            }
             var rest = Regex.Replace(folder, "%[uh%]", "x");
             if (rest.IndexOf('%') >= 0) return "Only %u (the account name) and %h (its profile folder) can stand in the folder.";
             if (rest.IndexOfAny(new[] { '*', '?', '<', '>', '|' }) >= 0 || (home ? rest.IndexOf(':') : rest.IndexOf(':', 2)) >= 0) return "The folder contains a character Windows does not allow in a path.";
@@ -334,7 +341,6 @@ namespace OpenSSHServerPNManager
         public static string ExpandFolder(string folder, string account, string home)
         {
             if (folder == null) return null;
-            if (folder.Contains("%h") && home == null) return null;
             var sb = new System.Text.StringBuilder();
             for (int i = 0; i < folder.Length; i++)
             {
@@ -342,7 +348,7 @@ namespace OpenSSHServerPNManager
                 {
                     char c = folder[++i];
                     if (c == 'u') { sb.Append(account); continue; }
-                    if (c == 'h') { sb.Append(home); continue; }
+                    if (c == 'h') { if (home == null) return null; sb.Append(home); continue; }
                     if (c == '%') { sb.Append('%'); continue; }
                     sb.Append('%');
                 }

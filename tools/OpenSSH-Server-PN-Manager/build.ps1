@@ -26,18 +26,18 @@ $fw = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 if (-not (Test-Path $fw)) { $fw = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319' }
 if (-not (Test-Path $fw)) { throw ".NET Framework 4.x runtime folder not found." }
 
-$csc = $null
-if ($Csc) { if (-not (Test-Path $Csc)) { throw "No compiler at $Csc" }; $csc = (Resolve-Path $Csc).Path }
+$compiler = $null
+if ($Csc) { if (-not (Test-Path $Csc)) { throw "No compiler at $Csc" }; $compiler = (Resolve-Path $Csc).Path }
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-if (-not $csc -and (Test-Path $vswhere)) {
+if (-not $compiler -and (Test-Path $vswhere)) {
     $vs = & $vswhere -products * -latest -property installationPath 2>$null
     if ($vs) {
         $cand = Join-Path $vs 'MSBuild\Current\Bin\Roslyn\csc.exe'
-        if (Test-Path $cand) { $csc = $cand }
+        if (Test-Path $cand) { $compiler = $cand }
     }
 }
 # The inbox .NET Framework compiler (C# 5) cannot build this source: it uses C# 6 (exception filters, among others).
-if (-not $csc) {
+if (-not $compiler) {
     throw "The Roslyn C# compiler was not found. Install Visual Studio 2022 Build Tools (see docs/BUILDING.md, section 1), or pass its csc.exe with -Csc."
 }
 
@@ -61,8 +61,8 @@ if (Test-Path $icon) { $cscArgs += @("/win32icon:$icon", "/resource:$icon,OpenSS
 else { Write-Warning "icon\app.ico not found: building without the program icon." }
 $cscArgs += $src
 
-Write-Host "Compiler: $csc"
-& $csc @cscArgs
+Write-Host "Compiler: $compiler"
+& $compiler @cscArgs
 if ($LASTEXITCODE -ne 0) { throw "Compilation failed with exit code $LASTEXITCODE" }
 
 # Run on any 4.x runtime; enable the newest runtime version installed. Written byte for byte the same everywhere
