@@ -1,16 +1,16 @@
 # OpenSSH Server PN Manager
 
 Version **2.3.0 is an unsigned, testing-only preview** of the October audit follow-up.
-Download [preview-manager-v2.3.0-r2](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r2),
-or the [10.5.6.0 preview packages](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r2).
+Download [preview-manager-v2.3.0-r3](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r3),
+or the [10.5.6.0 preview packages](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r3).
 Keep `OpenSSHServerPNManager.exe.config` beside the executable and compare its hash
 with `SHA256SUMS.txt`. Stable Manager 2.2.1 / product 10.5.5.0 remains unchanged;
 the previews are not marked as latest stable.
 
-The preview was built and tested locally: **160 unit tests and 49 automated GUI
+The preview was built and tested locally: **162 unit tests and 49 automated GUI
 checks passed**. It has no GitHub-hosted build provenance or artifact attestation.
 Manager executable SHA-256:
-`C814421AC38FA6C0EE767F8E02568988B0EF511D241ADCBB0331DD9CD0D11F83`.
+`F113F3FA434F1BE275585B7700DD00DE2E4121068E376D45713036824BA506E8`.
 
 It adds a normal-user client
 workspace, grouped navigation, guarded configuration and trust-file edits, persistent
@@ -368,8 +368,10 @@ How the key material is kept safe:
   opened from an elevated window use the desktop user's token and environment.
 - Every configuration save is written to a temporary candidate first and validated with
   `sshd -t -f`. Only a configuration that `sshd` accepts replaces the live file. The new file is
-  written next to `sshd_config` and swapped in with `ReplaceFile`, which keeps the file's
-  permissions, so a crash or a full disk never leaves half a file. The previous file is kept as
+  staged next to `sshd_config` with the original owner, group, access rules, streams and
+  supported metadata. New bytes are flushed before a same-directory rename replaces the file;
+  failures do not fall back to overwriting it in place. Read-only files, reparse points and
+  metadata that cannot be preserved are refused. The previous file is kept as
   `sshd_config.bak.<date>-<time>` (a second save within the same second gets `-2`); the newest 50
   backups are kept.
 - A save is refused, with a question, when `sshd_config` changed on disk after the window read it
@@ -464,8 +466,8 @@ then tests and packages those exact bytes.
 | `icon\render.py` | The program icon: draws every size (16 to 256 px, small sizes by hand, pixel by pixel) and writes `icon\app.ico`, which `build.ps1` builds into the executable. Needs Python 3 with Pillow; running it again gives the same file |
 
 Download the testing preview from
-[preview-manager-v2.3.0-r2](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r2),
-also included in [preview-v10.5.6.0-r2](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r2).
+[preview-manager-v2.3.0-r3](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r3),
+also included in [preview-v10.5.6.0-r3](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r3).
 Keep the executable and its `.exe.config` in one folder and verify `SHA256SUMS.txt`.
 These locally built files are unsigned and carry no hosted build provenance or attestations.
 

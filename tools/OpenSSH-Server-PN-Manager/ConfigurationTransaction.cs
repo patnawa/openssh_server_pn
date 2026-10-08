@@ -1,6 +1,8 @@
 using System;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
@@ -89,19 +91,24 @@ namespace OpenSSHServerPNManager
             {
                 const AccessControlSections sections = AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access;
                 var originalSecurity = File.Exists(path) ? File.GetAccessControl(path, sections) : null;
-                // Establish security while the temporary file is empty. ReplaceFile preserves the destination DACL,
-                // but takes the replacement file's owner and primary group, so those must be copied before commit.
+                var attributes = originalSecurity == null ? FileAttributes.Normal : File.GetAttributes(path);
+                var created = originalSecurity == null ? DateTime.MinValue : File.GetCreationTimeUtc(path);
+                if ((attributes & (FileAttributes.ReadOnly | FileAttributes.ReparsePoint | FileAttributes.Directory | FileAttributes.Device)) != 0)
+                    throw new IOException("Atomic replacement requires a writable regular file, without a reparse point.");
+                // Establish security while empty, before staging either the original or replacement bytes.
                 using (new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
                 if (secureTemporary != null) secureTemporary(tmp);
                 if (originalSecurity != null)
                 {
-                    var copiedSecurity = new FileSecurity();
-                    copiedSecurity.SetSecurityDescriptorBinaryForm(originalSecurity.GetSecurityDescriptorBinaryForm(), sections);
-                    File.SetAccessControl(tmp, copiedSecurity);
-                    if (!SameFileSecurity(originalSecurity, File.GetAccessControl(tmp, sections)))
-                        throw new IOException("The temporary file could not retain the destination owner, group and DACL.");
+                    CopyExactSecurity(tmp, originalSecurity);
+                    // Keep alternate data streams, extended/resource attributes and encryption/compression metadata.
+                    // Copy into the already secured temporary file; never request a decrypted fallback.
+                    if (!CopyFileEx(path, tmp, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                    CopyExactSecurity(tmp, originalSecurity);
+                    File.SetAttributes(tmp, attributes);
+                    if (File.GetAttributes(tmp) != attributes) throw new IOException("The temporary copy did not preserve the original file attributes.");
                 }
-                using (var stream = new FileStream(tmp, FileMode.Open, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+                using (var stream = new FileStream(tmp, FileMode.Truncate, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
                 {
                     stream.Write(bytes, 0, bytes.Length); stream.Flush(true);
                 }
@@ -109,7 +116,13 @@ namespace OpenSSHServerPNManager
                 {
                     if (originalSecurity == null || !SameFileSecurity(originalSecurity, File.GetAccessControl(path, sections)))
                         throw new IOException("The destination security changed before atomic replacement.");
-                    if (replace != null) replace(tmp, path); else File.Replace(tmp, path, null);
+                    if (File.GetAttributes(path) != attributes || File.GetCreationTimeUtc(path) != created)
+                        throw new IOException("The destination metadata changed before atomic replacement.");
+                    File.SetCreationTimeUtc(tmp, created); File.SetAttributes(tmp, attributes);
+                    if (replace != null) replace(tmp, path);
+                    // Same directory, same volume: no copy/delete fallback. Unlike ReplaceFile, rename does not
+                    // merge legacy inherited ACEs into new explicit entries on Windows Server 2022.
+                    else if (!MoveFileEx(tmp, path, 1 | 8)) throw new Win32Exception(Marshal.GetLastWin32Error());
                 }
                 else
                 {
@@ -121,15 +134,41 @@ namespace OpenSSHServerPNManager
             finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch { } }
         }
 
+        [DllImport("advapi32.dll", EntryPoint = "SetFileSecurityW", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool SetFileSecurity(string path, uint information, byte[] descriptor);
+
+        [DllImport("kernel32.dll", EntryPoint = "CopyFileExW", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CopyFileEx(string source, string destination, IntPtr progress, IntPtr data, IntPtr cancel, uint flags);
+
+        [DllImport("kernel32.dll", EntryPoint = "MoveFileExW", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool MoveFileEx(string source, string destination, uint flags);
+
+        private static void CopyExactSecurity(string path, FileSecurity security)
+        {
+            var raw = new RawSecurityDescriptor(security.GetSecurityDescriptorBinaryForm(), 0);
+            if ((raw.ControlFlags & ControlFlags.DiscretionaryAclAutoInherited) != 0)
+            {
+                var copied = new FileSecurity(); copied.SetSecurityDescriptorBinaryForm(security.GetSecurityDescriptorBinaryForm(), AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access);
+                File.SetAccessControl(path, copied);
+            }
+            // The legacy setter preserves legacy inherited ACEs without auto-inheritance conversion, but clears AI.
+            // Use the matching API for each original descriptor, then verify every ACE and control flag.
+            else if (!SetFileSecurity(path, 1 | 2 | 4, security.GetSecurityDescriptorBinaryForm())) throw new Win32Exception(Marshal.GetLastWin32Error());
+            var actual = File.GetAccessControl(path, AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access);
+            if (!SameFileSecurity(security, actual))
+                throw new IOException("The temporary file could not retain the destination security. Before=" + security.GetSecurityDescriptorSddlForm(AccessControlSections.All) + "; Temporary=" + actual.GetSecurityDescriptorSddlForm(AccessControlSections.All));
+        }
+
         internal static bool SameFileSecurity(FileSecurity before, FileSecurity after)
         {
             var a = new RawSecurityDescriptor(before.GetSecurityDescriptorBinaryForm(), 0);
             var b = new RawSecurityDescriptor(after.GetSecurityDescriptorBinaryForm(), 0);
-            const ControlFlags significant = ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected;
+            const ControlFlags significant = ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected |
+                ControlFlags.DiscretionaryAclAutoInherited | ControlFlags.DiscretionaryAclAutoInheritRequired;
             if (a.Owner != b.Owner || a.Group != b.Group || (a.ControlFlags & significant) != (b.ControlFlags & significant)) return false;
             if (a.DiscretionaryAcl == null || b.DiscretionaryAcl == null) return a.DiscretionaryAcl == b.DiscretionaryAcl;
-            // AUTO_INHERITED is bookkeeping that Windows may normalize; compare every ordered ACE, including its
-            // inherited flag, plus inheritance protection. Do not discard or reorder access rules.
+            // Compare every ordered ACE, including its inherited flag, and all DACL inheritance control flags.
+            // Effective access today is insufficient: explicit duplicates would change future inheritance behavior.
             if (a.DiscretionaryAcl.Count != b.DiscretionaryAcl.Count) return false;
             for (int i = 0; i < a.DiscretionaryAcl.Count; i++)
             {

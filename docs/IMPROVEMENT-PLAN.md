@@ -83,7 +83,7 @@ local scope. They do not imply that deferred acceptance or release signing passe
 | Check | Result and scope |
 |---|---|
 | Manager build | Two independent builds produced identical executable, configuration and build metadata; pinned compiler `4.14.0-3.25262.10 (8edf7bcd)`; four build-script regressions passed, including equivalent LF/CRLF and BOM inputs across checkout paths |
-| Manager regressions | **160 passed**, including cross-process edits, async completion/cancellation, client semantics, transfer replay/outbox and durable recovery fixtures |
+| Manager regressions | **162 passed**, including cross-process edits, async completion/cancellation, client semantics, transfer replay/outbox and durable recovery fixtures |
 | GUI suite | **49 passed**; 19 PNGs, 100/150/200% layouts, three palettes, navigation, sticky controls, clipping and client-only pages |
 | Native compilation | x64, x86 and ARM64 builds completed at version 10.5.6.0 |
 | Native unit execution | **686 checks passed in seven binaries on each of x64 and x86**; the additional `win32compat` binary fails at its symlink case without elevation/Developer Mode. The complete native suite is therefore **not passed** locally |
@@ -98,7 +98,7 @@ local scope. They do not imply that deferred acceptance or release signing passe
 Tested unsigned manager SHA-256:
 
 ```text
-c814421ac38fa6c0ee767f8e02568988b0ef511d241adcbb0331dd9cd0d11f83
+f113f3fa434f1be275585b7700dd00de2e4121068e376d45713036824ba506e8
 ```
 
 Configuration SHA-256:

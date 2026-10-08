@@ -110,6 +110,51 @@ namespace OpenSSHServerPNManager
                 if (!rejected || observed != 0 || File.ReadAllText(p) != "original") throw new Exception("Replacement bytes existed before temporary security was established: " + observed);
                 return null;
             });
+            test("configuration: legacy inherited ACEs retain their flags without explicit duplicates", () =>
+            {
+                var sections = System.Security.AccessControl.AccessControlSections.Owner | System.Security.AccessControl.AccessControlSections.Group | System.Security.AccessControl.AccessControlSections.Access;
+                using (var identity = System.Security.Principal.WindowsIdentity.GetCurrent())
+                foreach (bool autoInherited in new[] { false, true })
+                {
+                    var dir = Path.Combine(tmpDir, "legacy-acl-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(dir);
+                    string flags = autoInherited ? "AI" : "";
+                    SetFixtureDacl(dir, "D:" + (autoInherited ? "PAI" : "") + "(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;" + identity.User.Value + ")");
+                    var p = Path.Combine(dir, "sshd_config"); File.WriteAllText(p, "original");
+                    SetFixtureDacl(p, "D:" + flags + "(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;" + identity.User.Value + ")");
+                    var security = File.GetAccessControl(p, sections);
+                    var raw = new System.Security.AccessControl.RawSecurityDescriptor(security.GetSecurityDescriptorBinaryForm(), 0);
+                    if (raw.DiscretionaryAcl.Count != 3 || ((raw.ControlFlags & System.Security.AccessControl.ControlFlags.DiscretionaryAclAutoInherited) != 0) != autoInherited ||
+                        raw.DiscretionaryAcl.Cast<System.Security.AccessControl.GenericAce>().Any(ace => (ace.AceFlags & System.Security.AccessControl.AceFlags.Inherited) == 0))
+                        throw new Exception("The legacy ACL fixture was normalized before the test: " + security.GetSecurityDescriptorSddlForm(sections));
+                    string before = security.GetSecurityDescriptorSddlForm(sections);
+                    ConfigurationTransaction.AtomicWrite(p, "replacement");
+                    string after = File.GetAccessControl(p, sections).GetSecurityDescriptorSddlForm(sections);
+                    if (before != after) throw new Exception("Inherited ACEs or control flags changed. Before=" + before + "; After=" + after);
+                }
+                return null;
+            });
+            test("configuration: atomic replacement preserves named streams, creation time and attributes", () =>
+            {
+                var p = Path.Combine(tmpDir, "atomic-metadata"); File.WriteAllText(p, "original contents longer than replacement");
+                var metadata = Encoding.UTF8.GetBytes("retained named stream");
+                using (var stream = FixtureStream(p + ":pn-metadata", true)) { stream.Write(metadata, 0, metadata.Length); stream.Flush(true); }
+                var created = new DateTime(2020, 2, 3, 4, 5, 6, DateTimeKind.Utc); File.SetCreationTimeUtc(p, created);
+                var attributes = FileAttributes.Hidden | FileAttributes.Archive | FileAttributes.NotContentIndexed; File.SetAttributes(p, attributes);
+                try
+                {
+                    ConfigurationTransaction.AtomicWrite(p, "new");
+                    byte[] actual;
+                    using (var stream = FixtureStream(p + ":pn-metadata", false)) using (var memory = new MemoryStream()) { stream.CopyTo(memory); actual = memory.ToArray(); }
+                    if (File.ReadAllText(p) != "new" || !actual.SequenceEqual(metadata) || File.GetCreationTimeUtc(p) != created || File.GetAttributes(p) != attributes)
+                        throw new Exception("Atomic replacement lost file metadata or left trailing original bytes");
+                    File.SetAttributes(p, attributes | FileAttributes.ReadOnly);
+                    bool rejected = false;
+                    try { ConfigurationTransaction.AtomicWrite(p, "must fail"); } catch (IOException) { rejected = true; }
+                    if (!rejected || File.ReadAllText(p) != "new") throw new Exception("Read-only original was replaced");
+                }
+                finally { File.SetAttributes(p, FileAttributes.Normal); }
+                return null;
+            });
             test("recovery: another process can restore configuration and firewall after the deadline", () =>
             {
                 var f = new Fixture(tmpDir); var host = new Host();
@@ -339,6 +384,39 @@ class Fixture { static int Main(string[] args) { try {
                 if (!recovered.Ok || !File.ReadAllBytes(f.Live).SequenceEqual(f.Before)) throw new Exception("Separate recovery process failed: " + recovered.Output);
                 return null;
             });
+        }
+
+        [System.Runtime.InteropServices.DllImport("advapi32.dll", EntryPoint = "SetFileSecurityW", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern bool SetFixtureSecurity(string path, uint information, byte[] descriptor);
+
+        private static void SetFixtureDacl(string path, string sddl)
+        {
+            if (sddl.StartsWith("D:AI", StringComparison.Ordinal) || sddl.StartsWith("D:PAI", StringComparison.Ordinal))
+            {
+                if (Directory.Exists(path))
+                {
+                    var security = new System.Security.AccessControl.DirectorySecurity(); security.SetSecurityDescriptorSddlForm(sddl, System.Security.AccessControl.AccessControlSections.Access);
+                    Directory.SetAccessControl(path, security);
+                }
+                else
+                {
+                    var security = new System.Security.AccessControl.FileSecurity(); security.SetSecurityDescriptorSddlForm(sddl, System.Security.AccessControl.AccessControlSections.Access);
+                    File.SetAccessControl(path, security);
+                }
+                return;
+            }
+            var raw = new System.Security.AccessControl.RawSecurityDescriptor(sddl); var bytes = new byte[raw.BinaryLength]; raw.GetBinaryForm(bytes, 0);
+            if (!SetFixtureSecurity(path, 4, bytes)) throw new System.ComponentModel.Win32Exception(System.Runtime.InteropServices.Marshal.GetLastWin32Error());
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern Microsoft.Win32.SafeHandles.SafeFileHandle OpenFixtureStream(string path, uint access, uint sharing, IntPtr security, uint disposition, uint attributes, IntPtr template);
+
+        private static FileStream FixtureStream(string path, bool write)
+        {
+            var handle = OpenFixtureStream(path, write ? 0x40000000u : 0x80000000u, 7, IntPtr.Zero, write ? 2u : 3u, 0x80, IntPtr.Zero);
+            if (handle.IsInvalid) { int error = System.Runtime.InteropServices.Marshal.GetLastWin32Error(); handle.Dispose(); throw new System.ComponentModel.Win32Exception(error); }
+            try { return new FileStream(handle, write ? FileAccess.Write : FileAccess.Read); } catch { handle.Dispose(); throw; }
         }
 
         private static string ReadId(string directory)

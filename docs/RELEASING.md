@@ -14,8 +14,8 @@ Actions variable and secret lists were empty; signing still requires an owner-su
 
 The owner requested distribution of the locally tested audit follow-up while signing and
 disposable-VM acceptance remain pending. It is available through the separate prerelease tags
-[`preview-v10.5.6.0-r2`](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r2)
-and [`preview-manager-v2.3.0-r2`](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r2).
+[`preview-v10.5.6.0-r3`](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r3)
+and [`preview-manager-v2.3.0-r3`](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r3).
 These releases are explicitly **unsigned previews for testing**, marked prerelease and not latest.
 The stable product release remains 10.5.5.0. They do not establish production readiness.
 
