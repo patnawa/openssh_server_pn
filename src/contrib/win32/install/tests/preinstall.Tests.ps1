@@ -3,14 +3,17 @@
 # Exit code: the number of failed checks. Written for Windows PowerShell 2.0 and later, like the
 # script it tests. It dot-sources preinstall.ps1 with -Phase functions, which defines the functions
 # and returns before any phase runs.
-# - static: the script parses, uses no PowerShell 3+ syntax the tests know of, and the two scripts
+# - static: the script parses, uses no PowerShell 3+ syntax the tests know of (nor do install-sshd.ps1,
+#   uninstall-sshd.ps1 and OpenSSHUtils.psm1), every function has a caller, and the two scripts
 #   that openssh.wixproj embeds (see there) keep every statement of their regions and fit on the
 #   powershell.exe command line; when a build has written obj\<platform>\Release\preinstall.wxi,
 #   its content is compared with the scripts made here.
-# - pure functions: firewall record (de)serialisation, FIREWALL_PROFILES and SSHD_PORT parsing,
-#   sshd_config Port editing, backup names, the process-tree logic of ACTIVE_SESSIONS=abort.
-# - files: sshd_config is written through ReplaceFile in a temporary folder; the permissions of the
-#   file and a UTF-8 BOM are kept.
+# - pure functions: firewall and service records (de)serialisation, kept start types and what the
+#   restore and rollback steps do with them, FIREWALL_PROFILES and SSHD_PORT parsing, sshd_config
+#   Port editing, backup names, the listeners of a port in netstat output, the process-tree logic of
+#   ACTIVE_SESSIONS=abort.
+# - files: sshd_config is replaced by a rename in a temporary folder; the permissions of the file
+#   (protected or inherited) and a UTF-8 BOM are kept, and a previous file is put back byte for byte.
 # - read-only, on this machine: the sshd firewall rule is read through HNetCfg.FwPolicy2 and
 #   serialised; reg.exe output is parsed from an existing HKLM value. Nothing is written outside
 #   the temporary folder.
@@ -45,20 +48,49 @@ if ('System.Management.Automation.Language.Parser' -as [type]) {
 }
 
 # PowerShell 3+ constructs, looked for in the code only (comments and strings are left out).
-$tokens = [System.Management.Automation.PSParser]::Tokenize($text, [ref]$parseErrors)
-$ps3 = @()
-for ($i = 0; $i -lt $tokens.Count; $i++) {
-    $tk = $tokens[$i]; $c = [string]$tk.Content; $ty = [string]$tk.Type
-    if ($ty -eq 'Operator' -and @('-in', '-notin', '-shl', '-shr') -contains $c.ToLower()) { $ps3 += ($c + ' (line ' + $tk.StartLine + ')') }
-    if ($ty -eq 'Type' -and @('ordered', 'pscustomobject') -contains $c.ToLower()) { $ps3 += ('[' + $c + '] (line ' + $tk.StartLine + ')') }
-    if ($ty -eq 'Member' -and @('new', 'where', 'foreach', 'isnullorwhitespace') -contains $c.ToLower()) { $ps3 += ('.' + $c + ' (line ' + $tk.StartLine + ')') }
-    if ($ty -eq 'Command' -and @('get-ciminstance', 'invoke-cimmethod', 'get-netfirewallrule', 'set-netfirewallrule', 'new-netfirewallrule', 'get-nettcpconnection', 'convertto-json', 'convertfrom-json', 'invoke-webrequest', 'invoke-restmethod', 'get-filehash') -contains $c.ToLower()) { $ps3 += ($c + ' (line ' + $tk.StartLine + ')') }
-    if ($ty -eq 'CommandParameter' -and @('-raw', '-nonewline') -contains $c.ToLower()) { $ps3 += ($c + ' (line ' + $tk.StartLine + ')') }
-    if ($ty -eq 'Variable' -and $c.ToLower() -eq 'psitem') { $ps3 += ('$PSItem (line ' + $tk.StartLine + ')') }
-    if ($ty -eq 'CommandArgument' -and $c -eq 'Ignore' -and $i -gt 0 -and [string]$tokens[$i - 1].Content -match '^-(ErrorAction|EA|WarningAction|WA)$') { $ps3 += ('-ErrorAction Ignore (line ' + $tk.StartLine + ')') }
-    if ($ty -eq 'Keyword' -and @('class', 'enum', 'using', 'workflow') -contains $c.ToLower()) { $ps3 += ($c + ' (line ' + $tk.StartLine + ')') }
+function Get-Ps3Constructs([string]$code) {
+    $errs = $null
+    $tokens = [System.Management.Automation.PSParser]::Tokenize($code, [ref]$errs)
+    $ps3 = @()
+    $command = ''
+    $outer = New-Object System.Collections.Stack   # the command around a parenthesis or a script block
+    for ($i = 0; $i -lt $tokens.Count; $i++) {
+        $tk = $tokens[$i]; $c = [string]$tk.Content; $ty = [string]$tk.Type
+        if ($ty -eq 'Command') { $command = $c.ToLower() }
+        elseif ($ty -eq 'GroupStart') { $outer.Push($command); $command = '' }
+        elseif ($ty -eq 'GroupEnd') { $command = ''; if ($outer.Count -gt 0) { $command = $outer.Pop() } }
+        elseif (@('NewLine', 'StatementSeparator') -contains $ty) { $command = '' }
+        if ($ty -eq 'Operator' -and @('-in', '-notin', '-shl', '-shr') -contains $c.ToLower()) { $ps3 += ($c + ' (line ' + $tk.StartLine + ')') }
+        if ($ty -eq 'Type' -and @('ordered', 'pscustomobject', 'nullstring') -contains $c.ToLower()) { $ps3 += ('[' + $c + '] (line ' + $tk.StartLine + ')') }
+        if ($ty -eq 'Member' -and @('new', 'where', 'foreach', 'isnullorwhitespace') -contains $c.ToLower()) { $ps3 += ('.' + $c + ' (line ' + $tk.StartLine + ')') }
+        if ($ty -eq 'Command' -and @('get-ciminstance', 'invoke-cimmethod', 'get-netfirewallrule', 'set-netfirewallrule', 'new-netfirewallrule', 'get-nettcpconnection', 'convertto-json', 'convertfrom-json', 'invoke-webrequest', 'invoke-restmethod', 'get-filehash') -contains $c.ToLower()) { $ps3 += ($c + ' (line ' + $tk.StartLine + ')') }
+        if ($ty -eq 'CommandParameter' -and @('-raw', '-nonewline') -contains $c.ToLower()) { $ps3 += ($c + ' (line ' + $tk.StartLine + ')') }
+        # -File and -Directory of the file system provider (PowerShell 3.0)
+        if ($ty -eq 'CommandParameter' -and @('-file', '-directory') -contains $c.ToLower() -and @('get-childitem', 'gci', 'dir', 'ls') -contains $command) { $ps3 += ($command + ' ' + $c + ' (line ' + $tk.StartLine + ')') }
+        if ($ty -eq 'Variable' -and $c.ToLower() -eq 'psitem') { $ps3 += ('$PSItem (line ' + $tk.StartLine + ')') }
+        if ($ty -eq 'CommandArgument' -and $c -eq 'Ignore' -and $i -gt 0 -and [string]$tokens[$i - 1].Content -match '^-(ErrorAction|EA|WarningAction|WA)$') { $ps3 += ('-ErrorAction Ignore (line ' + $tk.StartLine + ')') }
+        if ($ty -eq 'Keyword' -and @('class', 'enum', 'using', 'workflow') -contains $c.ToLower()) { $ps3 += ($c + ' (line ' + $tk.StartLine + ')') }
+    }
+    return $ps3
 }
+$ps3 = @(Get-Ps3Constructs $text)
 Check 'no PowerShell 3+ syntax, cmdlets or parameters known to the lint' ($ps3.Count -eq 0) ($ps3 -join ', ')
+Same 'the lint finds Get-ChildItem -File, .Where() and IsNullOrWhiteSpace' 3 (@(Get-Ps3Constructs "Get-ChildItem -Path (Join-Path `$d '*') -Include *.exe -File | % { }`n`$a.Where({ `$_ })`n[string]::IsNullOrWhiteSpace('')").Count)
+Same 'the lint leaves -File of other commands alone' 0 (@(Get-Ps3Constructs "powershell.exe -File x.ps1`nGet-ChildItem (Split-Path -Leaf x) | Out-File -FilePath y").Count)
+# The ZIP-style scripts next to the binaries (install-sshd.ps1 deletes the services before it
+# re-creates them: a PowerShell 2.0 error in between left none).
+foreach ($f in @('install-sshd.ps1', 'uninstall-sshd.ps1', 'OpenSSHUtils.psm1')) {
+    $path = Join-Path $srcRoot ('contrib\win32\openssh\' + $f)
+    $found = @(Get-Ps3Constructs ([IO.File]::ReadAllText($path)))
+    Check ($f + ': no PowerShell 3+ syntax, cmdlets or parameters known to the lint') ($found.Count -eq 0) ($found -join ', ')
+}
+
+# Every function of the script is used by the script, and the restore after a failed port change
+# no longer goes through File.Replace (PowerShell 2.0 passed $null as "", which threw).
+$functions = @([regex]::Matches($text, '(?m)^\s*function\s+([\w-]+)') | ForEach-Object { $_.Groups[1].Value })
+$unused = @($functions | Where-Object { [regex]::Matches($text, '(?<![\w-])' + [regex]::Escape($_) + '(?![\w-])').Count -lt 2 })
+Check ('every function of preinstall.ps1 has a caller (' + $functions.Count + ' functions)') ($unused.Count -eq 0) ($unused -join ', ')
+Check 'preinstall.ps1 does not call File.Replace' (-not ($text -match '\[IO\.File\]::Replace\('))
 
 # The two scripts that openssh.wixproj (EmbedInstallerScript) embeds: a region of the dropped name
 # is left out; with -Strip, comment lines, blank lines and indentation too, lines end with LF.
@@ -118,6 +150,12 @@ $fw = Get-Variant $lines 'pre' $true
 Check 'the pre-install script has no firewall phase' (-not ($pre -match "Phase -eq 'fwsave'") -and -not ($pre -match 'function Set-SshdConfigPortText'))
 Check 'the firewall script has no process cleanup' (-not ($fw -match 'Stop-Process') -and -not ($fw -match 'function Get-KeepSet') -and -not ($fw -match 'Remove-Capability'))
 Check 'the firewall script cannot fall through to phase pre' ($fw.TrimEnd() -match "is not part of this script; nothing done`"\)`nexit 0$")
+Check 'the service and port rollback phases are in the firewall script only' ($fw.Contains("Phase -eq 'svcrestore'") -and $fw.Contains("Phase -eq 'portrollback'") -and -not $pre.Contains("Phase -eq 'svcrestore'"))
+# Phase "pre" stops running services before StopServices, so only this record lets a rollback start
+# them again: the save step writes it before any of its exits.
+$fwsave = $text.Substring($text.IndexOf("if (`$Phase -eq 'fwsave')"))
+$fwsave = $fwsave.Substring(0, $fwsave.IndexOf('exit 0'))
+Check 'fwsave records the services before it can exit' ($fwsave.Contains('(Save-Record $services $serviceValue)')) $fwsave
 
 # ---------------------------------------------------------------- load the functions
 . $Script -Phase functions
@@ -216,6 +254,70 @@ Same 'Get-SshdConfigPorts: IPv6 tail is not a port' '22' ((Get-SshdConfigPorts "
 Same 'Get-SshdConfigPorts: inside Match ignored' '22' ((Get-SshdConfigPorts "Match all`nPort 2200`n") -join ',')
 Same 'Get-SshdConfigPorts: equals-delimited Match ignored' '22' ((Get-SshdConfigPorts "Match=all`nPort 2200`n") -join ',')
 
+# ---------------------------------------------------------------- SSHD_PORT: who listens on the port
+$netstat = @"
+
+Active Connections
+
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1044
+  TCP    0.0.0.0:2222           0.0.0.0:0              LISTENING       900
+  TCP    10.0.0.1:2222          10.0.0.9:51000         ESTABLISHED     1234
+  TCP    127.0.0.1:22222        0.0.0.0:0              LISTENING       77
+  TCP    [::]:2222              [::]:0                 ABH$([char]0xD6)REN         1234
+  TCP    [fe80::1%5]:2222       [fe80::9%5]:51001      ESTABLISHED     1234
+  UDP    0.0.0.0:2222           *:*                                    555
+"@
+Same 'Get-PortListenerPids: IPv4 and IPv6 listeners, localized state, no connections or UDP' '900,1234' ((Get-PortListenerPids $netstat 2222) -join ',')
+Same 'Get-PortListenerPids: another port' '77' ((Get-PortListenerPids $netstat 22222) -join ',')
+Same 'Get-PortListenerPids: nobody' '' ((Get-PortListenerPids $netstat 22) -join ',')
+Check 'Test-PortOwnedBySshd: another process on the IPv4 wildcard is a conflict' (-not (Test-PortOwnedBySshd (Get-PortListenerPids $netstat 2222) 1234))
+Check 'Test-PortOwnedBySshd: only the sshd process' (Test-PortOwnedBySshd @(1234) 1234)
+Check 'Test-PortOwnedBySshd: listeners of another process only' (-not (Test-PortOwnedBySshd @(900) 1234))
+Check 'Test-PortOwnedBySshd: nobody listens' (-not (Test-PortOwnedBySshd @() 1234))
+Check 'Test-PortOwnedBySshd: sshd not running (PID 0)' (-not (Test-PortOwnedBySshd @(900) 0))
+
+# ---------------------------------------------------------------- services: record, kept start types, plans
+foreach ($c in @(@(4, $null, 'disabled'), @(4, 1, 'disabled'), @(2, 1, 'delayed-auto'), @(2, 0, ''), @(2, $null, ''), @(3, $null, ''), @(3, 1, ''), @($null, $null, ''))) {
+    Same ('Get-KeptStart Start=' + $c[0] + ' DelayedAutostart=' + $c[1]) $c[2] (Get-KeptStart $c[0] $c[1])
+}
+$pf = 'C:\Program Files\OpenSSH'
+$states = @{
+    'sshd' = @{ Running = $false; Start = 4; Delayed = $null; Dir = $pf };
+    'ssh-agent' = @{ Running = $true; Start = 2; Delayed = 1; Dir = 'c:\program files\openssh' }
+}
+Same 'ConvertTo-ServiceRecord: Disabled and Automatic (Delayed Start) of this package''s services' 'v1|sshd=0,disabled|ssh-agent=1,delayed-auto' (ConvertTo-ServiceRecord $states $pf)
+$inbox = @{ 'sshd' = @{ Running = $true; Start = 3; Delayed = $null; Dir = 'C:\Windows\System32\OpenSSH' }; 'ssh-agent' = @{ Running = $false; Start = 4; Delayed = $null; Dir = 'C:\Windows\System32\OpenSSH' } }
+Same 'ConvertTo-ServiceRecord: in-box registrations keep no start type (Windows'' defaults)' 'v1|sshd=1,|ssh-agent=0,' (ConvertTo-ServiceRecord $inbox $pf)
+Same 'ConvertTo-ServiceRecord: no service registered' 'v1' (ConvertTo-ServiceRecord @{} $pf)
+$back = ConvertFrom-ServiceRecord 'v1|sshd=0,disabled|ssh-agent=1,delayed-auto'
+Check 'ConvertFrom-ServiceRecord: round trip' ($back.Count -eq 2 -and -not $back['sshd'].Running -and $back['sshd'].Start -eq 'disabled' -and $back['ssh-agent'].Running -and $back['ssh-agent'].Start -eq 'delayed-auto')
+$bad = ConvertFrom-ServiceRecord "v1|sshd=1,demand|Spooler=1,|ssh-agent=2,|sshd-x=1,|ssh-agent=1,disabled';calc;'"
+Check 'ConvertFrom-ServiceRecord: other names, states and start types are dropped' ($bad.Count -eq 0) (($bad.Keys | ForEach-Object { $_ }) -join ',')
+Check 'ConvertFrom-ServiceRecord: other version' ((ConvertFrom-ServiceRecord 'v2|sshd=1,').Count -eq 0)
+Check 'ConvertFrom-ServiceRecord: empty' ((ConvertFrom-ServiceRecord '').Count -eq 0)
+# Upgrade or repair: InstallServices made both Automatic, StartServices started them.
+$now = @{ 'sshd' = @{ Running = $true; Start = 2; Delayed = 0; Dir = $pf }; 'ssh-agent' = @{ Running = $true; Start = 2; Delayed = 0; Dir = $pf } }
+Same 'Get-ServicePlan: Disabled again and stopped, Delayed Start again' 'config sshd disabled|stop sshd|config ssh-agent delayed-auto' ((Get-ServicePlan $back $now $false) -join '|')
+Same 'Get-ServicePlan: nothing when the start type is still the kept one' '' ((Get-ServicePlan $back @{ 'sshd' = @{ Running = $false; Start = 4; Delayed = $null }; 'ssh-agent' = @{ Running = $true; Start = 2; Delayed = 1 } } $false) -join '|')
+Same 'Get-ServicePlan: nothing without a kept start type' '' ((Get-ServicePlan (ConvertFrom-ServiceRecord 'v1|sshd=1,|ssh-agent=1,') $now $false) -join '|')
+Same 'Get-ServicePlan: a service that is not registered is left alone' '' ((Get-ServicePlan $back @{} $true) -join '|')
+# Rollback: the old package's services are registered again but stopped (phase pre stopped them).
+$stopped = @{ 'sshd' = @{ Running = $false; Start = 2; Delayed = 0 }; 'ssh-agent' = @{ Running = $false; Start = 2; Delayed = 0 } }
+Same 'Get-ServicePlan, rollback: the running services are started again' 'start sshd|start ssh-agent' ((Get-ServicePlan (ConvertFrom-ServiceRecord 'v1|sshd=1,|ssh-agent=1,') $stopped $true) -join '|')
+Same 'Get-ServicePlan, rollback: a stopped service stays stopped' 'start ssh-agent' ((Get-ServicePlan (ConvertFrom-ServiceRecord 'v1|sshd=0,|ssh-agent=1,') $stopped $true) -join '|')
+Same 'Get-ServicePlan, rollback: kept start types again, a Disabled service is not started' 'config sshd disabled|config ssh-agent delayed-auto|start ssh-agent' ((Get-ServicePlan (ConvertFrom-ServiceRecord 'v1|sshd=1,disabled|ssh-agent=1,delayed-auto') $stopped $true) -join '|')
+Same 'Get-ServicePlan, no rollback: nothing is started' '' ((Get-ServicePlan (ConvertFrom-ServiceRecord 'v1|sshd=1,|ssh-agent=1,') $stopped $false) -join '|')
+
+# The record is one key with several values: deleting one leaves the others (fwsave writes the
+# services first and may then delete a leftover firewall record). reg.exe is replaced by a stand-in.
+$script:regCalls = @()
+function RegStandIn { $script:regCalls += ($args -join ' '); $global:LASTEXITCODE = 0 }
+$realReg = $reg; $reg = 'RegStandIn'
+Remove-Record; Remove-Record $portValue; Remove-Record ''
+$reg = $realReg
+Same 'Remove-Record: one value, or the whole key with ''''' ('delete ' + $recordKey + ' /v FirewallRule /f|delete ' + $recordKey + ' /v SshdConfig /f|delete ' + $recordKey + ' /f') ($script:regCalls -join '|')
+
 # ---------------------------------------------------------------- files: backup name, ReplaceFile, permissions
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('preinstall-tests-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 $null = New-Item -ItemType Directory -Path $tmp
@@ -239,8 +341,8 @@ try {
     [IO.File]::SetAccessControl($cfg, $fs)
     $before = [IO.File]::GetAccessControl($cfg).GetSecurityDescriptorSddlForm('Access')
     $backup = Get-BackupPath $cfg (Get-Date)
-    $how = Write-ConfigText $cfg (Set-SshdConfigPortText $old 2222) $backup
-    Same 'Write-ConfigText: written through ReplaceFile' 'replaced' $how
+    $out = @(Write-ConfigText $cfg (Set-SshdConfigPortText $old 2222) $backup)
+    Same 'Write-ConfigText: no output' 0 $out.Count
     Same 'Write-ConfigText: new content' "Port 2222`r`nLogLevel INFO`r`n" ([IO.File]::ReadAllText($cfg))
     Same 'Write-ConfigText: backup holds the previous content' $old ([IO.File]::ReadAllText($backup))
     Same 'Write-ConfigText: sshd_config keeps its permissions' $before ([IO.File]::GetAccessControl($cfg).GetSecurityDescriptorSddlForm('Access'))
@@ -256,7 +358,7 @@ try {
     Check 'Write-ConfigText: a UTF-8 BOM is kept' ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
     Same 'Write-ConfigText: text after the BOM' "Port 2222`n" ([IO.File]::ReadAllText($cfg2))
 
-    # ReplaceFile fails when the backup name is taken by a folder: never truncate the live config.
+    # The backup name is taken by a folder: never truncate the live config.
     $cfg3 = Join-Path $tmp 'fallback_config'
     [IO.File]::WriteAllText($cfg3, "#Port 22`n")
     $null = New-Item -ItemType Directory -Path ($cfg3 + '.bak.dir')
@@ -265,6 +367,30 @@ try {
     Check 'Write-ConfigText: failed atomic replacement is reported' ($how -like 'threw:*') $how
     Same 'Write-ConfigText: failed replacement keeps original content' "#Port 22`n" ([IO.File]::ReadAllText($cfg3))
     Check 'Write-ConfigText: failed replacement leaves no temporary file' (@(Get-ChildItem -LiteralPath $tmp -Filter 'fallback_config.new-*').Count -eq 0)
+
+    # The rename keeps an inherited DACL exactly: no explicit copies of the inherited entries.
+    $cfg4 = Join-Path $tmp 'inherited_config'
+    [IO.File]::WriteAllText($cfg4, "#Port 22`n")
+    $inherited = [IO.File]::GetAccessControl($cfg4).GetSecurityDescriptorSddlForm('Access')
+    Write-ConfigText $cfg4 "Port 2222`n" ''
+    Same 'Write-ConfigText: an inherited DACL stays inherited' $inherited ([IO.File]::GetAccessControl($cfg4).GetSecurityDescriptorSddlForm('Access'))
+    Check 'Write-ConfigText: without a backup name, no backup' (@(Get-ChildItem -LiteralPath $tmp -Filter 'inherited_config*').Count -eq 1)
+
+    # The rollback of a failed port change: the previous file back, byte for byte, with the
+    # permissions of the live file, and no file left beside it (before, File.Replace with a $null
+    # backup name threw "The path is not of a legal form" and nothing was put back).
+    $cfg5 = Join-Path $tmp 'restore_config'
+    [IO.File]::WriteAllText($cfg5, "Port 2222`r`n", (New-Object Text.UTF8Encoding($false)))
+    $fs = New-Object Security.AccessControl.FileSecurity   # a persisted one writes nothing again
+    $fs.SetSecurityDescriptorSddlForm($sddl, 'Access')
+    [IO.File]::SetAccessControl($cfg5, $fs)
+    $prev = [byte[]](0xEF, 0xBB, 0xBF) + [Text.Encoding]::UTF8.GetBytes("#Port 22`r`nLogLevel INFO`n")
+    $err = ''
+    try { Write-ConfigBytes $cfg5 ([byte[]]$prev) '' } catch { $err = $_.Exception.Message }
+    Check 'Write-ConfigBytes: puts a file back without a backup name' ($err -eq '') $err
+    Same 'Write-ConfigBytes: the previous bytes are back exactly' ([BitConverter]::ToString([byte[]]$prev)) ([BitConverter]::ToString([IO.File]::ReadAllBytes($cfg5)))
+    Same 'Write-ConfigBytes: the permissions of the live file are kept' $before ([IO.File]::GetAccessControl($cfg5).GetSecurityDescriptorSddlForm('Access'))
+    Check 'Write-ConfigBytes: no other file left' (@(Get-ChildItem -LiteralPath $tmp -Filter 'restore_config*').Count -eq 1) ((@(Get-ChildItem -LiteralPath $tmp -Filter 'restore_config*') | ForEach-Object { $_.Name }) -join ', ')
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

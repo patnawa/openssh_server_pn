@@ -864,12 +864,13 @@ function Add-MachinePath {
         $pathType  = $regKey.GetValueKind('PATH')
 
         # Normalize for comparison only (expand variables and trim trailing backslash)
+        # (PowerShell 2.0: no [string]::IsNullOrWhiteSpace or .Where(); -notcontains ignores case)
         $normalizedFilePath = [Environment]::ExpandEnvironmentVariables($FilePath).TrimEnd('\')
         $normalizedEntries = $pathValue -split ';' |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Where-Object { $_ -and $_.Trim() } |
             ForEach-Object { [Environment]::ExpandEnvironmentVariables($_.Trim()).TrimEnd('\') }
 
-        if ($normalizedEntries.Where({ $_ -ieq $normalizedFilePath }, 'First').Count -eq 0) {
+        if (@($normalizedEntries) -notcontains $normalizedFilePath) {
             $newPath = $FilePath + ';' + $pathValue
 
             $message     = "Need to add the path to the Machine PATH environment variable."

@@ -9,12 +9,15 @@
     |-----------|----------------------------------------------------------------------------------------|
     | Install   | installs the release MSI; checks services, version, banner on 22, firewall defaults,   |
     |           | the manager and its Start-menu shortcuts; the silent install opens no setup wizard    |
-    | Upgrade   | sets the firewall rule to port 2222 and Private only, installs the upgrade-test MSI    |
-    |           | (third version field + 1), checks that the rule kept both                              |
-    | Repair    | msiexec /fa of the installed package; the rule still has port 2222 and Private         |
+    | Upgrade   | sets the firewall rule to port 2222 and Private only, sshd to Automatic (Delayed Start) |
+    |           | and ssh-agent to Disabled, installs the upgrade-test MSI (third version field + 1),    |
+    |           | checks that the rule kept both settings and the services their start types            |
+    | Repair    | disables and stops both services, msiexec /fa of the installed package: both stay     |
+    |           | Disabled and stopped; the rule still has port 2222 and Private                        |
     | Rollback  | a copy of the release MSI that fails after StartServices (New-FailingMsi) is installed  |
     |           | with ALLOWDOWNGRADE=1: msiexec returns 1603, the previous package is back with its      |
-    |           | services and files, the rule has port 2222 and Private again, the saved record is gone |
+    |           | services running and its files, the rule has port 2222 and Private again, the saved    |
+    |           | record is gone                                                                         |
     | Downgrade | the older release MSI is refused (1603) without ALLOWDOWNGRADE; then installed with    |
     |           | ALLOWDOWNGRADE=1 SSHD_PORT=2200: sshd answers on 2200, the rule has port 2200 and      |
     |           | still Private only                                                                     |
@@ -77,6 +80,11 @@ function Invoke-Install([string[]]$Arguments, [string]$Log, [int[]]$Allowed = @(
     $code
 }
 
+function Test-ServiceState([string]$Name, [string]$Status, [string]$StartType, [string]$When) {
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    Test-Check "Service $Name $Status / $StartType $When" ($svc -and "$($svc.Status)" -eq $Status -and "$($svc.StartType)" -eq $StartType) "$(if ($svc) { "$($svc.Status) / $($svc.StartType)" } else { 'missing' })" | Out-Null
+}
+
 function Get-InstalledMsiPath {
     $p = Get-InstalledOpenSSHProduct
     if (-not $p) { throw 'OpenSSH Server PN is not installed; an earlier scenario failed.' }
@@ -98,18 +106,38 @@ switch ($Scenario) {
         # An administrator changed the rule: another port, Private networks only. ADJUST (firewall preservation)
         Set-NetFirewallRule -DisplayName 'OpenSSH SSH Server Preview (sshd)' -LocalPort $CustomFirewallPort -Profile Private
         Get-SshdFirewallRule | Format-List | Out-String | Write-Host
-        Invoke-Install @('/i', (Q $upgradeMsiPath)) '2-upgrade.log' | Out-Null
-        Test-MsiLog (Join-Path $LogDir '2-upgrade.log') -RequirePreinstall
+        # ... and the start types: the upgrade registers both services again as Automatic, the package sets these back.
+        Set-Service -Name sshd -StartupType AutomaticDelayedStart
+        Stop-Service -Name ssh-agent -Force
+        Set-Service -Name ssh-agent -StartupType Disabled
+        try {
+            Invoke-Install @('/i', (Q $upgradeMsiPath)) '2-upgrade.log' | Out-Null
+            Test-MsiLog (Join-Path $LogDir '2-upgrade.log') -RequirePreinstall
+            Test-ServiceState 'sshd' 'Running' 'AutomaticDelayedStart' 'after the upgrade'
+            Test-ServiceState 'ssh-agent' 'Stopped' 'Disabled' 'after the upgrade'
+        } finally {
+            # the next checks and scenarios expect both Automatic and running
+            foreach ($name in 'sshd', 'ssh-agent') { Set-Service -Name $name -StartupType Automatic; Start-Service -Name $name }
+        }
         Test-OpenSSHInstallation -ProductVersion $UpgradeVersion -FileVersion $Version `
             -FirewallPort $CustomFirewallPort -FirewallPortMode $preservation `
             -FirewallProfileMask $CustomFirewallProfileMask -FirewallProfileMode $preservation
-        Complete-Checks 'Upgrade keeps the firewall settings'
+        Complete-Checks 'Upgrade keeps the firewall settings and the start types'
     }
 
     'Repair' {
         $msi = Get-InstalledMsiPath
         $installed = (Get-InstalledOpenSSHProduct).DisplayVersion
-        Invoke-Install @('/fa', (Q $msi)) '3-repair.log' | Out-Null
+        # An administrator disabled both services: the repair registers them again as Automatic and starts them, the
+        # package disables and stops them again.
+        foreach ($name in 'sshd', 'ssh-agent') { Stop-Service -Name $name -Force; Set-Service -Name $name -StartupType Disabled }
+        try {
+            Invoke-Install @('/fa', (Q $msi)) '3-repair.log' | Out-Null
+            Test-ServiceState 'sshd' 'Stopped' 'Disabled' 'after the repair'
+            Test-ServiceState 'ssh-agent' 'Stopped' 'Disabled' 'after the repair'
+        } finally {
+            foreach ($name in 'sshd', 'ssh-agent') { Set-Service -Name $name -StartupType Automatic; Start-Service -Name $name }
+        }
         Test-MsiLog (Join-Path $LogDir '3-repair.log') -RequirePreinstall
         # ADJUST (firewall preservation): the repair recreates the rule; it must keep port and profiles.
         Test-OpenSSHInstallation -ProductVersion $installed -FileVersion $Version `
@@ -157,8 +185,13 @@ switch ($Scenario) {
             Test-Check "Firewall rule profile mask $CustomFirewallProfileMask after the rollback" ($rules[0].ProfileMask -eq $CustomFirewallProfileMask) "profile $($rules[0].Profile) ($($rules[0].ProfileMask))" -Mode $preservation | Out-Null
             Test-Check 'Firewall rule enabled after the rollback' $rules[0].Enabled | Out-Null
         }
-        # The rollback registers the services again but does not start them; the next scenarios need sshd running.
+        # The pre-install step stopped the services before StopServices, whose rollback therefore does not start them;
+        # the rollback of the save step does, last, once the old package's services are registered again.
+        $quiet = (@(Select-String -LiteralPath (Join-Path $LogDir '3b-rollback.log') -Pattern '^WixQuietExec(?:64)?:  (.*)$' | ForEach-Object { $_.Matches[0].Groups[1].Value }) -join '')
+        Test-Check 'MSI log shows the rollback starting sshd again' ($quiet -match 'preinstall: rollback: started sshd') | Out-Null
         foreach ($name in 'sshd', 'ssh-agent') {
+            Test-ServiceState $name 'Running' 'Automatic' 'after the rollback'
+            # the next scenarios need it running, whatever the check found
             $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
             if ($svc -and $svc.Status -ne 'Running') { Start-Service -Name $name }
         }

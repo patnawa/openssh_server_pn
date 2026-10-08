@@ -387,6 +387,35 @@ archive in `manager`, the partners' keys in `partner_keys`) in place; delete it 
 want a clean slate. Partner accounts, their groups and their folders stay too: delete the partners
 on the Partners tab first if they should go.
 
+**Windows' own OpenSSH after the uninstall.** The package takes over the `ssh-agent` service of
+the in-box *OpenSSH Client* capability, which Windows 10 1809 and later, Windows 11 and Windows
+Server 2019 and later have by default, and with `KEEP_INBOX_OPENSSH=1` the `sshd` service of the
+in-box server (section 6). The uninstall deletes these services by name, whoever registered them
+first. Afterwards the in-box `ssh-add` reports *Error connecting to agent*, `Get-Service ssh-agent`
+finds nothing, and *Settings* still lists the capability as installed. A later Windows update of
+the capability may register them again. To give the services back to
+`%SystemRoot%\System32\OpenSSH` now, run these lines in an elevated PowerShell. Type `sc.exe`, not
+`sc`: in PowerShell, `sc` is the alias of `Set-Content`, which would write files named `create`,
+`sdset` and `privs` instead. The security descriptor and the privileges are the ones the package
+sets (`shared.wxs`, `server.wxs`); the start types are Windows' defaults (*Disabled* for the agent,
+*Manual* for the server).
+
+```powershell
+$inbox = "$env:SystemRoot\System32\OpenSSH"
+sc.exe create ssh-agent binPath= "$inbox\ssh-agent.exe" start= disabled obj= LocalSystem DisplayName= "OpenSSH Authentication Agent"
+sc.exe description ssh-agent "Agent to hold private keys used for public key authentication."
+sc.exe sdset ssh-agent "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)(A;;RP;;;AU)"
+sc.exe privs ssh-agent SeAssignPrimaryTokenPrivilege/SeTcbPrivilege/SeBackupPrivilege/SeRestorePrivilege/SeImpersonatePrivilege
+# Only after an install with KEEP_INBOX_OPENSSH=1, while $inbox\sshd.exe is still there:
+sc.exe create sshd binPath= "$inbox\sshd.exe" start= demand obj= LocalSystem DisplayName= "OpenSSH SSH Server"
+sc.exe privs sshd SeAssignPrimaryTokenPrivilege/SeTcbPrivilege/SeBackupPrivilege/SeRestorePrivilege/SeImpersonatePrivilege
+```
+
+To use the in-box agent, then run `Set-Service ssh-agent -StartupType Automatic` and
+`Start-Service ssh-agent`. If `sc.exe create` fails with error 1072, the service is still marked
+for deletion: close *Services* and any other program that has it open, or restart, and run the
+line again.
+
 ## 8. Troubleshooting
 
 | Symptom | Check |

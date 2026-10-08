@@ -4263,13 +4263,16 @@ dump_cfg_strarray_oneline(ServerOpCodes code, u_int count, char **vals)
 	 * checks. Preserve argument boundaries, literal backslashes and quotes.
 	 * An empty array explicitly disables files; omitting it restores defaults
 	 * when the dump is read again. Other options retain their existing format.
+	 * A bare leading '=' would be read as the keyword separator, and an empty
+	 * value would vanish, so both are quoted as well.
 	 */
 	if (code == sAuthorizedKeysFile) {
 		printf("%s", lookup_opcode_name(code));
 		if (count == 0)
 			printf(" none");
 		for (i = 0; i < count; i++) {
-			quote = vals[i][0] == '#' ||
+			quote = vals[i][0] == '#' || vals[i][0] == '=' ||
+			    vals[i][0] == '\0' ||
 			    strpbrk(vals[i], " \t\\\"'") != NULL;
 			printf(" %s", quote ? "\"" : "");
 			for (cp = vals[i]; *cp != '\0'; cp++) {
