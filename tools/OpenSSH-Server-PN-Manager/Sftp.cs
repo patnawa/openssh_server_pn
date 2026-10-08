@@ -460,9 +460,54 @@ namespace OpenSSHServerPNManager
             finally { pin.Free(); }
         }
 
+        [StructLayout(LayoutKind.Sequential)] private struct FILE_ATTRIBUTE_TAG_INFO { public int Attributes, ReparseTag; }
+        [StructLayout(LayoutKind.Sequential)] private struct BY_HANDLE_FILE_INFORMATION { public int Attributes, Created1, Created2, Accessed1, Accessed2, Written1, Written2, Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow; }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string path, int access, int share, IntPtr sa, int disposition, int flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetFileInformationByHandleEx(Microsoft.Win32.SafeHandles.SafeFileHandle h, int infoClass, out FILE_ATTRIBUTE_TAG_INFO info, int size);
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle h, out BY_HANDLE_FILE_INFORMATION info);
+
         /// <summary>
-        /// Everything in a folder, each folder before what it holds, without following links (junctions, symbolic links):
-        /// they are listed, never entered. Lazy: a folder is read only after its entry was handled.
+        /// What makes a file or folder stand for another one, or null: a reparse point that names another file or folder (a
+        /// junction, symbolic link or mounted drive: a name-surrogate tag), or a file with more than one name (a hard link:
+        /// its permissions are those of the same file under its other names, wherever they are). Reparse points that only
+        /// keep the data elsewhere (deduplicated, compressed or cloud files) are files like others; an entry that cannot be
+        /// examined counts as a link.
+        /// </summary>
+        internal static string LinkKind(string path)
+        {
+            // Read attributes only, which a file in use does not refuse; the reparse point itself, never what it leads to.
+            using (var h = CreateFileW(path, 0x80 /*FILE_READ_ATTRIBUTES*/, 7, IntPtr.Zero, 3 /*OPEN_EXISTING*/, 0x00200000 | 0x02000000 /*OPEN_REPARSE_POINT, BACKUP_SEMANTICS*/, IntPtr.Zero))
+            {
+                FILE_ATTRIBUTE_TAG_INFO tag; BY_HANDLE_FILE_INFORMATION info;
+                if (h.IsInvalid || !GetFileInformationByHandleEx(h, 9 /*FileAttributeTagInfo*/, out tag, Marshal.SizeOf(typeof(FILE_ATTRIBUTE_TAG_INFO))) || !GetFileInformationByHandle(h, out info))
+                {
+                    int e = Marshal.GetLastWin32Error();
+                    return e == 2 || e == 3 ? null : "an entry that could not be examined (" + new System.ComponentModel.Win32Exception(e).Message + ")";
+                }
+                if ((tag.Attributes & 0x400) != 0 && (tag.ReparseTag & 0x20000000) != 0) return "a link (junction, symbolic link or mounted drive)";
+                if ((tag.Attributes & 0x10) == 0 && info.Links > 1) return "a hard link (the same file as " + (info.Links - 1) + " other name(s), wherever they are)";
+                return null;
+            }
+        }
+
+        /// <summary>LinkKind of an entry of Contents: a folder without a reparse point is never one (folders have no hard links).</summary>
+        internal static string LinkKind(FileSystemInfo e)
+        {
+            return e is DirectoryInfo && (e.Attributes & FileAttributes.ReparsePoint) == 0 ? null : LinkKind(e.FullName);
+        }
+
+        /// <summary>The folder, or the first entry in it, that is a link (LinkKind), or null; kind says what it is.</summary>
+        internal static string FirstLink(string folder, out string kind)
+        {
+            kind = LinkKind(folder);
+            if (kind != null) return folder;
+            foreach (var e in Contents(folder)) { kind = LinkKind(e); if (kind != null) return e.FullName; }
+            return null;
+        }
+
+        /// <summary>
+        /// Everything in a folder, each folder before what it holds, without following links (junctions, symbolic links,
+        /// mounted drives: LinkKind): they are listed, never entered. Lazy: a folder is read only after its entry was handled.
         /// </summary>
         internal static IEnumerable<FileSystemInfo> Contents(string folder)
         {
@@ -473,7 +518,7 @@ namespace OpenSSHServerPNManager
                 {
                     yield return e;
                     var d = e as DirectoryInfo;
-                    if (d != null && (e.Attributes & FileAttributes.ReparsePoint) == 0) dirs.Push(d);
+                    if (d != null && LinkKind(e) == null) dirs.Push(d);
                 }
             }
         }
@@ -481,19 +526,22 @@ namespace OpenSSHServerPNManager
         /// <summary>
         /// Gives an existing folder to one account as if it had just been made for it: the owner given (Administrators),
         /// SYSTEM and Administrators in full control and the account with its rights, nothing inherited from above; and
-        /// everything in it owned by that owner, inheriting only that. Each folder is locked before it is read, links in it
-        /// are never followed (icacls /T follows junctions, even with /L), and finding one stops the reset at the end.
+        /// everything in it owned by that owner, inheriting only that. Each folder is locked before it is read, and links in
+        /// it are never followed (icacls /T follows junctions, even with /L) nor changed: a folder that holds one is refused
+        /// before anything changes, and one made in the meantime stops the reset at the end.
         /// </summary>
         internal static void ResetFolder(string path, SecurityIdentifier who, bool readOnly, SecurityIdentifier owner)
         {
-            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new ConfigException(path + " is a link (junction or symbolic link), not a folder.");
+            // The permissions set below reach every file without its own, and so a hard link's other names too.
+            string kind; var first = FirstLink(path, out kind);
+            if (first != null) throw new ConfigException((first == path ? path + " is " : path + " holds " + first + ", ") + kind + ": nothing was changed. Whoever made it decides what it leads to: remove it first.");
             var ds = AdminsOnly(); ds.SetOwner(owner);
             ds.AddAccessRule(new FileSystemAccessRule(who, readOnly ? FileSystemRights.ReadAndExecute : FileSystemRights.Modify, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
             Directory.SetAccessControl(path, ds);
             var links = new List<string>();
             foreach (var e in Contents(path))
             {
-                if ((e.Attributes & FileAttributes.ReparsePoint) != 0) { links.Add(e.FullName); continue; }
+                if (LinkKind(e) != null) { links.Add(e.FullName); continue; }
                 var dir = e as DirectoryInfo;
                 FileSystemSecurity s = dir != null ? (FileSystemSecurity)dir.GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access) : ((FileInfo)e).GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access);
                 foreach (FileSystemAccessRule r in s.GetAccessRules(true, false, typeof(SecurityIdentifier))) s.RemoveAccessRuleSpecific(r);
@@ -501,7 +549,7 @@ namespace OpenSSHServerPNManager
                 if (!owner.Equals(s.GetOwner(typeof(SecurityIdentifier)))) s.SetOwner(owner);
                 if (dir != null) dir.SetAccessControl((DirectorySecurity)s); else ((FileInfo)e).SetAccessControl((FileSecurity)s);
             }
-            if (links.Count > 0) throw new ConfigException(path + " holds links (junctions or symbolic links), which were left as they are: " + string.Join(", ", links.Take(3)) + (links.Count > 3 ? ", ..." : "") + ". Whoever made them decides what they lead to: remove them first.");
+            if (links.Count > 0) throw new ConfigException(path + " holds links (junctions, symbolic links or hard links), which were left as they are: " + string.Join(", ", links.Take(3)) + (links.Count > 3 ? ", ..." : "") + ". Whoever made them decides what they lead to: remove them first.");
         }
 
         private static bool IsCreatorOwner(SecurityIdentifier s) { return s.IsWellKnown(WellKnownSidType.CreatorOwnerSid); }

@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Microsoft.Win32.SafeHandles;
 
 namespace OpenSSHServerPNManager
 {
@@ -55,6 +57,66 @@ namespace OpenSSHServerPNManager
                     }
                 }
                 finally { RemoveLinks(links); }
+                return null;
+            });
+            test("partners: a folder that holds a hard link is never offered nor reset, and the linked file keeps its permissions", () =>
+            {
+                var id = Id();
+                var g = Groups(tmpDir, id); var me = WindowsIdentity.GetCurrent().User;
+                var root = Path.Combine(tmpDir, "hroot-" + id); var name = "osmth" + id; var folder = Partners.FolderOf(root, name);
+                var outside = Path.Combine(tmpDir, "hout-" + id); var secret = Path.Combine(outside, "ssh_host_ed25519_key");
+                Directory.CreateDirectory(Path.Combine(folder, "sub")); Directory.CreateDirectory(outside); File.WriteAllText(secret, "x");
+                var fs = File.GetAccessControl(secret); fs.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null), FileSystemRights.Read, AccessControlType.Allow)); File.SetAccessControl(secret, fs);
+                HardLink(Path.Combine(Path.Combine(folder, "sub"), "report.pdf"), secret);
+                Func<FileSystemSecurity, string> sddl = s => s.GetSecurityDescriptorSddlForm(AccessControlSections.Owner | AccessControlSections.Access);
+                var before = sddl(File.GetAccessControl(secret)); var folderBefore = sddl(Directory.GetAccessControl(folder));
+                foreach (var reuse in new[] { false, true })
+                {
+                    try { Partners.Create(g, root, name, "", "", false, false, null, reuse); throw new Exception("accepted"); }
+                    catch (PartnerFolderExistsException) { throw new Exception("a folder that holds a hard link was offered to a new partner"); }
+                    catch (ConfigException ex) { if (ex.Message.IndexOf("hard link", StringComparison.Ordinal) < 0) throw new Exception(ex.Message); }
+                }
+                if (Acl.SidOfAccount(name) != null) throw new Exception("the account " + name + " was made");
+                try { SftpConfig.ResetFolder(folder, me, false, me); throw new Exception("a folder that holds a hard link was reset"); }
+                catch (ConfigException ex) { if (ex.Message.IndexOf("hard link", StringComparison.Ordinal) < 0) throw new Exception(ex.Message); }
+                if (sddl(File.GetAccessControl(secret)) != before) throw new Exception("the permissions of the linked file changed: " + before + " became " + sddl(File.GetAccessControl(secret)));
+                if (sddl(Directory.GetAccessControl(folder)) != folderBefore) throw new Exception("the folder was changed before the refusal");
+                return null;
+            });
+            test("partners: a reparse point that only keeps a file's data elsewhere is a file like others, not a link", () =>
+            {
+                var id = Id();
+                var g = Groups(tmpDir, id); var me = WindowsIdentity.GetCurrent().User;
+                var root = Path.Combine(tmpDir, "droot-" + id); var name = "osmtd" + id; var folder = Partners.FolderOf(root, name);
+                var file = Path.Combine(folder, "report.pdf");
+                Directory.CreateDirectory(folder); File.WriteAllText(file, "x");
+                var fs = File.GetAccessControl(file); fs.SetAccessRuleProtection(true, true); File.SetAccessControl(file, fs);
+                DataReparsePoint(file); // as deduplication, compression or a cloud file would
+                if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) == 0) throw new Exception("no reparse point was set");
+                if (SftpConfig.LinkKind(file) != null) throw new Exception("taken for " + SftpConfig.LinkKind(file));
+                try { Partners.Create(g, root, name, "", "", false, false, null); throw new Exception("accepted"); }
+                catch (PartnerFolderExistsException) { }
+                catch (ConfigException ex) { throw new Exception("refused as if it held a link: " + ex.Message); }
+                SftpConfig.ResetFolder(folder, me, false, me);
+                var s = File.GetAccessControl(file);
+                if (s.AreAccessRulesProtected || s.GetAccessRules(true, false, typeof(SecurityIdentifier)).Count > 0) throw new Exception("the file was not reset");
+                return null;
+            });
+            test("partners: a link above the partners' folder is reported (its own permissions are not those of where it leads)", () =>
+            {
+                var id = Id();
+                var target = Path.Combine(tmpDir, "rtarget-" + id); var link = Path.Combine(tmpDir, "rlink-" + id);
+                Directory.CreateDirectory(Path.Combine(target, "partners"));
+                try
+                {
+                    Junction(link, target);
+                    bool canHarden;
+                    var above = PartnerSetup.RootProblem(Path.Combine(link, "partners"), out canHarden);
+                    if (above == null || above.IndexOf("(above it) is a link", StringComparison.Ordinal) < 0 || canHarden) throw new Exception("a junction above the root: " + (above ?? "no problem") + ", can be hardened: " + canHarden);
+                    var itself = PartnerSetup.RootProblem(link, out canHarden);
+                    if (itself == null || itself.IndexOf(" is a link", StringComparison.Ordinal) < 0 || itself.IndexOf("(above it)", StringComparison.Ordinal) >= 0 || canHarden) throw new Exception("a junction as the root: " + (itself ?? "no problem"));
+                }
+                finally { RemoveLinks(new[] { link }); }
                 return null;
             });
             test("partners: a new folder is made in one step that fails when it exists", () =>
@@ -322,6 +384,28 @@ namespace OpenSSHServerPNManager
         {
             var r = Proc.Run(Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/c mklink /J \"" + link + "\" \"" + target + "\"");
             if (!r.Ok || !Directory.Exists(link)) throw new Exception("could not make the junction " + link + ": " + r.Output);
+        }
+
+        private static void HardLink(string link, string target)
+        {
+            var r = Proc.Run(Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/c mklink /H \"" + link + "\" \"" + target + "\"");
+            if (!r.Ok || !File.Exists(link)) throw new Exception("could not make the hard link " + link + ": " + r.Output);
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern SafeFileHandle CreateFileW(string path, int access, int share, IntPtr sa, int disposition, int flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool DeviceIoControl(SafeFileHandle h, int code, byte[] input, int inputSize, IntPtr output, int outputSize, out int returned, IntPtr overlapped);
+
+        /// <summary>A reparse point of another vendor on a file, whose tag does not name another file (no name-surrogate bit).</summary>
+        private static void DataReparsePoint(string file)
+        {
+            using (var h = CreateFileW(file, 0x40000000 /*GENERIC_WRITE*/ | 0x100 | 0x80, 7, IntPtr.Zero, 3, 0x00200000 | 0x02000000, IntPtr.Zero))
+            {
+                if (h.IsInvalid) throw new Exception("could not open " + file + ": error " + Marshal.GetLastWin32Error());
+                var buf = new byte[24 + 4]; // REPARSE_GUID_DATA_BUFFER: tag, data length, reserved, GUID, data
+                BitConverter.GetBytes(0x00000123).CopyTo(buf, 0); BitConverter.GetBytes((ushort)4).CopyTo(buf, 4); Guid.NewGuid().ToByteArray().CopyTo(buf, 8);
+                int returned;
+                if (!DeviceIoControl(h, 0x000900A4 /*FSCTL_SET_REPARSE_POINT*/, buf, buf.Length, IntPtr.Zero, 0, out returned, IntPtr.Zero)) throw new Exception("could not set a reparse point on " + file + ": error " + Marshal.GetLastWin32Error());
+            }
         }
 
         /// <summary>Removes junctions themselves: Directory.Delete(dir, true) of the .NET Framework stops at the folder that holds one.</summary>

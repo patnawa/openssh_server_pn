@@ -215,7 +215,15 @@ namespace OpenSSHServerPNManager
             canHarden = false;
             try
             {
-                if (Directory.Exists(root) && (File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0) return root + " is a link (junction or symbolic link) to another folder";
+                // Read by its name, a link has permissions of its own: those of the folder it leads to, and of the folders
+                // above that one, are never checked. A drive root is never a link.
+                var full = Path.GetFullPath(root);
+                if (full.Length > 3) full = full.TrimEnd('\\');
+                for (var d = full; d != null && d != Path.GetPathRoot(d); d = Path.GetDirectoryName(d))
+                {
+                    var kind = Directory.Exists(d) ? SftpConfig.LinkKind(d) : null;
+                    if (kind != null) return (d == full ? d : d + " (above it)") + " is " + kind + ", so the partners' folders would be wherever it leads, with permissions that were not checked";
+                }
                 return RootProblem(root, d => Directory.Exists(d) ? Directory.GetAccessControl(d, AccessControlSections.Owner | AccessControlSections.Access) : null, out canHarden);
             }
             catch (Exception ex) { canHarden = false; return "the permissions of " + root + " and of the folders above it were not checked (" + ex.Message + ")"; }
@@ -399,8 +407,8 @@ namespace OpenSSHServerPNManager
             bool reuse = reuseFolder && Directory.Exists(folder), made = false;
             if (Directory.Exists(folder))
             {
-                var link = (File.GetAttributes(folder) & FileAttributes.ReparsePoint) != 0 ? folder : SftpConfig.Contents(folder).Where(x => (x.Attributes & FileAttributes.ReparsePoint) != 0).Select(x => x.FullName).FirstOrDefault();
-                if (link != null) throw new ConfigException("The folder " + folder + " exists already, and " + (link == folder ? "it is" : "it holds") + " a link (junction or symbolic link), " + link + ": whoever made it decides what the partner would reach through it. Move or rename the folder first, or choose another name.");
+                string kind; var link = SftpConfig.FirstLink(folder, out kind);
+                if (link != null) throw new ConfigException("The folder " + folder + " exists already, and " + (link == folder ? "it is " : "it holds " + link + ", ") + kind + ": whoever made it decides what the partner would reach through it. Move or rename the folder first, or choose another name.");
                 if (!reuse) throw new PartnerFolderExistsException(folder, FolderDetails(folder));
             }
             else
