@@ -8,6 +8,7 @@ using System.Diagnostics.Eventing.Reader;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
@@ -356,14 +357,21 @@ namespace OpenSSHServerPNManager
     {
         private readonly Label _report, _countdown;
         private readonly System.Windows.Forms.Timer _timer = new System.Windows.Forms.Timer { Interval = 1000 };
-        private int _left;
+        private readonly DateTime _deadlineUtc;
+        internal Func<DateTime> UtcNow = () => DateTime.UtcNow;
 
         public KeepSettingsDialog(string report, bool problems, int seconds, Func<KeyValuePair<string, bool>> checkAgain)
+            : this(report, problems, DateTime.UtcNow.AddSeconds(seconds), () => System.Threading.Tasks.Task.FromResult(checkAgain())) { }
+
+        public KeepSettingsDialog(string report, bool problems, DateTime deadlineUtc, Func<KeyValuePair<string, bool>> checkAgain)
+            : this(report, problems, deadlineUtc, () => System.Threading.Tasks.Task.FromResult(checkAgain())) { }
+
+        public KeepSettingsDialog(string report, bool problems, DateTime deadlineUtc, Func<System.Threading.Tasks.Task<KeyValuePair<string, bool>>> checkAgain)
         {
             Text = "Keep the new sshd settings?"; StartPosition = FormStartPosition.CenterParent; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
             FormBorderStyle = FormBorderStyle.FixedDialog; MinimizeBox = MaximizeBox = false; ShowInTaskbar = false; AutoSize = true; AutoSizeMode = AutoSizeMode.GrowAndShrink;
             Font = new Font("Segoe UI", Ui.Pt(9.5f)); Padding = new Padding(Ui.Px(10));
-            _left = seconds;
+            _deadlineUtc = deadlineUtc.ToUniversalTime();
             var p = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Dock = DockStyle.Fill };
             p.Controls.Add(new Label { Text = "sshd restarted with the new settings.", AutoSize = true, Font = new Font("Segoe UI", Ui.Pt(11f), FontStyle.Bold), Margin = new Padding(3, 3, 3, 8) });
             _report = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(600), 0), Margin = new Padding(3, 0, 3, 8) };
@@ -376,19 +384,28 @@ namespace OpenSSHServerPNManager
             _countdown = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(600), 0), Font = new Font("Segoe UI", Ui.Pt(9.5f), FontStyle.Bold), Margin = new Padding(3, 0, 3, 10) };
             p.Controls.Add(_countdown);
             var bar = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false };
-            var keep = new Button { Text = "&Keep the new settings", AutoSize = true, MinimumSize = new Size(0, Ui.Px(32)), DialogResult = DialogResult.OK };
+            var keep = new Button { Text = "&Keep the new settings", AutoSize = true, MinimumSize = new Size(0, Ui.Px(32)) };
+            keep.Click += (s, e) => { DialogResult = UtcNow() < _deadlineUtc ? DialogResult.OK : DialogResult.Abort; };
             var back = new Button { Text = "&Restore the previous settings", AutoSize = true, MinimumSize = new Size(0, Ui.Px(32)), DialogResult = DialogResult.Abort };
             var again = new Button { Text = "&Check again", AutoSize = true, MinimumSize = new Size(0, Ui.Px(32)) };
-            again.Click += (s, e) =>
+            again.Click += async (s, e) =>
             {
-                // The check can take seconds and keeps the window responsive: the countdown pauses and the buttons wait,
-                // so a Keep clicked meanwhile cannot be overtaken by the countdown, and the check cannot start twice.
-                _timer.Stop(); keep.Enabled = back.Enabled = again.Enabled = false; UseWaitCursor = true;
-                try { var r = checkAgain(); ShowReport(r.Key, r.Value); }
+                // The independently scheduled deadline keeps running during checks, delayed UI ticks and suspension.
+                keep.Enabled = again.Enabled = false; UseWaitCursor = true;
+                try
+                {
+                    var r = await checkAgain();
+                    if (!IsDisposed && !Disposing && DialogResult == DialogResult.None) ShowReport(r.Key, r.Value);
+                }
+                catch (Exception ex) { if (!IsDisposed && !Disposing && DialogResult == DialogResult.None) ShowReport("The check failed: " + ex.Message, true); }
                 finally
                 {
-                    UseWaitCursor = false; keep.Enabled = back.Enabled = again.Enabled = true;
-                    if (DialogResult == DialogResult.None && _left > 0) _timer.Start();
+                    if (!IsDisposed && !Disposing && DialogResult == DialogResult.None)
+                    {
+                        UseWaitCursor = false;
+                        if (UtcNow() >= _deadlineUtc) DialogResult = DialogResult.Abort;
+                        else keep.Enabled = again.Enabled = true;
+                    }
                 }
             };
             bar.Controls.Add(keep); bar.Controls.Add(back); bar.Controls.Add(again);
@@ -400,15 +417,16 @@ namespace OpenSSHServerPNManager
             _timer.Tick += (s, e) =>
             {
                 if (DialogResult != DialogResult.None) { _timer.Stop(); return; } // an answer was given already
-                _left--; Tick();
-                if (_left <= 0) { _timer.Stop(); DialogResult = DialogResult.Abort; }
+                Tick();
+                if (UtcNow() >= _deadlineUtc) { _timer.Stop(); DialogResult = DialogResult.Abort; }
             };
             Shown += (s, e) => { _timer.Start(); keep.Focus(); };
             FormClosed += (s, e) => _timer.Dispose();
         }
 
         private void ShowReport(string text, bool problems) { _report.Text = text; _report.ForeColor = problems ? Theme.Bad : Theme.Text; }
-        private void Tick() { _countdown.Text = "The previous settings come back in " + Math.Max(0, _left) + " s unless you keep the new ones."; }
+        internal static int SecondsLeft(DateTime nowUtc, DateTime deadlineUtc) { return (int)Math.Max(0, Math.Ceiling((deadlineUtc.ToUniversalTime() - nowUtc.ToUniversalTime()).TotalSeconds)); }
+        private void Tick() { _countdown.Text = "The previous settings come back in " + SecondsLeft(UtcNow(), _deadlineUtc) + " s unless you keep the new ones."; }
     }
 
     /// <summary>
@@ -422,10 +440,11 @@ namespace OpenSSHServerPNManager
         private readonly string _ports;
         private readonly List<string> _connected;
         private readonly Label _note;
+        private bool _actionRunning;
 
-        public FailedLoginsDialog(List<EventLogs.FailedSource> sources, string period, string ports, List<string> connectedPeers)
+        public FailedLoginsDialog(List<EventLogs.FailedSource> sources, string period, string ports, List<string> connectedAddresses)
         {
-            _ports = ports; _connected = (connectedPeers ?? new List<string>()).Select(p => { int i = p.LastIndexOf(':'); return (i > 0 ? p.Substring(0, i) : p).Trim('[', ']'); }).ToList();
+            _ports = ports; _connected = connectedAddresses ?? new List<string>();
             Text = "Failed logins by address"; StartPosition = FormStartPosition.CenterParent; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
             Size = new Size(Ui.Px(980), Ui.Px(640)); MinimumSize = new Size(Ui.Px(700), Ui.Px(450)); MinimizeBox = false; ShowInTaskbar = false;
             Font = new Font("Segoe UI", Ui.Pt(9.5f)); Padding = new Padding(Ui.Px(8));
@@ -461,11 +480,21 @@ namespace OpenSSHServerPNManager
             root.Controls.Add(bar2, 0, 5);
             Controls.Add(root);
             CancelButton = close;
-            block.Click += (s, e) => Guard(Block);
+            block.Click += async (s, e) => await GuardAsync(Block);
             unblock.Click += (s, e) => Guard(Unblock);
-            _sources.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete || (e.Control && e.KeyCode == System.Windows.Forms.Keys.B)) { e.Handled = true; Guard(Block); } };
+            _sources.KeyDown += async (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete || (e.Control && e.KeyCode == System.Windows.Forms.Keys.B)) { e.Handled = true; await GuardAsync(Block); } };
             _blocked.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Guard(Unblock); } };
             Load += (s, e) => FillBlocked();
+            FormClosing += (s, e) => { if (_actionRunning) e.Cancel = true; };
+        }
+
+        private async Task GuardAsync(Func<Task> action)
+        {
+            if (_actionRunning) return;
+            _actionRunning = true; Enabled = false; UseWaitCursor = true;
+            try { await action(); }
+            catch (Exception ex) { Log.Error("Firewall block list", ex, false); if (!Program.Unattended) MessageBox.Show(this, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            finally { _actionRunning = false; if (!IsDisposed) { Enabled = true; UseWaitCursor = false; } }
         }
 
         private void Guard(Action a)
@@ -484,21 +513,28 @@ namespace OpenSSHServerPNManager
             _note.Text = list.Count == 0 ? "No address is blocked." : list.Count + " address(es) blocked (shown grey above).";
         }
 
-        private void Block()
+        private async Task Block()
         {
             var chosen = _sources.SelectedItems.Cast<ListViewItem>().Select(i => (string)i.Tag).ToList();
             if (chosen.Count == 0) { _note.Text = "Select one or more addresses first."; return; }
+            var state = await StaOperation.Run(ServerState.Read); HashSet<string> peers = null; string error = null;
+            if (!state.Verified) throw new ConfigException("The server endpoints could not be verified: " + state.Error);
+            if (!await StaOperation.Run(() => Sessions.TryLoggedInAddresses(state.Ports, out peers, out error))) throw new ConfigException("Logged-in peers could not be verified: " + error);
+            _connected.Clear(); _connected.AddRange(peers);
             var refused = chosen.Select(Firewall.NotBlockable).Where(x => x != null).ToList();
             chosen = chosen.Where(a => Firewall.NotBlockable(a) == null).ToList();
-            var connected = chosen.Where(a => _connected.Contains(a)).ToList();
+            var connected = chosen.Where(a => _connected.Contains(a, StringComparer.OrdinalIgnoreCase)).ToList();
             var text = "Block " + string.Join(", ", chosen) + " from SSH (port " + _ports + ")?" +
                        (connected.Count > 0 ? "\n\nWarning: " + string.Join(", ", connected) + " has an SSH connection open right now. If that is you, you lock yourself out." : "") +
                        (refused.Count > 0 ? "\n\nNot blocked: " + string.Join("; ", refused) + "." : "");
             if (chosen.Count == 0) { MessageBox.Show(this, "Nothing to block: " + string.Join("; ", refused) + ".", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
             if (MessageBox.Show(this, text, Program.AppName, MessageBoxButtons.YesNo, connected.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Question, connected.Count > 0 ? MessageBoxDefaultButton.Button2 : MessageBoxDefaultButton.Button1) != DialogResult.Yes) return;
-            var list = Firewall.BlockedAddresses();
-            foreach (var a in chosen) if (!list.Contains(a)) list.Add(a);
-            Firewall.SetBlockedAddresses(list, _ports);
+            await StaOperation.Run(() =>
+            {
+                var list = Firewall.BlockedAddresses();
+                foreach (var a in chosen) if (!list.Contains(a)) list.Add(a);
+                Firewall.SetBlockedAddresses(list, state.FirewallPorts); return true;
+            });
             Log.Info("Blocked from SSH: " + string.Join(", ", chosen));
             FillBlocked();
         }
@@ -507,8 +543,7 @@ namespace OpenSSHServerPNManager
         {
             var chosen = _blocked.SelectedItems.Cast<ListViewItem>().Select(i => (string)i.Tag).ToList();
             if (chosen.Count == 0) { _note.Text = "Select one or more blocked addresses first."; return; }
-            var list = Firewall.BlockedAddresses().Where(a => !chosen.Contains(a)).ToList();
-            Firewall.SetBlockedAddresses(list, _ports);
+            Firewall.RemoveBlockedAddresses(chosen);
             Log.Info("Unblocked from SSH: " + string.Join(", ", chosen));
             FillBlocked();
         }
@@ -561,9 +596,12 @@ namespace OpenSSHServerPNManager
             _pattern = row("Host:", existing == null ? "" : existing.Pattern, "the name you type: ssh <host>");
             _fields["HostName"] = row("Host name:", existing == null ? "" : existing.Get("HostName"), "server name or address");
             _fields["User"] = row("User:", existing == null ? "" : existing.Get("User"), "account on the server");
-            _fields["Port"] = row("Port:", existing == null ? "" : existing.Get("Port"), "empty = 22");
-            _fields["IdentityFile"] = row("Key file:", existing == null ? "" : existing.Get("IdentityFile"), "private key, e.g. ~/.ssh/id_ed25519");
+            _fields["Port"] = row("Port:", existing == null ? "" : existing.Get("Port"), "empty = inherited setting (default 22)");
+            _fields["IdentityFile"] = row("Key files:", existing == null ? "" : string.Join(Environment.NewLine, existing.GetAll("IdentityFile")), "one private key path per line; all are kept");
+            _fields["IdentityFile"].Multiline = true; _fields["IdentityFile"].Height = Ui.Px(65); _fields["IdentityFile"].ScrollBars = ScrollBars.Vertical; _fields["IdentityFile"].AcceptsReturn = true;
             _fields["ProxyJump"] = row("Jump host:", existing == null ? "" : existing.Get("ProxyJump"), "optional: connect through this host");
+            var precedence = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(790), 0), ForeColor = Theme.Muted, Text = existing == null ? "New profiles are inserted before existing settings so their values take precedence. Use Effective settings after saving to inspect inherited options and Includes." : "Unchanged directives and repeated identities are preserved. Earlier matching blocks or Includes can override these values; use Effective settings after saving to inspect the result." };
+            grid.Controls.Add(precedence); grid.SetColumnSpan(precedence, 3);
             var bar = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 10, 0, 0) };
             var ok = new Button { Text = "OK", Width = Ui.Px(100), Height = Ui.Px(30) };
             var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = Ui.Px(100), Height = Ui.Px(30) };

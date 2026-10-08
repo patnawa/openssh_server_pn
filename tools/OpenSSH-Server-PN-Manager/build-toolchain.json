@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "packages": [
+    {
+      "id": "microsoft.net.compilers.toolset",
+      "version": "4.14.0",
+      "sha256": "941a9cf3ea618d88d01a3dd6b1a45a06bcf07716a9f81ce4031caa3edd24a845",
+      "path": "tasks/net472/csc.exe"
+    },
+    {
+      "id": "microsoft.netframework.referenceassemblies.net45",
+      "version": "1.0.3",
+      "sha256": "23a9f94ea3e2cb88cd8341af75b811c6fb5cb82516fc696e95ed4620279128e3",
+      "path": "build/.NETFramework/v4.5"
+    }
+  ]
+}

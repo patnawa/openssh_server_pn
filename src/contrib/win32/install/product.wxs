@@ -144,7 +144,19 @@
              single-quoted command is either set by Windows Installer or restricted by a launch condition above. -->
         <Property Id="PreInstallCommand" Value="&amp;([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$(var.PreInstallScript)'))))" />
         <Property Id="FirewallCommand" Value="&amp;([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$(var.FirewallScript)'))))" />
-        <SetProperty Id="OpenSSHPreInstall" Sequence="execute" Before="OpenSSHPreInstall" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[PreInstallCommand] '[INSTALLFOLDER]' '[REMOVE]' '[KEEP_INBOX_OPENSSH]'&quot;" />
+        <!-- Private properties populated after CostFinalize from resolved actions, never inferred from REMOVE.
+             Shared files follow their component action, so removing one feature does not stop a retained agent. -->
+        <Property Id="OpenSSHServerAction" Value="none" />
+        <Property Id="OpenSSHClientAction" Value="none" />
+        <Property Id="OpenSSHSharedAction" Value="none" />
+        <SetProperty Action="ResolveServerInstall" Id="OpenSSHServerAction" Value="install" Sequence="execute" After="CostFinalize"><![CDATA[&Server = 3]]></SetProperty>
+        <SetProperty Action="ResolveServerRemove" Id="OpenSSHServerAction" Value="remove" Sequence="execute" After="ResolveServerInstall"><![CDATA[&Server = 2 AND !Server = 3]]></SetProperty>
+        <SetProperty Action="ResolveClientInstall" Id="OpenSSHClientAction" Value="install" Sequence="execute" After="ResolveServerRemove"><![CDATA[&Client = 3]]></SetProperty>
+        <SetProperty Action="ResolveClientRemove" Id="OpenSSHClientAction" Value="remove" Sequence="execute" After="ResolveClientInstall"><![CDATA[&Client = 2 AND !Client = 3]]></SetProperty>
+        <SetProperty Action="ResolveSharedInstall" Id="OpenSSHSharedAction" Value="install" Sequence="execute" After="ResolveClientRemove"><![CDATA[$SshAgentComponent = 3]]></SetProperty>
+        <SetProperty Action="ResolveSharedRemove" Id="OpenSSHSharedAction" Value="remove" Sequence="execute" After="ResolveSharedInstall"><![CDATA[$SshAgentComponent = 2 AND ?SshAgentComponent = 3]]></SetProperty>
+        <SetProperty Id="OpenSSHFeatureArguments" Value="-ServerAction '[OpenSSHServerAction]' -ClientAction '[OpenSSHClientAction]' -SharedAction '[OpenSSHSharedAction]'" Sequence="execute" After="ResolveSharedRemove" />
+        <SetProperty Id="OpenSSHPreInstall" Sequence="execute" Before="OpenSSHPreInstall" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[PreInstallCommand] '[INSTALLFOLDER]' '[REMOVE]' '[KEEP_INBOX_OPENSSH]' [OpenSSHFeatureArguments]&quot;" />
         <CustomAction Id="OpenSSHPreInstall" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
 
         <!-- ACTIVE_SESSIONS=abort: an immediate check before InstallValidate (so before anything is changed and before
@@ -152,7 +164,7 @@
              an SSH session. The script names the sessions in the log (lines "preinstall: error: ..."); it runs as the
              installing user, and fails closed when it cannot list the processes. close (the default) ends them. -->
         <Property Id="ACTIVE_SESSIONS" Value="close" Secure="yes" />
-        <SetProperty Action="SetOpenSSHCheckSessionsCommand" Id="$(var.QuietExecCmdLine)" Sequence="execute" Before="OpenSSHCheckSessions" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[PreInstallCommand] '[INSTALLFOLDER]' '[REMOVE]' '' sessions&quot;" />
+        <SetProperty Action="SetOpenSSHCheckSessionsCommand" Id="$(var.QuietExecCmdLine)" Sequence="execute" Before="OpenSSHCheckSessions" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[PreInstallCommand] '[INSTALLFOLDER]' '[REMOVE]' '' sessions [OpenSSHFeatureArguments]&quot;" />
         <CustomAction Id="OpenSSHCheckSessions" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="immediate" Return="check" />
 
         <!-- The sshd firewall rule (server.wxs) belongs to the package: the removal of the old package deletes it and this
@@ -194,7 +206,7 @@
         <SetProperty Id="OpenSSHSshdPort" Sequence="execute" Before="OpenSSHSshdPort" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' port -SshdPort '[SSHD_PORT]'&quot;" />
         <CustomAction Id="OpenSSHSshdPort" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
 
-        <!-- OpenSSH Server PN Manager (server.wxs) needs .NET Framework 4.5 or later, whose setup writes this value. Without it
+        <!-- OpenSSH Server PN Manager (shared.wxs) needs .NET Framework 4.5 or later, whose setup writes this value. Without it
              the two manager steps below are skipped: the manager cannot start, so nothing can have set up its tasks, and the
              start would only show the message of the .NET Framework - for the uninstall step, which runs as LocalSystem where
              no one can close that window, a wait without end. -->
@@ -214,37 +226,30 @@
         <!-- After a first installation of the Server feature run with its window (double-click, msiexec /i; not /quiet,
              /passive or /qb, not an upgrade, a downgrade or a repair), the manager opens its setup wizard. While the files
              are installed, OpenSSHWizardRequest (deferred, LocalSystem) runs the manager with "agent open-wizard", which
-             leaves a request in %ProgramData%\ssh\manager that only administrators can read; after InstallFinalize,
-             OpenSSHOpenWizard starts the installed OpenSSHServerPNManager.exe through the shell as the installing user (the
-             manager asks for administrator rights as at every start), and the manager takes a request younger than 15
-             minutes and opens the wizard. WixShellExec passes no arguments, hence the request; it cannot start the wizard's
-             Start-menu shortcut instead, since WixCA is a 32-bit DLL and a 32-bit process resolves a shortcut into the 64-bit
-             Program Files as Program Files (x86) (ShellExec returned 3, path not found, in CI run 36316791081); and whether
-             msiexec.exe started the manager cannot be told reliably, as the process that did may have ended (CI run
-             36318071657, Windows 11 on ARM64). OPEN_WIZARD=0 turns it off. Neither step ever fails the installation. -->
+             leaves a protected setup request. After InstallFinalize, OpenSSHOpenWizard starts the installed
+             asInvoker executable in wizard mode as the installing user. Program explicitly requests elevation
+             for the wizard. A file custom action passes the argument directly and does not resolve a shortcut
+             through the 32-bit WiX shell helper. OPEN_WIZARD=0 turns it off. Neither step fails installation. -->
         <Property Id="OPEN_WIZARD" Value="1" Secure="yes" />
         <SetProperty Id="OpenSSHFirstInstall" Value="1" Sequence="execute" After="FindRelatedProducts"><![CDATA[NOT (Installed OR OPENSSH_PREVIOUS_INSTALLED OR OPENSSH_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchA)_INSTALLED OR OPENSSH_$(var.OtherArchA)_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchB)_INSTALLED OR OPENSSH_$(var.OtherArchB)_NEWER_INSTALLED)]]></SetProperty>
-        <Property Id="WixShellExecTarget" Value="[#OpenSSHServerPNManager.exe]" />
         <SetProperty Id="OpenSSHWizardRequest" Sequence="execute" Before="OpenSSHWizardRequest" Value="&quot;[INSTALLFOLDER]OpenSSHServerPNManager.exe&quot; --agent open-wizard" />
         <CustomAction Id="OpenSSHWizardRequest" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
-        <CustomAction Id="OpenSSHOpenWizard" BinaryKey="WixCA" DllEntry="WixShellExec" Execute="immediate" Return="ignore" Impersonate="yes" />
+        <CustomAction Id="OpenSSHOpenWizard" FileKey="OpenSSHServerPNManager.exe" ExeCommand="--wizard" Execute="immediate" Return="asyncNoWait" Impersonate="yes" />
 
-        <!-- OpenSSHPreInstall (and with ACTIVE_SESSIONS=abort, OpenSSHCheckSessions) runs for a first install or upgrade, a
-             repair (files are rewritten) and any removal; it is skipped for a maintenance run that only adds features, which
-             replaces no file and must not end open sessions. The firewall steps run whenever the Server feature is installed
-             in this transaction; OpenSSHFirewallProfiles runs after the WiX firewall action (scheduled by
-             $(var.FirewallSchedAction)) has created the rule. -->
+        <!-- Cleanup follows actual feature/component actions, including adding Server to a client-only install.
+             Adding Client alone cannot stop a retained server. The session check runs only when Server changes.
+             Firewall steps run when Server is installed in this transaction. -->
         <InstallExecuteSequence>
-            <Custom Action="OpenSSHCheckSessions" Before="InstallValidate"><![CDATA[ACTIVE_SESSIONS ~= "abort" AND (NOT Installed OR REMOVE OR REINSTALL)]]></Custom>
+            <Custom Action="OpenSSHCheckSessions" Before="InstallValidate"><![CDATA[ACTIVE_SESSIONS ~= "abort" AND OpenSSHServerAction <> "none"]]></Custom>
             <Custom Action="OpenSSHFirewallSaveRollback" After="InstallInitialize"><![CDATA[&Server = 3]]></Custom>
             <Custom Action="OpenSSHFirewallSave" After="OpenSSHFirewallSaveRollback"><![CDATA[&Server = 3]]></Custom>
             <InstallExecute After="OpenSSHFirewallSave" />
             <RemoveExistingProducts After="InstallExecute" />
-            <Custom Action="OpenSSHPreInstall" After="RemoveExistingProducts"><![CDATA[NOT Installed OR REMOVE OR REINSTALL]]></Custom>
+            <Custom Action="OpenSSHPreInstall" After="RemoveExistingProducts"><![CDATA[OpenSSHServerAction <> "none" OR OpenSSHClientAction <> "none" OR OpenSSHSharedAction <> "none"]]></Custom>
             <Custom Action="OpenSSHFirewallProfiles" After="$(var.FirewallSchedAction)"><![CDATA[&Server = 3]]></Custom>
             <Custom Action="OpenSSHFirewallCommit" After="OpenSSHFirewallProfiles"><![CDATA[&Server = 3]]></Custom>
             <Custom Action="OpenSSHSshdPort" After="StartServices"><![CDATA[SSHD_PORT AND &Server = 3]]></Custom>
-            <Custom Action="OpenSSHManagerUninstall" Before="OpenSSHPreInstall"><![CDATA[&Server = 2 AND NOT UPGRADINGPRODUCTCODE AND NETFX45_RELEASE]]></Custom>
+            <Custom Action="OpenSSHManagerUninstall" Before="OpenSSHPreInstall"><![CDATA[OpenSSHServerAction = "remove" AND NOT UPGRADINGPRODUCTCODE AND NETFX45_RELEASE]]></Custom>
             <Custom Action="OpenSSHWizardRequest" Before="InstallFinalize"><![CDATA[OPEN_WIZARD = "1" AND UILevel >= 4 AND &Server = 3 AND NETFX45_RELEASE AND OpenSSHFirstInstall]]></Custom>
             <Custom Action="OpenSSHOpenWizard" After="InstallFinalize"><![CDATA[OPEN_WIZARD = "1" AND UILevel >= 4 AND &Server = 3 AND NETFX45_RELEASE AND OpenSSHFirstInstall]]></Custom>
         </InstallExecuteSequence>

@@ -627,9 +627,9 @@ namespace OpenSSHServerPNManager
         public static bool IsAuthorizedForMe(string publicLine)
         {
             var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            var file = Ssh.AuthorizedKeysFileFor(LoginName(), home) ?? (Elevation.IsAdministrator() ? Ssh.AdminKeysPath : Keys.UserKeysPath(home));
+            var files = Ssh.AuthorizedKeysFilesFor(LoginName(), home);
             var blob = Keys.Blob(publicLine);
-            return Keys.Read(file).Any(k => Keys.Blob(k.Line) == blob);
+            return files.Any(file => Keys.Read(file).Any(k => Keys.Blob(k.Line) == blob));
         }
 
         /// <summary>The ssh client's rule (w32-sshfileperm.c): owner is the user, SYSTEM or Administrators, and nobody else has an allow entry.</summary>
@@ -694,7 +694,12 @@ namespace OpenSSHServerPNManager
         public static string AuthorizeForCurrentUser(string publicLine, out bool alreadyPresent)
         {
             var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            var target = Ssh.AuthorizedKeysFileFor(LoginName(), home) ?? (Elevation.IsAdministrator() ? Ssh.AdminKeysPath : Keys.UserKeysPath(home));
+            var files = Ssh.AuthorizedKeysFilesFor(LoginName(), home);
+            if (files.Count == 0) throw new ConfigException("This account has AuthorizedKeysFile none. Enable file-based public keys before authorizing a key.");
+            var blob = Keys.Blob(publicLine);
+            var target = files.FirstOrDefault(file => Keys.Read(file).Any(key => Keys.Blob(key.Line) == blob));
+            if (target != null) { alreadyPresent = true; return target; }
+            target = files[0];
             var r = Keys.AddLines(target, new[] { publicLine }, IsAdminKeysFile(target) ? null : WindowsIdentity.GetCurrent().User);
             alreadyPresent = r[0] == 0;
             Log.Info("Authorized key " + Keys.Blob(publicLine).Substring(0, Math.Min(16, Keys.Blob(publicLine).Length)) + "... in " + target + (alreadyPresent ? " (already present)" : ""));
@@ -742,7 +747,8 @@ namespace OpenSSHServerPNManager
                 Directory.CreateDirectory(dir);
                 var user = LoginName();
                 var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                target = Ssh.AuthorizedKeysFileFor(user, home) ?? Ssh.AdminKeysPath;
+                target = Ssh.AuthorizedKeysFileFor(user, home);
+                if (target == null) throw new ConfigException("This account has AuthorizedKeysFile none; the key test cannot authorize temporary keys.");
                 snapshots.Add(FileSnapshot.Take(target)); snapshots.Add(FileSnapshot.Take(target + ".bak"));
                 var owner = IsAdminKeysFile(target) ? null : WindowsIdentity.GetCurrent().User;
                 int port = SshdConfig.Load().EffectivePort;

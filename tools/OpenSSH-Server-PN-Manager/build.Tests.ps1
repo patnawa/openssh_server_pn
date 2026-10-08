@@ -18,10 +18,18 @@ try {
     $probe = Join-Path $testDir 'compiler-probe.ps1'
     [IO.File]::WriteAllText($probe, 'throw ("compiler-probe: " + (($args | Where-Object { $_ -like "/out:*" }) -join ";"))')
     $message = ''
-    try { & $build -Csc $probe -OutDir $outDir } catch { $message = $_.Exception.Message }
+    try { & $build -Csc $probe -ReferenceDir $testDir -OutDir $outDir } catch { $message = $_.Exception.Message }
     $expected = 'compiler-probe: /out:' + (Join-Path $outDir 'OpenSSHServerPNManager.exe')
     if ($message -eq $expected) { Write-Output 'PASS: explicit compiler is invoked with the requested output path' }
     else { $failed++; Write-Output "FAIL: explicit compiler was not invoked ($message)" }
+
+    $lock = Get-Content (Join-Path $PSScriptRoot 'build-toolchain.json') -Raw | ConvertFrom-Json
+    $cached = Join-Path $testDir ($lock.packages[0].id + '.' + $lock.packages[0].version + '.nupkg')
+    [IO.File]::WriteAllText($cached, 'tampered compiler archive')
+    $message = ''
+    try { & (Join-Path $PSScriptRoot 'Restore-Toolchain.ps1') -Cache $testDir -Destination (Join-Path $testDir 'restore') } catch { $message = $_.Exception.Message }
+    if ($message -like 'Cached package hash mismatch:*') { Write-Output 'PASS: changed cached toolchain archive is rejected before extraction' }
+    else { $failed++; Write-Output "FAIL: cached toolchain integrity was not checked ($message)" }
 } finally {
     # testDir is a freshly generated direct child of the system temporary directory.
     $resolved = [IO.Path]::GetFullPath($testDir)

@@ -2,7 +2,7 @@ name: OpenSSH
 
 # Builds the server and client (src/) for x64, x86 and ARM64 and packages the MSIs, runs the unit tests,
 # installs the packages on Windows Server 2022 and 2025 (x64) and Windows 11 on ARM (ARM64), and runs the
-# upstream Pester end-to-end tests (not gating yet). A tag v<version>, where <version> is the FILEVERSION in
+# focused SSH/SFTP interoperability gates and the broader upstream Pester suite (informational). A tag v<version>, where <version> is the FILEVERSION in
 # src/contrib/win32/openssh/version.rc, also creates a DRAFT GitHub release with the MSIs, the management
 # console, SHA256SUMS.txt, a CycloneDX SBOM and signed provenance attestations; a person reviews and
 # publishes it. docs/RELEASING.md describes the process.
@@ -16,16 +16,18 @@ on:
     paths:
       - 'src/**'
       - '.github/workflows/openssh.yml'
+      - '.github/workflows/manager.yml'
       - '.github/scripts/**'
       - 'tools/release/**'
-      - 'tools/OpenSSH-Server-PN-Manager/bin/**'   # the MSI installs the committed manager
+      - 'tools/OpenSSH-Server-PN-Manager/**'
   pull_request:
     paths:
       - 'src/**'
       - '.github/workflows/openssh.yml'
+      - '.github/workflows/manager.yml'
       - '.github/scripts/**'
       - 'tools/release/**'
-      - 'tools/OpenSSH-Server-PN-Manager/bin/**'   # the MSI installs the committed manager
+      - 'tools/OpenSSH-Server-PN-Manager/**'
   workflow_dispatch:
 
 permissions:
@@ -62,6 +64,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify the upstream patch inventory
+        run: ./tools/release/Test-UpstreamInventory.ps1
+
       - name: Read the versions
         id: v
         run: |
@@ -81,9 +86,17 @@ jobs:
           "version=$version", "upgrade_version=$upgrade", "vcpkg_baseline=$baseline" | Add-Content -Path $env:GITHUB_OUTPUT
           Write-Host "version $version, upgrade test $upgrade, vcpkg baseline $baseline"
 
+  manager:
+    uses: ./.github/workflows/manager.yml
+    secrets: inherit
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
   build:
     name: Build ${{ matrix.arch }}
-    needs: version
+    needs: [version, manager]
     runs-on: windows-2022
     timeout-minutes: 120
     strategy:
@@ -114,6 +127,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Download the tested manager
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: manager-tested
+          path: ${{ runner.temp }}/manager
+
+      - name: Verify manager artifact hashes
+        shell: bash
+        working-directory: ${{ runner.temp }}/manager
+        run: sha256sum -c SHA256SUMS.txt
 
       - name: Prepare paths
         id: paths
@@ -223,8 +247,7 @@ jobs:
           Copy-Item "src/contrib/win32/openssh/vcpkg_installed/$triplet/$triplet/bin/libcrypto.*" "src/bin/$env:BIN_FOLDER/Release" -Force
           (Get-Item "src/bin/$env:BIN_FOLDER/Release/libcrypto.dll").VersionInfo | Format-List FileVersion, ProductName
 
-      # ---- Optional Authenticode signing (docs/RELEASING.md). Runs for tags only, and only when the repository
-      # ---- variable SIGNING_METHOD is set: trusted-signing (Azure Artifact Signing) or pfx (certificate file).
+      # Release tags require a supported signing method in the manager job before this job starts.
       - name: Sign the binaries (Azure Artifact Signing)
         if: vars.SIGNING_METHOD == 'trusted-signing' && github.ref_type == 'tag'
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
@@ -255,6 +278,15 @@ jobs:
           $files = Get-ChildItem "src/bin/$env:BIN_FOLDER/Release/*" -Include *.exe, *.dll | ForEach-Object FullName
           ./.github/scripts/Invoke-Signtool.ps1 -Path $files
 
+      - name: Verify every signed native binary
+        if: github.ref_type == 'tag'
+        env:
+          SIGNING_CERTIFICATE_THUMBPRINT: ${{ vars.SIGNING_CERTIFICATE_THUMBPRINT }}
+        run: |
+          $files = @(Get-ChildItem "src/bin/$env:BIN_FOLDER/Release/*" -Include *.exe, *.dll | ForEach-Object FullName)
+          if (-not $files.Count) { throw 'No native signing targets found.' }
+          ./.github/scripts/Test-Authenticode.ps1 -Path $files
+
       - name: Package the MSI
         env:
           UPGRADE_MSI_BUILD: ${{ matrix.upgrade-msi }}
@@ -263,6 +295,9 @@ jobs:
           if ($env:ARCH -eq 'x86') {
             # MSBuild writes x86 binaries to bin\Win32, WiX binds them from bin\x86 (docs/BUILDING.md, section 5).
             $x86 = Join-Path $src 'bin/x86/Release'
+            $expectedRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'src/bin')).TrimEnd('\') + '\'
+            $x86 = [IO.Path]::GetFullPath($x86)
+            if (-not $x86.StartsWith($expectedRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected x86 staging path.' }
             Remove-Item -LiteralPath $x86 -Recurse -Force -ErrorAction SilentlyContinue
             New-Item -ItemType Directory -Force -Path $x86 | Out-Null
             Copy-Item -Path (Join-Path $src 'bin/Win32/Release/*') -Destination $x86 -Recurse -Force
@@ -273,7 +308,7 @@ jobs:
           Write-Host "MSBuild: $msbuild"
           function Build-Msi([string]$ProductVersion, [string]$Destination) {
             # /t:Rebuild: WiX tracks only file inputs, so an incremental build would keep the previous ProductVersion.
-            & $msbuild (Join-Path $src 'contrib/win32/install/openssh.wixproj') /t:Rebuild /p:Configuration=Release "/p:Platform=$env:ARCH" "/p:ProductVersion=$ProductVersion" "/p:WixToolPath=$env:WIX_DIR" /nologo /verbosity:minimal
+            & $msbuild (Join-Path $src 'contrib/win32/install/openssh.wixproj') /t:Rebuild /p:Configuration=Release "/p:Platform=$env:ARCH" "/p:ProductVersion=$ProductVersion" "/p:WixToolPath=$env:WIX_DIR" "/p:ManagerBinDir=$env:RUNNER_TEMP/manager" /nologo /verbosity:minimal
             if ($LASTEXITCODE) { Write-Host "::error::MSBuild failed for ProductVersion $ProductVersion"; exit 1 }
             Copy-Item (Join-Path $src "contrib/win32/install/bin/$env:ARCH/Release/openssh.msi") $Destination
           }
@@ -337,6 +372,12 @@ jobs:
             "| UpgradeCode | ``$($info.UpgradeCode)`` |", "| SHA-256 | ``$($info.Sha256)`` |",
             "| Authenticode | $($signature.Status) |", ''
           ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+      - name: Verify the tested manager and signatures inside the MSI
+        env:
+          SIGNING_CERTIFICATE_THUMBPRINT: ${{ vars.SIGNING_CERTIFICATE_THUMBPRINT }}
+        run: |
+          ./.github/scripts/Test-MsiPayload.ps1 -Msi (Join-Path $env:OUT_DIR "$env:MSI_NAME-v$env:VERSION.msi") -ManagerDir "$env:RUNNER_TEMP/manager" -Dark (Join-Path $env:WIX_DIR 'dark.exe') -RequireSignatures:($env:GITHUB_REF_TYPE -eq 'tag')
 
       # The installer's own tests that need no installation (src/contrib/win32/install/tests), when present: the
       # pre-install script's functions, and the built package's tables and launch conditions. Windows PowerShell,
@@ -406,7 +447,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            tools/OpenSSH-Server-PN-Manager
 
       - name: Download the binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -419,11 +462,14 @@ jobs:
       - name: Run the unit tests
         run: ./.github/scripts/Invoke-UnitTests.ps1 -BinPath (Join-Path $env:RUNNER_TEMP 'bin') -Label $env:ARCH -TimeoutMinutes 4
 
+      - name: AuthorizedKeysFile configuration dump round trips
+        run: ./tools/OpenSSH-Server-PN-Manager/Test-ConfigDump.ps1 -Sshd (Join-Path $env:RUNNER_TEMP 'bin/sshd.exe')
+
       # libcrypto arithmetic, curves and random numbers, and each ssh-keygen key type, one process per probe with a
       # timeout: tells a broken library apart from a broken test, and names the primitive when the tests hang.
       - name: Crypto probes
         if: ${{ !cancelled() }}
-        run: ./.github/scripts/Test-CryptoProbes.ps1 -BinPath (Join-Path $env:RUNNER_TEMP 'bin') -Label $env:ARCH
+        run: ./.github/scripts/Test-CryptoProbes.ps1 -BinPath (Join-Path $env:RUNNER_TEMP 'bin') -Label $env:ARCH -RequireSuccess
 
   install-test:
     name: Install ${{ matrix.arch }} on ${{ matrix.os }}${{ matrix.powershell && format(' with PowerShell {0}', matrix.powershell) || '' }}
@@ -508,16 +554,19 @@ jobs:
           try { Get-WindowsCapability -Online -Name 'OpenSSH*' | Format-Table Name, State } catch { Write-Host "Get-WindowsCapability: $($_.Exception.Message)" }
           Get-NetFirewallProfile | Format-Table Name, Enabled, DefaultInboundAction
 
+      - name: Client-only installation preserves an in-box server and open session
+        run: ./.github/scripts/Test-ClientOnly.ps1 -Msi (Join-Path $env:MSI_DIR $env:MSI) -LogDir $env:LOG_DIR
+
       - name: Install
         id: install
         run: ./.github/scripts/Test-Installer.ps1 -Scenario Install
 
-      - name: Build OpenSSH Server PN Manager
+      - name: Select the installed, previously tested manager
         id: manager
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
-          & ./tools/OpenSSH-Server-PN-Manager/build.ps1 -OutDir (Join-Path $env:RUNNER_TEMP 'manager')
-          "MANAGER=$(Join-Path $env:RUNNER_TEMP 'manager/OpenSSHServerPNManager.exe')" | Add-Content -Path $env:GITHUB_ENV
+          Import-Module ./.github/scripts/OpenSSHCI.psm1
+          "MANAGER=$(Get-ManagerPath)" | Add-Content -Path $env:GITHUB_ENV
 
       # A GUI-subsystem program: Invoke-ManagerTest waits for it and prints the report file it writes.
       - name: Manager --check
@@ -543,6 +592,15 @@ jobs:
         run: |
           Import-Module ./.github/scripts/OpenSSHCI.psm1
           if ((Invoke-ManagerTest -Exe $env:MANAGER -Mode '--authtest' -ReportDir $env:LOG_DIR) -ne 0) { exit 1 }
+
+      - name: Gating SSH command and SFTP integrity scenarios
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: ./.github/scripts/Test-SshInterop.ps1 -LogDir $env:LOG_DIR
+
+      - name: Recovery task survives termination of the configuration process
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 7
+        run: ./.github/scripts/Test-ConfigurationRecovery.ps1 -Phase Kill -FixtureDir (Join-Path $env:LOG_DIR 'recovery-kill') -DisposableMachine
 
       - name: Upgrade keeps the firewall settings (ADJUST)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -727,19 +785,28 @@ jobs:
           merge-multiple: true
           path: dist
 
-      # The management console is published as committed (its SHA-256 is documented in the README); manager.yml
-      # checks that it matches its source version and whether a fresh build reproduces it.
+      - name: Download the tested manager
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: manager-tested
+          path: ${{ runner.temp }}/manager
+
+      - name: Verify manager artifact hashes
+        shell: bash
+        working-directory: ${{ runner.temp }}/manager
+        run: sha256sum -c SHA256SUMS.txt
+
       - name: SBOM and SHA256SUMS.txt
         run: |
           $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
-          Copy-Item tools/OpenSSH-Server-PN-Manager/bin/OpenSSHServerPNManager.exe, tools/OpenSSH-Server-PN-Manager/bin/OpenSSHServerPNManager.exe.config -Destination $dist
+          Copy-Item "$env:RUNNER_TEMP/manager/OpenSSHServerPNManager.exe", "$env:RUNNER_TEMP/manager/OpenSSHServerPNManager.exe.config", "$env:RUNNER_TEMP/manager/build-info.json" -Destination $dist
           $files = "OpenSSH-Win64-v$env:VERSION.msi", "OpenSSH-Win32-v$env:VERSION.msi", "OpenSSH-ARM64-v$env:VERSION.msi", 'OpenSSHServerPNManager.exe', 'OpenSSHServerPNManager.exe.config'
           foreach ($f in $files) { if (-not (Test-Path -LiteralPath (Join-Path $dist $f))) { Write-Host "::error::$f is missing"; exit 1 } }
           $sbom = "OpenSSH-Server-PN-v$env:VERSION.cdx.json"
           $env:SOURCE_DATE_EPOCH = (git log -1 --format=%ct).Trim()
           ./tools/release/New-Sbom.ps1 -File ($files | ForEach-Object { Join-Path $dist $_ }) -OutFile (Join-Path $dist $sbom)
           # One line per file: lower-case hash, two spaces, name; LF line endings, so that sha256sum -c reads it.
-          $sums = ($files + $sbom) | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath (Join-Path $dist $_) -Algorithm SHA256).Hash.ToLowerInvariant(), $_ }
+          $sums = ($files + $sbom + 'build-info.json') | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath (Join-Path $dist $_) -Algorithm SHA256).Hash.ToLowerInvariant(), $_ }
           [IO.File]::WriteAllText((Join-Path $dist 'SHA256SUMS.txt'), ($sums -join "`n") + "`n")
           Get-Content (Join-Path $dist 'SHA256SUMS.txt')
           @('### Release files', '', '```', $sums, '```', '') | Add-Content -Path $env:GITHUB_STEP_SUMMARY
@@ -791,6 +858,7 @@ jobs:
             dist/OpenSSHServerPNManager.exe
             dist/OpenSSHServerPNManager.exe.config
             dist/*.cdx.json
+            dist/build-info.json
             dist/SHA256SUMS.txt
 
       - name: Attest the SBOM of the MSIs
@@ -805,7 +873,7 @@ jobs:
         run: |
           $repo = $env:GITHUB_REPOSITORY
           $sums = Get-Content dist/SHA256SUMS.txt
-          $signing = if ($env:SIGNED -eq 'true') { 'The MSIs and the binaries in them are Authenticode-signed.' } else { 'The files are **unsigned**: compare the SHA-256 before installing.' }
+          $signing = if ($env:SIGNED -eq 'true') { 'The MSIs, their executable payloads, and the standalone manager are Authenticode-signed and time-stamped.' } else { 'The files are **unsigned**: compare the SHA-256 before installing.' }
           $notes = @(
             "OpenSSH Server PN $env:VERSION. Changes and test results: [docs/CHANGELOG.md](https://github.com/$repo/blob/$env:TAG/docs/CHANGELOG.md).", '',
             '| File | SHA-256 |', '|---|---|'

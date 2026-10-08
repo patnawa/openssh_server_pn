@@ -13,6 +13,64 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
+## 10.5.6.0 / Manager 2.3.0 testing preview (2026-10-08)
+
+October audit follow-up. OpenSSH remains 10.5p1. Available as **unsigned,
+testing-only prereleases**:
+[preview-v10.5.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0)
+and [preview-manager-v2.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0).
+The artifacts were built and tested locally; these previews have no GitHub-hosted
+build provenance or artifact attestations. Stable 10.5.5.0 / Manager 2.2.1 and its
+release records are unchanged. The preview tags are not marked as latest stable.
+See [the audit](AUDIT-2026-10-08.md) and [acceptance plan](IMPROVEMENT-PLAN.md).
+
+- Client config and known-host edits detect external changes and use atomic writes.
+  Repeated identity files, profile precedence, quoted authorized-key paths and
+  percent tokens are preserved. Profiles have search, effective-settings preview
+  and SFTP launching. The native authorized-key path dump quotes values so multiple
+  paths can be read back without ambiguity.
+- The client workspace runs as the desktop user; server administration explicitly
+  elevates. Client-only packages include the shared GUI and do not perform server
+  cleanup. The wizard and server shortcuts pass their requested modes explicitly.
+- Restart recovery is recorded independently of the GUI, with protected state,
+  expected-content checks and a scheduled recovery task. Included-file changes are
+  checked for conflicts. Atomic replacement failures preserve the original file.
+- Endpoint inspection uses `sshd`'s configuration resolver and observed listeners.
+  Automatic blocking defers when endpoint or logged-in peer inspection is incomplete.
+- Incremental transfer parsing preserves open-file context across polls and days,
+  distinguishes separate same-second events, and reports log clear/retention gaps.
+  A durable outbox retries each failed destination without holding the shared state
+  lock during network delivery. Agent health and explicit delivery retry are visible.
+- Navigation groups related tasks and adapts to narrow windows. Alert save controls
+  stay visible while scrolling. Foreground operations and dialog callbacks use
+  awaited completion; cancellation and window-close behavior have explicit checks.
+- Compiler and .NET reference packages are pinned by SHA-256. CI passes the tested
+  manager artifact to packaging and verifies the extracted MSI payload. Source
+  changes trigger integration tests. Release signing is required by tag workflows,
+  and local upstream patches have a checked inventory.
+
+Local validation passed **158 manager unit tests and 49 automated GUI checks**,
+native x64, x86 and ARM64 compilation, focused native parser/dumper and crypto probes,
+installer-script and extracted-package checks. The full counts and commands are
+maintained in the acceptance plan. Elevated symlink, authentication/SFTP, install/upgrade,
+pending-reboot and recovery-after-reboot execution is pending a disposable VM, as
+requested by the owner. ARM64 binaries were cross-compiled on x64; they were not
+executed locally. No signing identity is configured, so signed release execution
+is also pending. Manual keyboard, screen-reader, high-contrast and multiple-monitor
+acceptance remains pending. Automated [VM drivers](VALIDATION.md) are prepared;
+static checks do not establish that those scenarios passed.
+
+| Preview file | SHA-256 |
+|---|---|
+| `OpenSSH-Win64-v10.5.6.0.msi` | `7ED68D6064ADEA6AC8764CD8585CA22E94D3BB12527CF1E2C140EFD66D0C4E44` |
+| `OpenSSH-Win32-v10.5.6.0.msi` | `43A4FE361633A6AA2DE9B0F129502C83C17DC390C35F14173C25787EFD387D2C` |
+| `OpenSSH-ARM64-v10.5.6.0.msi` | `F84F18D117970C250D856336504E3388FB39715E92DC531827F985E9A4C1DCA1` |
+| `OpenSSHServerPNManager.exe` (2.3.0) | `6247598DA69E8EB0EA5648ABA315FA9457C9AEE766CC35A3230C8D98ADA46B74` |
+
+The preview releases include `SHA256SUMS.txt`. Keep the manager's `.exe.config`
+beside its executable. Use these builds only for testing until the pending
+acceptance and signing gates are completed.
+
 ## 10.5.5.0 / Manager 2.2.1 (2026-09-29)
 
 Audit maintenance release. The packages include Manager 2.2.1; OpenSSH 10.5p1 and the bundled

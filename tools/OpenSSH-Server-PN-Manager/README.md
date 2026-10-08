@@ -1,10 +1,26 @@
 # OpenSSH Server PN Manager
 
-Version 2.2.1 is the audit maintenance update: corrected partner radio choices, preserved
-disabled firewall rules in the wizard, saved shell-option edits, dirty-state warnings for
-Alerts and Firewall, stale-refresh protection, and fixes for scaled dark tabs and high contrast.
-Configuration, transfer reporting, and background-job fixes are in the
-[changelog](../../docs/CHANGELOG.md). The unit suite now contains 100 tests.
+Version **2.3.0 is an unsigned, testing-only preview** of the October audit follow-up.
+Download [preview-manager-v2.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0),
+or the [10.5.6.0 preview packages](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0).
+Keep `OpenSSHServerPNManager.exe.config` beside the executable and compare its hash
+with `SHA256SUMS.txt`. Stable Manager 2.2.1 / product 10.5.5.0 remains unchanged;
+the previews are not marked as latest stable.
+
+The preview was built and tested locally: **158 unit tests and 49 automated GUI
+checks passed**. It has no GitHub-hosted build provenance or artifact attestation.
+Manager executable SHA-256:
+`6247598DA69E8EB0EA5648ABA315FA9457C9AEE766CC35A3230C8D98ADA46B74`.
+
+It adds a normal-user client
+workspace, grouped navigation, guarded configuration and trust-file edits, persistent
+restart recovery, incremental transfer history, notification retries and agent health.
+See the [audit](../../docs/AUDIT-2026-10-08.md),
+[verification plan](../../docs/IMPROVEMENT-PLAN.md) and [changelog](../../docs/CHANGELOG.md).
+Use a disposable test machine. Elevated installer, authentication/SFTP and actual
+SYSTEM recovery after process termination/reboot remain pending, along with signing,
+ARM64 runtime execution and manual accessibility/multiple-monitor acceptance.
+The [VM validation guide](../../docs/VALIDATION.md) describes the outstanding runs.
 
 <img src="icon/app-256.png" alt="OpenSSH Server PN Manager icon: a blue tile with a white key whose head is a terminal showing a >_ prompt" width="96" align="right">
 
@@ -19,6 +35,20 @@ service definition.
 Up to version 1.6.0 it was called OpenSSH Server Manager (`OpenSSHServerManager.exe`); version 2.0.0
 takes over its preferences, the rules section of the Authentication tab and the firewall block list.
 
+Start with `--client` to manage the desktop user's SSH profiles, known hosts and
+agent keys. Profiles support search, repeated identity files, an effective `ssh -G`
+preview and SFTP launching. External changes are reported before a save can replace
+them. `--server` and `--wizard` request administrator rights for server operations.
+The server window opens client work in a separate normal-user process. In a
+client-only installation the shared GUI and client shortcut are available without
+running server cleanup.
+
+Navigation groups server settings, access, file exchange, client tools and diagnostics.
+At narrow widths a grouped selector replaces the sidebar. Alerts keeps its save
+controls visible and reports last successful jobs, checkpoint age, backlog, history
+gaps, destination delivery failures and blocking deferral. Failed deliveries can be
+requeued with the saved transport settings; their original recipients are retained.
+
 ![Dashboard](../../docs/images/manager-dashboard.png)
 
 ## What it does
@@ -26,10 +56,10 @@ takes over its preferences, the rules section of the Authentication tab and the 
 | Tab | Functions |
 |---|---|
 | **Dashboard** | Live status of `sshd` and `ssh-agent` (state, PID, start mode), server version, listening endpoints, active session count and peers, SFTP (on or off, transfers logged, SFTP-only accounts, SFTP sessions open), firewall rule summary, host key fingerprints. One-click Start / Stop / Restart, *Test configuration* (`sshd -t`), *Add my public key*, *Generate missing host keys* (`ssh-keygen -A` with correct ACLs), *Connect* (opens `ssh localhost`), *Setup wizard*, Event Viewer and config folder shortcuts. Says when `sshd_config` was saved after `sshd` started, so a restart is needed. Refreshes every 5 seconds in the background, so the window stays responsive. Restart and Stop ask first and leave connected sessions connected: each runs in its own `sshd-session.exe` process. |
-| **Setup wizard** | Offered once at the first start, and opened by the package after a first installation with a window (10.5.4.0 and later); also on the Dashboard, on the Key generator tab, in the menu of the notification area icon, in the Start menu (*OpenSSH Server PN setup wizard*) and with `--wizard`: the port and the network profiles of the firewall rule, a key for you (*Create a key for me* makes one protected by a passphrase, allows it to log in and offers to export it for the computer you connect from; or add the `.pub` file of a key you have), how accounts log in (keep them, administrators with a key only, or everyone with a key only; the key-only choices need a key authorized for you), the recommended settings, and who may log in (`AllowGroups`). Nothing is written until *Apply*, which goes through the usual preview, backup, restart and keep-or-restore question. |
+| **Setup wizard** | Offered once at the first start, and opened by the package after a first installation with a window (10.5.4.0 and later); also on the Dashboard, on the Key generator tab, in the menu of the notification area icon, in the Start menu (*OpenSSH Server PN setup wizard*) and with `--wizard`: the port and the network profiles of the firewall rule, a key for you (*Create a key for me* makes one protected by a passphrase, allows it to log in and offers to export it for the computer you connect from; or add the `.pub` file of a key you have), how accounts log in (keep them, administrators with a key only, or everyone with a key only; the key-only choices need a key authorized for you), the recommended settings, and who may log in (`AllowGroups`). The configuration and firewall plan is applied through the usual preview, backup, restart and keep-or-restore question. Explicit *Create/Add key* actions write keys immediately. |
 | **Sessions** | Live view of every connection: `sshd-session.exe` PID, owning user, start time, duration, what it does (SFTP, scp, or the shell or command it runs, from the programs the session started) and peer address, IPv4 and IPv6 (resolved through the TCP connection tables). Select one or several; *Disconnect selected* (or Delete) and *Disconnect all* end sessions immediately, with confirmation. Refreshes every 5 seconds. |
 | **Settings** | Form-based editing of the directives that matter day to day: port and listen address, empty passwords, allow and deny lists for users and groups, authentication limits and timeouts, connection throttling (`MaxStartups`, `PerSourcePenalties`, exempt list), forwarding and TTY policy, banner, logging destination and level, algorithms, RSA minimum size, PowerShell remoting subsystem, and the default shell (registry). Each field shows the effective value reported by `sshd -T`. A save writes only the fields you changed. `Port` and `ListenAddress` edit the first line and keep the others. The Allow and Deny lists show every line of the file together, because `sshd` adds them up, and a save writes them as one line. A value that `sshd` does not use after the save (an `Include` or a `Match all` block sets it first) is reported, and a note says when the file includes other files. Numbers and name lists are checked as you type. *Backups* compares the backups kept at every save with the current file and restores one. |
-| *All editing tabs* | Every save of `sshd_config` (Settings, Authentication, text tab, Hardening, key generator, wizard) shows the changes first, added and removed lines with their context, and can be cancelled. It warns when your own account would be refused afterwards (`DenyUsers`, `AllowUsers`, `DenyGroups`, `AllowGroups`, worked out the way `sshd` does it). It does not write over a file that another program changed after the window read it, unless you say so. After *Save and restart* the server is checked (listening, answering with an SSH banner, the firewall rule admits the port, your access) and you are asked to keep the new settings: without an answer within 60 seconds, or with *Restore*, the previous file comes back and `sshd` restarts with it. A tab with changes not saved shows `*` after its name; closing the window asks first. Long operations run in the background with a progress bar, so the window never shows "Not Responding". |
+| *All editing tabs* | Every save of `sshd_config` (Settings, Authentication, text tab, Hardening, key generator, wizard) shows the changes first, added and removed lines with their context, and can be cancelled. It warns when your own account would be refused afterwards (`DenyUsers`, `AllowUsers`, `DenyGroups`, `AllowGroups`, worked out the way `sshd` does it). It does not write over a file that another program changed after the window read it, unless you say so. After *Save and restart* the server is checked (listening, answering with an SSH banner, the firewall rule admits the port, your access) and you are asked to keep the new settings: without an answer within 60 seconds, or with *Restore*, the previous file comes back and `sshd` restarts with it. A tab with changes not saved shows `*` after its name; closing the window asks first. Long operations run in the background with a progress bar, with explicit asynchronous completion and cancellation for supported reads. |
 | **Authentication** | Chooses how accounts log in: **Windows authentication** (the Windows account name and password, checked by Windows), **public key**, and **Kerberos** single sign-on on domain members. With Windows authentication and public key both ticked, either one is enough, or both are required: the key first, then the password. **Rules for single users or groups** override this, in order: the first rule that matches an account applies. *Show its login methods* works out the methods of any account from the settings on the tab, before they are applied, the way `sshd` does; *Ask the running server* shows what the server offers an account. *Apply* warns before you would lock yourself out, then saves with the usual preview, check, backup and keep-or-restore question, and asks the running server which methods it now offers you. See [Login methods](#login-methods). |
 | **SFTP** | SFTP on or off (`Subsystem sftp`), transfer logging in the event log, and **SFTP-only accounts and groups**: they transfer files and do nothing else, optionally confined to a folder they see as `/` (`%u` for one folder per account), optionally download only. The first rule that matches an account applies. *Show its SFTP access* works out what the settings mean for any account. *Apply* creates the folders and gives the accounts access, then saves with the usual preview, check, backup and keep-or-restore question. See [SFTP](#sftp). |
 | **Partners** | SFTP accounts for people outside the company: each one exchanges files in a folder of its own and does nothing else. *Set up partner accounts* (once) creates three local groups and writes their rules into `sshd_config`; after that, adding, changing or removing a partner never touches `sshd_config` or restarts `sshd`. *New partner* creates the local account with a generated password that is shown once and not stored, its folder, and optionally a last day, download-only access or key-only login. *Edit*, *Reset password*, *Disable* / *Enable* (ends its open sessions), *Unlock*, *Keys* (the partner's public keys), *Delete* (its folder stays unless you tick it), *Open folder*. The list shows contact, company, access, login method, status, last day, last logon and this month's uploads and downloads; *Transfers* opens the transfer history. See [SFTP partners](#sftp-partners). |
@@ -39,7 +69,7 @@ takes over its preferences, the rules section of the Authentication tab and the 
 | **Client** | The ssh client of your account, for connections from this computer. The entries of `known_hosts` with their fingerprints: remove them, or *Add a server's keys*, which reads them with `ssh-keyscan` and adds them only after you compared the fingerprints. The `Host` blocks of `%USERPROFILE%\.ssh\config`: add, edit, remove, connect (ssh starts without administrator rights, since your configuration can run commands); other lines of a block are kept, and the file stays readable by you only. The keys in `ssh-agent`: add a key (its passphrase goes through `SSH_ASKPASS`), remove one, start the agent. |
 | **Firewall** | Shows the inbound rule for `sshd.exe`; enable or disable it, choose Domain / Private / Public profiles and the port; create the rule if it is missing; remove it. Asks first when the rule would be switched off or would no longer allow the port `sshd` listens on. A rule with several ports keeps its port list; you are asked before a port is added or the list is replaced. Uses the Windows Firewall COM API, not `netsh` text parsing. |
 | **Logs** | Events of the *OpenSSH/Operational* event log for the last hour, 24 hours, 7 or 30 days, or all, with a text filter, shortcuts for failed and accepted logins and for SFTP transfers, *Copy selected*, and *Export* to CSV, HTML or text. Reading can be cancelled. Enter or a double-click shows an event in full. *Failed logins by address* groups failed and abandoned logins by client address (count, first and last time, the account names tried) and keeps a firewall block list: *Block selected* adds addresses to one inbound block rule for `sshd`'s ports, *Unblock selected* removes them. This computer's own addresses are refused, and blocking an address that has an SSH connection open warns first. Also the tail of the file log when `SyslogFacility LOCAL0..7` is used. |
-| **Alerts** | What runs while the window is closed, as two scheduled tasks that run the manager as SYSTEM: e-mail (SMTP with STARTTLS, optional login) and a webhook (Microsoft Teams Workflows, or `{"text": ...}` for Slack, Mattermost and others) when `sshd` stops or runs again, when failed logins pile up, when a partner's files arrive (to the people set for that partner), when the disk of the partners' folders runs low, and a monthly transfer report; automatic blocking of addresses with many failed logins (1 hour, then 24 hours, then 7 days), with a list of addresses never blocked; the nightly transfer archive. *Send a test e-mail* and *Send a test* check the settings. See [Alerts and automatic blocking](#alerts-and-automatic-blocking). |
+| **Alerts** | What runs while the window is closed, as two scheduled tasks that run the manager as SYSTEM: e-mail (SMTP with STARTTLS, optional login) and a webhook (Microsoft Teams Workflows, or `{"text": ...}` for Slack, Mattermost and others) when `sshd` stops or runs again, when failed logins pile up, when a partner's files arrive (to the people set for that partner), when the disk of the partners' folders runs low, and a monthly transfer report; automatic blocking of addresses with many failed logins (1 hour, then 24 hours, then 7 days), with a list of addresses never blocked; the incremental transfer archive. *Send a test e-mail* and *Send a test* check the settings. See [Alerts and automatic blocking](#alerts-and-automatic-blocking). |
 | **Hardening** | 28 checks with OK / WARN / INFO results, 29 with SFTP-only accounts. Service, firewall and host keys; the binaries both services run; a security audit (only administrators can change the program folder, `sshd_config`, the logs, the registry key behind `DefaultShell` and the two services, and nobody else can read the private host keys); whether SSH is reachable on a network that is currently public; whether a Windows password alone is enough although administrator keys exist; keyboard-interactive; `MaxAuthTries`, penalties, throttling, idle timeout, login grace time, minimum RSA size, log level, algorithms, login restriction, banner, forwarding, SFTP (its program exists, transfers are logged) and the folders of SFTP-only accounts. *Fix selected* (or Enter on a warning) fixes the selected warnings: settings in one save with the preview and one restart; the service, host keys, key file permissions and public-network exposure each after a question. Login methods, login restrictions and SFTP open their tab instead of being changed. *Apply recommended settings* sets the idle timeout, `MaxAuthTries 4`, `LoginGraceTime 60`, `RequiredRSASize 2048`, `LogLevel VERBOSE` and `KbdInteractiveAuthentication no`. *Export report* writes the checks as CSV, HTML or text. |
 | **About** | Product, version, publisher and licence, paths and versions of the server, the manager's own log file, links to this project's website, updates and support, *Copy details* (the lines above, for a problem report), and the preferences of your account (`HKCU\Software\OpenSSH Server PN Manager`): appearance (like Windows, light or dark; high contrast always uses its own colours), the preview before a save, the keep-or-restore question after a restart, the icon in the notification area, minimizing to it, and when failed logins cause a notification. |
 
@@ -225,9 +255,10 @@ event log. *Transfers* on the Partners tab lists them by period (today, yesterda
 this month, last month, the last 30 or 365 days) and account, with the client address, and exports
 them as CSV or as an HTML report with totals per account. The setup enlarges the event log to
 100 MB (*Keep more history* in that window does the same on a server set up earlier); with the
-Alerts tab switched on, a nightly task also keeps the transfers in
-`%ProgramData%\ssh\manager\transfers\transfers-<yyyy-MM>.csv` for 365 days, so the history
-survives when the event log is cleared or full. A CSV cell that starts with `=`, `+`, `-` or
+Alerts tab switched on, both Watch and Daily advance a shared checkpoint and keep transfers in
+`%ProgramData%\ssh\transfers\transfers-<yyyy-MM>.csv` for 365 days, so the history
+retains events already collected when the event log is cleared or full. Missing events
+are reported as a history gap; events lost before collection cannot be recovered. A CSV cell that starts with `=`, `+`, `-` or
 `@` gets a `'` first, so that a spreadsheet does not run a file name as a formula.
 
 ## Alerts and automatic blocking
@@ -239,11 +270,12 @@ With the box at the top of the Alerts tab ticked, *Save* sets up two scheduled t
 
 | Task | Runs | Does |
 |---|---|---|
-| `Watch` | Every minute, and at startup | `sshd` stopped or running again; failed logins; automatic blocking; partner uploads; free disk space (once an hour) |
-| `Daily` | Each night at 00:30 | The transfer archive; on the 1st, the monthly report to the admins (HTML, with the transfers as a CSV attachment) |
+| `Watch` | Every minute, and at startup | Advance and archive the journal; retry queued notifications; check service transitions, failed logins, automatic blocking, partner uploads and free disk space (once an hour) |
+| `Daily` | Each night at 00:30 | Advance and archive the journal; retry queued notifications; prune history; on the 1st, prepare the monthly report to the admins (HTML, with the transfers as a CSV attachment) |
 
-Nothing else runs in the background: no service of its own, and no program while the tasks are
-off. The tasks run the manager installed next to `sshd.exe` (10.5.4.0 and later). Where there is
+There is no separate Windows service for these jobs. A pending configuration restart also
+uses an independent recovery task, even if alerts are off. The alert tasks run the manager
+installed next to `sshd.exe` (10.5.4.0 and later). Where there is
 none, the manager copies itself to `%ProgramFiles%\OpenSSH Server PN Manager`, where only
 administrators can change it, since the tasks run it as SYSTEM; once a package installs the
 manager, the next run moves the tasks to that one. Uninstalling the package removes the tasks and
@@ -331,8 +363,9 @@ How the key material is kept safe:
 
 ## Safety design
 
-- Runs elevated (the manifest requests administrator rights; a non-elevated start re-launches
-  itself with a UAC prompt).
+- The manifest uses `asInvoker`. Client work runs as the desktop user; `--server` and
+  `--wizard` explicitly relaunch with a UAC prompt when necessary. Client commands
+  opened from an elevated window use the desktop user's token and environment.
 - Every configuration save is written to a temporary candidate first and validated with
   `sshd -t -f`. Only a configuration that `sshd` accepts replaces the live file. The new file is
   written next to `sshd_config` and swapped in with `ReplaceFile`, which keeps the file's
@@ -348,12 +381,16 @@ How the key material is kept safe:
   checked and you are asked to keep the new settings. Without an answer within 60 seconds (the
   time can be changed, and the question switched off, under About), the previous file comes back,
   like the display settings of Windows: a setting that locks you out also keeps you from answering
-  remotely.
+  remotely. The protected recovery journal and SYSTEM task survive closure of the GUI.
+  The task is armed before restart and associated firewall mutations; it also runs after
+  a reboot. Recovery preserves the prior file bytes and firewall scope, and refuses to
+  overwrite a conflicting external edit. Included file contents and glob membership are
+  checked; Include files themselves are not rewritten by rollback.
 - Destructive actions (stop, restart, remove key, remove or switch off the firewall rule, reset to
   defaults, block an address) ask for confirmation. Nothing runs without a visible result in the
   status bar.
-- All exceptions are caught, shown in a dialog and written to
-  `%LocalAppData%\OpenSSH Server PN Manager\manager.log`; the process never terminates on an error.
+- Operation failures are reported and written to
+  `%LocalAppData%\OpenSSH Server PN Manager\manager.log`.
 - Firewall, ACL and service operations use Windows APIs (COM, `System.Security.AccessControl`,
   `ServiceController`) rather than parsing localized command output.
 - Port changes offer to add the new port to the firewall rule; the old port is closed only when the new settings are kept, and a rolled-back restart also puts the rule back.
@@ -362,16 +399,20 @@ How the key material is kept safe:
 
 | Command | Purpose |
 |---|---|
-| `OpenSSHServerPNManager.exe` | Start the console |
-| `OpenSSHServerPNManager.exe --wizard` | Start the console and open the setup wizard at once (for a shortcut). After a first installation the package starts the manager without arguments, and a request it left makes the manager open the wizard as well |
+| `OpenSSHServerPNManager.exe` | Start the client workspace for a normal user, or server administration when already elevated |
+| `OpenSSHServerPNManager.exe --client` | Open the desktop user's client workspace |
+| `OpenSSHServerPNManager.exe --server` | Open server administration, requesting elevation if needed |
+| `OpenSSHServerPNManager.exe --wizard` | Open server administration and its setup wizard, requesting elevation if needed; used explicitly by the installer and wizard shortcut |
+| `OpenSSHServerPNManager.exe --uitest <folder>` | Run off-screen scale, navigation, keyboard, accessibility-property and layout checks against scratch configuration; save the report and PNG evidence |
+| `OpenSSHServerPNManager.exe --recover-configuration` | Internal scheduled recovery entry point; reads the protected pending transaction |
 | `OpenSSHServerPNManager.exe --agent watch` \| `daily` | What the scheduled tasks of the Alerts tab run, as SYSTEM: the checks of every minute, and those of each night. Writes to `%ProgramData%\ssh\manager\agent.log` |
 | `OpenSSHServerPNManager.exe --agent uninstall` | What the package runs, as SYSTEM, when the Server feature is removed: deletes those tasks, their Task Scheduler folder, and the copy of the manager made for them |
 | `OpenSSHServerPNManager.exe --agent open-wizard` | What the package runs, as SYSTEM, during a first installation with a window: leaves a request in `%ProgramData%\ssh\manager`, which the next start of the manager with administrator rights within 15 minutes takes, opening the setup wizard |
 | `OpenSSHServerPNManager.exe --check [report.txt]` | Print a status report (services, listeners, config test, firewall, host keys, hardening checks); exit code 0 when healthy. A service that runs the in-box binary instead of the installed package counts as a problem |
-| `OpenSSHServerPNManager.exe --unittest [report.txt]` | Run the 100 unit tests: the program logic alone (the package's request for the setup wizard; partners: generated passwords, account names, the rules the setup writes and reads back, `AllowGroups`, the partner dialog, the last day; transfers from `sftp-server` events with the client address, CSV that spreadsheets do not run as formulas, the report and its periods; alerts: networks and the allow list, settings with their secrets sealed, the blocking plan with longer blocks for repeat offenders, uploads batched per partner, an e-mail and a webhook sent to test servers on 127.0.0.1; key files in the OpenSSH and PuTTY formats with the test vectors of RFC 9106 and OpenBSD and keys made by `ssh-keygen` and WinSCP, damaged, tampered and crafted files, an export that must not lose the file at its place, the passphrase answers for `ssh-keygen -p`, SFTP settings, rules and folders, the rules and preferences of the earlier name, the activity of sessions, the file properties, config editing, comments after values, repeated and cumulative keywords, `ListenAddress` ports, `Include`, backups and `ReplaceFile`, changes on disk, differences between texts, the access check as `sshd` decides it, failed-login messages, the firewall block list, login-method rules, quoting of names as `sshd` reads them, including 5,000 random names, key parsing, the ssh client files, exports, hardening fixes, themes), with no `sshd`, no service and no changes. Needs no administrator rights: run it with `$env:__COMPAT_LAYER = 'RunAsInvoker'` to skip the elevation prompt. CI runs these on every push that changes the manager or its workflow |
-| `OpenSSHServerPNManager.exe --selftest [report.txt]` | Run the unit tests plus 48 tests against the installed server, 148 in all. Window tests open the main window off-screen on a scratch `sshd_config` (unsaved changes, refused saves, a save that keeps other `Port` lines and joins the `AllowUsers` lines, a save refused because the file changed meanwhile, SFTP changes kept until Apply, reloads, fields checked as you type, the changes shown before a save, the dark and light palettes, text that does not fit at 100% and 150% on a 1024 x 768 screen, names for screen readers, the background refresh); a firewall test adds a disabled rule of its own and removes it. Also: config validation, login-method rules and their effect as `sshd -T` reports it, SFTP-only rules as `sshd -T` reads them, rule names with `'` and `\` against `sshd -T` (a configuration and host key of its own), account names, `sshd -T` as SYSTEM, the lock-out warning, key ACLs, key generation of every type through `SSH_ASKPASS`, changing, adding and removing a passphrase, export in every format and import from `.ppk` for every type PuTTY uses, a PEM key, the key dialogs filled in and confirmed as a user would (a wrong passphrase refused, then accepted), security audit probes, APIs. The live configuration, keys and service are not modified. Without administrator rights, the tests that read the live host keys or the security of the service fail and the ones that need them are skipped |
+| `OpenSSHServerPNManager.exe --unittest [report.txt]` | Run the unit regression suite: the program logic alone (the package's request for the setup wizard; partners: generated passwords, account names, the rules the setup writes and reads back, `AllowGroups`, the partner dialog, the last day; transfers from `sftp-server` events with the client address, CSV that spreadsheets do not run as formulas, the report and its periods; alerts: networks and the allow list, settings with their secrets sealed, the blocking plan with longer blocks for repeat offenders, uploads batched per partner, an e-mail and a webhook sent to test servers on 127.0.0.1; key files in the OpenSSH and PuTTY formats with the test vectors of RFC 9106 and OpenBSD and keys made by `ssh-keygen` and WinSCP, damaged, tampered and crafted files, an export that must not lose the file at its place, the passphrase answers for `ssh-keygen -p`, SFTP settings, rules and folders, the rules and preferences of the earlier name, the activity of sessions, the file properties, config editing, comments after values, repeated and cumulative keywords, `ListenAddress` ports, `Include`, backups and `ReplaceFile`, changes on disk, differences between texts, the access check as `sshd` decides it, failed-login messages, the firewall block list, login-method rules, quoting of names as `sshd` reads them, including 5,000 random names, key parsing, the ssh client files, exports, hardening fixes, themes), using scratch storage and local test servers, with some read-only installed-component probes. It does not mutate live configuration, services, firewall rules or keys. Needs no administrator rights: the executable has an asInvoker manifest. CI runs these on every push that changes the manager or its workflow |
+| `OpenSSHServerPNManager.exe --selftest [report.txt]` | Run the unit tests plus integration tests against the installed server. Window tests open the main window off-screen on a scratch `sshd_config` (unsaved changes, refused saves, a save that keeps other `Port` lines and joins the `AllowUsers` lines, a save refused because the file changed meanwhile, SFTP changes kept until Apply, reloads, fields checked as you type, the changes shown before a save, the dark and light palettes, text that does not fit at 100% and 150% on a 1024 x 768 screen, names for screen readers, the background refresh); a firewall test adds a disabled rule of its own and removes it. Also: config validation, login-method rules and their effect as `sshd -T` reports it, SFTP-only rules as `sshd -T` reads them, rule names with `'` and `\` against `sshd -T` (a configuration and host key of its own), account names, `sshd -T` as SYSTEM, the lock-out warning, key ACLs, key generation of every type through `SSH_ASKPASS`, changing, adding and removing a passphrase, export in every format and import from `.ppk` for every type PuTTY uses, a PEM key, the key dialogs filled in and confirmed as a user would (a wrong passphrase refused, then accepted), security audit probes, APIs. The live configuration, keys and service are not modified. Without administrator rights, the tests that read the live host keys or the security of the service fail and the ones that need them are skipped |
 | `OpenSSHServerPNManager.exe --keytest [report.txt]` | End-to-end key test against this server: for every key type, with and without a passphrase, generate a key, authorize it for the current account, log in with it and remove it; then check that a wrong passphrase and an unauthorized key are refused. Keys that went through `.ppk` version 3 (Ed25519) and version 2 (RSA) and were converted back must log in too. Experimental types the server does not accept are reported as skipped. The `authorized_keys` file is restored byte for byte afterwards |
-| `OpenSSHServerPNManager.exe --authtest [report.txt]` | End-to-end test of the Authentication, SFTP, Partners and Alerts tabs with real logins. Nine login-method settings: Windows authentication only, public key only, either one, both required, a group rule, a user rule, rule order, a rule for another group, Kerberos offered. Four SFTP settings, with real transfers: SFTP for all accounts (8 MiB up and down, byte for byte; commands still run), an SFTP-only account confined to its folder (upload, new folder, rename and download work and land in the folder; `cd ..`, `/../..`, a drive letter and an upload outside are refused; commands are refused), a download-only SFTP-only group with a shared folder, and SFTP off. Five partner tests, with partner groups of their own: a partner with a password (a key that is not its own and commands are refused; an upload with `scp` lands in its folder), a key-only partner with download only (its key downloads; an upload, leaving the folder and its password are refused), disable and enable, the last day and a new password (the old one is refused), access changed to download only, and delete (the folder stays unless asked). Four agent tests: an address (from TEST-NET-1) blocked after its failed logins and unblocked by the Watch run when its time is up, the partner test's transfers archived once, the Watch task run by Task Scheduler as SYSTEM, and `--agent uninstall` removing the tasks. Each setting is written the way the tab writes it into a copy of `sshd_config` and served by a temporary `sshd` service on 127.0.0.1, on a free port. A temporary local account (random name and password, member of Users) logs in with its password, its key and both; wrong passwords must be refused. The live `sshd`, its configuration and its keys are not touched. The service, the accounts, the test's partner groups and the test folder are removed at the end. The account's profile stays loaded, because `sshd` does not unload profiles, so a one-time startup task deletes it two minutes after the next restart, and at every restart until it is gone |
+| `OpenSSHServerPNManager.exe --authtest [report.txt]` | End-to-end test of the Authentication, SFTP, Partners and Alerts tabs with real logins. Nine login-method settings: Windows authentication only, public key only, either one, both required, a group rule, a user rule, rule order, a rule for another group, Kerberos offered. Four SFTP settings, with real transfers: SFTP for all accounts (8 MiB up and down, byte for byte; commands still run), an SFTP-only account confined to its folder (upload, new folder, rename and download work and land in the folder; `cd ..`, `/../..`, a drive letter and an upload outside are refused; commands are refused), a download-only SFTP-only group with a shared folder, and SFTP off. Five partner tests, with partner groups of their own: a partner with a password (a key that is not its own and commands are refused; an upload with `scp` lands in its folder), a key-only partner with download only (its key downloads; an upload, leaving the folder and its password are refused), disable and enable, the last day and a new password (the old one is refused), access changed to download only, and delete (the folder stays unless asked). Four agent tests: an address (from TEST-NET-1) blocked after its failed logins and unblocked by the Watch run when its time is up, the partner test's transfers archived once, a uniquely named isolated event-log probe run by Task Scheduler as SYSTEM, and cleanup of that probe while preserving the operational watcher, daily and recovery tasks. Each setting is written the way the tab writes it into a copy of `sshd_config` and served by a temporary `sshd` service on 127.0.0.1, on a free port. A temporary local account (random name and password, member of Users) logs in with its password, its key and both; wrong passwords must be refused. The live `sshd`, its configuration and its keys are not touched. The service, the accounts, the test's partner groups and the test folder are removed at the end. The account's profile stays loaded, because `sshd` does not unload profiles, so a one-time startup task deletes it two minutes after the next restart, and at every restart until it is gone |
 | `OpenSSHServerPNManager.exe [--ui-scale 1.5] [--theme dark] --screenshot <folder>` | Render every tab off-screen to PNG files (`--ui-scale` lays the window out as on a 150% display, `--theme` chooses the light or dark colours), plus the Authentication tab with example rules, the rule dialog, the dialogs around saving, the failed-login list, the pages of the setup wizard, the key dialogs (export, passphrase, a key for you), the Key generator tab with a key loaded, the Partners tab with example partners, the partner dialog, a partner's new password, and the Alerts tab with example settings, with example content (UI regression test, does not touch the desktop; `DrawToBitmap` leaves the comparison boxes empty, which the window tests check instead) |
 
 The `--check`, `--selftest`, `--keytest` and `--authtest` reports are used for the verification
@@ -384,35 +425,48 @@ recorded in `docs/CHANGELOG.md`.
 .\build.ps1 -Csc <path>\csc.exe   # with another Roslyn compiler, e.g. a pinned Microsoft.Net.Compilers.Toolset
 ```
 
-Requirements: Windows with .NET Framework 4.x and the Roslyn C# compiler from Visual Studio 2022
-Build Tools (the inbox C# 5 compiler of the .NET Framework cannot build this source). The build is
-a single `csc` call over every `.cs` file in this folder, no project system needed; warnings stop
-it. The build is deterministic: the same source and compiler give the same SHA-256.
+Requirements: Windows with a runtime that can execute the pinned Roslyn compiler and
+network access for its first restore. `build.ps1` verifies the SHA-256 of Roslyn 4.14.0
+and .NET Framework 4.5 reference packages before extracting them. The resulting manager
+still targets .NET Framework 4.5. `-Csc` and `-ReferenceDir` are explicit local overrides
+and are recorded as unpinned in `build-info.json`. Warnings stop the build. The CI build
+script compares two independent builds, then tests and packages those exact bytes.
 
 | File | Contents |
 |---|---|
-| `Program.cs` | Entry point, command line, `--check`, `--screenshot` |
+| `Program.cs`, `UserProcessLauncher.cs` | Entry point, command line, client/server mode and desktop-user launch |
 | `SelfTest.cs` | `--unittest` and `--selftest` |
+| `UiRegressionTests.cs`, `AsyncOperationTests.cs` | Off-screen scale/layout checks and asynchronous operation regressions |
 | `Platform.cs` | Elevation, log, process runner, ACLs and file owners |
 | `Ssh.cs` | Paths and versions, the services, listeners, banners and sessions |
 | `SshdConfig.cs` | The `sshd_config` model (comments, repeated and cumulative keywords, backups, safe writing) and `SshdArgs`, which quotes arguments the way `sshd` reads them |
+| `ConfigurationTransaction.cs`, `ConfigurationDependencies.cs`, `ConfigurationRecovery.cs` | Atomic writes, Include snapshots, durable restart decisions and independent recovery |
+| `ServerState.cs` | Verified effective configuration, service command and observed endpoint state |
 | `Keys.cs`, `KeyGen.cs` | Authorized keys, host keys, the key generator (create, load, change the passphrase, export, import) and `--keytest` |
 | `KeyFiles.cs` | Private key files in the OpenSSH and PuTTY (`.ppk` 2 and 3) formats, read and written in memory, with `bcrypt_pbkdf`, Argon2 and BLAKE2b |
 | `Auth.cs`, `AuthTest.cs` | Login methods, account names, the access check, `sshd -T` as SYSTEM, and `--authtest` |
 | `Sftp.cs` | SFTP: the subsystem and its log level, the section of SFTP-only accounts, their folders |
 | `Partners.cs`, `PartnerDialogs.cs` | SFTP partners: the setup, the accounts and groups (NetAPI), passwords, keys; the partner dialogs and the Transfers window |
 | `Transfers.cs` | The transfer history: `sftp-server` events, CSV, the report, the archive |
+| `TransferJournal.cs` | Incremental parser context, event identity, checkpoints and retained-history gaps |
 | `Agent.cs` | The Alerts tab's background work: settings, e-mail and webhook, automatic blocking, the scheduled tasks and `--agent` |
+| `AgentStorage.cs`, `NotificationOutbox.cs`, `AgentHealthView.cs` | Protected agent state, persistent per-destination delivery and visible health |
 | `WindowsSettings.cs` | Default shell, firewall rule and block list, event log and failed logins |
 | `Hardening.cs` | Hardening checks and the security audit |
 | `Sessions.cs` | Live sessions and what they do (SFTP, scp, shell or command) |
-| `Client.cs` | The ssh client of the account: `known_hosts`, `.ssh\config`, `ssh-agent` |
+| `Client.cs`, `ClientFileSnapshot.cs`, `ClientWorkspace.cs` | The account's SSH files, guarded edits, profile search, effective settings, SFTP and agent keys |
 | `MainForm.cs`, `Dialogs.cs`, `KeyDialogs.cs`, `Wizard.cs` | The window, its dialogs, the key dialogs and the setup wizard |
+| `MainForm.Operations.cs`, `Navigation.cs` | Awaited operation lifetime, cancellation, grouped and compact navigation |
 | `Theme.cs`, `Widgets.cs`, `Prefs.cs` | Colours (light, dark, high contrast), list sorting and export, preferences and text comparison |
 | `icon\render.py` | The program icon: draws every size (16 to 256 px, small sizes by hand, pixel by pixel) and writes `icon\app.ico`, which `build.ps1` builds into the executable. Needs Python 3 with Pillow; running it again gives the same file |
 
-Download: the executable and its `.exe.config` (keep both in one folder) are attached to the
-product releases and to releases of their own (tags `manager-v<version>`), each with `SHA256SUMS.txt`. The newest is
+Download the testing preview from
+[preview-manager-v2.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0),
+also included in [preview-v10.5.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0).
+Keep the executable and its `.exe.config` in one folder and verify `SHA256SUMS.txt`.
+These locally built files are unsigned and carry no hosted build provenance or attestations.
+
+The latest stable manager remains
 [manager-v2.2.1](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.1), also installed by the
 packages of [v10.5.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.5.0).
 Up to [manager-v1.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.6.0) and
@@ -422,12 +476,14 @@ Up to [manager-v1.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag
 [v10.5.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.3.0) on,
 `OpenSSHServerPNManager.exe` and `OpenSSHServerPNManager.exe.config`.
 
-The built `bin\OpenSSHServerPNManager.exe` and its `.exe.config` are committed. After a change,
-rebuild them with `build.ps1` and commit them with the source. The GitHub workflow
-`.github/workflows/manager.yml` builds the source and runs `--unittest` on the new build and on
-the committed executable, and fails when the committed executable's version differs from the
-source. A tag `manager-vX.Y.Z` publishes the committed executable, its `.exe.config` and
-`SHA256SUMS.txt` as a release, which is not marked as the latest one: the product release keeps that.
+The built `bin\OpenSSHServerPNManager.exe` and its `.exe.config` remain tracked for local use.
+After a change, rebuild them with the pinned toolchain and commit them with the source.
+The GitHub workflow `.github/workflows/manager.yml` compares two fresh builds, runs the
+unit and UI suites, and uploads those tested bytes as `manager-tested`. Product packages
+and standalone manager releases consume that artifact, and package extraction verifies
+the included manager hashes. A tag `manager-vX.Y.Z` requires signing, verifies and retests
+the signed executable, then creates a draft release containing it, its configuration,
+build provenance and `SHA256SUMS.txt`. The checked-in binary is not the release input.
 
 ## Limitations
 
@@ -442,10 +498,11 @@ source. A tag `manager-vX.Y.Z` publishes the committed executable, its `.exe.con
   monitors with different scales.
 - The texts are in English and written in the code; there are no resource files for translations
   yet. Tabs are identified by their page, not their caption, so translated captions would work.
-- Automatic blocking and the alerts work through the scheduled tasks of the Alerts tab, which run
-  once a minute: an attacker gets up to a minute of attempts after crossing the threshold, which
-  `sshd`'s own `PerSourcePenalties` slow down meanwhile. Without the tasks, the block list of the
-  Logs tab is kept by hand, and the failed-login notification works only while the window runs.
+- Automatic blocking is checked approximately every minute. Scheduler delays or
+  incomplete endpoint/session inspection can defer blocking; agent health explains
+  those deferrals. `sshd`'s own `PerSourcePenalties` can slow attempts independently.
+  Without the alert tasks, the block list of the Logs tab is kept by hand, and the
+  failed-login notification works only while the window runs.
 - Alerts by e-mail need an SMTP server that offers STARTTLS or none: .NET's mail client has no
   implicit TLS (port 465) and no OAuth login, so Microsoft 365 is reached through a connector that
   accepts this server's address, and Gmail through an app password.

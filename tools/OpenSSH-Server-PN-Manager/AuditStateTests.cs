@@ -38,6 +38,7 @@ namespace OpenSSHServerPNManager
         }
         internal static void Run(Action<string, Func<string>> test, string tmpDir)
         {
+            AsyncOperationTests.Run(test);
             test("GUI settings: save retains the edited shell option across config reload", () =>
             {
                 var dir = Path.Combine(tmpDir, "shell-save-" + Guid.NewGuid().ToString("N"));
@@ -58,7 +59,7 @@ namespace OpenSSHServerPNManager
                     WithWindow(f =>
                     {
                         Set(f, "_cfg", SshdConfig.Load());
-                        typeof(MainForm).GetMethod("LoadSettings", Private).Invoke(f, new object[] { false });
+                        AsyncUiTest.Wait(() => (System.Threading.Tasks.Task)typeof(MainForm).GetMethod("LoadSettings", Private).Invoke(f, new object[] { false }));
                         string actual = null;
                         Set(f, "_writeDefaultShell", (Action<string, string>)((shell, option) => actual = option));
                         var optionBox = (TextBox)typeof(MainForm).GetField("_txtShellOption", Private).GetValue(f);
@@ -81,7 +82,7 @@ namespace OpenSSHServerPNManager
                 WithWindow(f =>
                 {
                     // Read-only query; ApplyFirewall is never called.
-                    typeof(MainForm).GetMethod("LoadFirewall", Private).Invoke(f, null);
+                    AsyncUiTest.Wait(() => (System.Threading.Tasks.Task)typeof(MainForm).GetMethod("LoadFirewall", Private).Invoke(f, null));
                     var port = (NumericUpDown)typeof(MainForm).GetField("_fwPort", Private).GetValue(f);
                     var before = port.Value;
                     port.Value = before == 2222 ? 2223 : 2222;

@@ -683,12 +683,15 @@ namespace OpenSSHServerPNManager
             if (eff.WorksWithoutKey(Accounts.DomainJoined())) return null;
             if (!eff.PublicKey) return "With these settings " + me + " (you) has no login method that can work on this computer" + (eff.Kerberos ? " (Kerberos needs an Active Directory domain)" : "") + ".";
             string value; d.TryGetValue("authorizedkeysfile", out value);
-            var file = Ssh.ResolveKeysFile(value, me, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+            List<string> files;
+            try { files = Ssh.ResolveEffectiveKeysFiles(value, me, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)); }
+            catch (Exception ex) { return "The authorized key files for " + me + " could not be checked: " + ex.Message; }
             int n = 0;
-            try { if (file != null) n = Keys.Read(file).Count(k => k.Type != "?"); } catch { }
+            try { n = files.Sum(file => Keys.Read(file).Count(k => k.Type != "?")); }
+            catch (Exception ex) { return "The authorized key files for " + me + " could not be read: " + ex.Message; }
             if (n > 0) return null;
             return "With these settings " + me + " (you) can log in over SSH only with a public key" + (eff.BothRequired ? " plus the Windows password" : "") +
-                   ", but no key is authorized for this account" + (file != null ? " in\n" + file : "") + ".\n\nCreate a key on the Key generator tab (tick \"Allow this key to log in\") and test it first.";
+                   ", but no key is authorized for this account" + (files.Count > 0 ? " in\n" + string.Join("\n", files) : " (AuthorizedKeysFile none)") + ".\n\nCreate a key on the Key generator tab (tick \"Allow this key to log in\") and test it first.";
         }
     }
 

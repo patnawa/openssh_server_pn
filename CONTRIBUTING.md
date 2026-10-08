@@ -38,7 +38,8 @@ The most valuable contribution is a verified result on a platform not yet listed
 4. For OpenSSH Server PN Manager changes, run `--unittest`, then `--selftest`, `--keytest` and
    `--authtest` elevated, and keep them green; add a unit test for new logic and a self-test for
    anything that needs the server. Rebuild `bin\OpenSSHServerPNManager.exe` and commit it with the
-   source; CI checks both. `--authtest` leaves the profile
+   source for local users. CI restores the pinned toolchain, builds twice, checks reproducibility,
+   and tests/packages the fresh artifact; the committed binary is not a release input. `--authtest` leaves the profile
    of its test account until the next restart, because `sshd` does not unload profiles.
 5. Describe in the pull request what was tested and on which Windows version.
 
@@ -49,7 +50,7 @@ Pull requests are reviewed on a best-effort basis. Small, focused changes are me
 Since the workflow `.github/workflows/openssh.yml` exists, a tag `v<version>` builds, tests and
 packages everything and creates a draft release with `SHA256SUMS.txt`, an SBOM and attestations;
 [docs/RELEASING.md](docs/RELEASING.md) describes it. Pull requests that change `src/`, the
-workflows or the release tools run the build and the tests too; use the pull request template.
+workflows, manager source or release tools run the build and integration checks too; use the pull request template.
 The manual steps below remain the way to build without CI, and the record of how 10.5.1.0 was
 made.
 
@@ -63,9 +64,11 @@ made.
    results in the changelog.
 4. Generate `SHA256SUMS.txt` (one line per file: the lower-case hash, two spaces, the file
    name; LF line endings, so that `sha256sum -c` reads it too), add the changelog entry, update the README tables and `docs/COMPATIBILITY.md`.
-5. Attach the MSIs, `OpenSSHServerPNManager.exe` with its `.exe.config`, and `SHA256SUMS.txt` to a
-   GitHub release tagged `v<version>`, and note that the packages are unsigned.
-6. A release of the management console alone: push a tag `manager-v<version>` on a commit whose
-   `bin\OpenSSHServerPNManager.exe` has that version. The workflow `.github/workflows/manager.yml`
-   builds and tests it, then publishes the committed executable, its `.exe.config` and
-   `SHA256SUMS.txt`. It is not marked as the latest release: the product release keeps that.
+5. Configure an owner-supplied signing identity before stable release tags. Stable tag builds require trusted,
+   timestamped signatures on native payloads, the manager and MSI wrappers. CI verifies CAB payloads
+   against the exact tested manager and creates a draft with checksums, build metadata, SBOM and provenance.
+   Review that draft and the [disposable VM evidence](docs/VALIDATION.md) before publishing it.
+6. For a manager-only release, `manager-v<version>` must match `Program.AppVersion`. The workflow builds
+   reproducibly from pinned inputs, signs and tests the final bytes, then creates a draft rather than
+   publishing the committed executable. It is not marked latest. Signing credentials and actual VM
+   acceptance runs remain pending until provided; configuration alone is not evidence they passed.

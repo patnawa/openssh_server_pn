@@ -90,12 +90,12 @@ namespace OpenSSHServerPNManager
                     {
                         var handle = f.Handle;
                         var load = typeof(MainForm).GetMethod("LoadAlerts", BindingFlags.Instance | BindingFlags.NonPublic);
-                        load.Invoke(f, null);
+                        AsyncUiTest.Wait(() => (System.Threading.Tasks.Task)load.Invoke(f, null));
                         var host = (TextBox)typeof(MainForm).GetField("_alHost", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(f);
                         host.Text = "unsaved.example.invalid";
                         if (!f.UnsavedTabsForTest().Contains("the Alerts tab") || !f.TabNamesForTest().Contains("Alerts *"))
                             throw new Exception("editing SMTP host is absent from the close warning and tab marker");
-                        load.Invoke(f, null);
+                        AsyncUiTest.Wait(() => (System.Threading.Tasks.Task)load.Invoke(f, null));
                         if (f.UnsavedTabsForTest().Contains("the Alerts tab") || f.TabNamesForTest().Contains("Alerts *"))
                             throw new Exception("Undo left an unsaved alert marker");
                     }

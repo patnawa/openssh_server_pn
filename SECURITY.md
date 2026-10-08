@@ -24,23 +24,30 @@ You can expect an acknowledgement within seven days. Fixed packages are announce
 
 ## Supported builds
 
-Only the most recent build listed in the README receives fixes. Older packages should be
-replaced with the newest one, or with an official Microsoft release.
+Only the most recent stable build listed in the README receives fixes. Older packages should be
+replaced with the newest stable one, or with an official Microsoft release. Testing previews
+have outstanding acceptance checks and do not replace the supported stable release.
 
 ## Integrity of the packages
 
-The MSI files are not Authenticode-signed. The SHA-256 hashes of every build are in
-`docs/CHANGELOG.md`, those of the current build also in the README, and every published release
-carries a `SHA256SUMS.txt`. Verify a download
-with `Get-FileHash <file> -Algorithm SHA256` before installing, and treat any mismatch as a
-tampered file.
+Historical packages may be unsigned; verify their release-specific `SHA256SUMS.txt` and provenance.
+The revised workflows require trusted, timestamped Authenticode signatures for stable product and manager
+tags. They build the manager twice with pinned compiler/reference archives, test the fresh executable,
+sign and retest it, and embed those same bytes in the MSIs. CAB extraction verifies payload identity
+and signatures. Branch artifacts remain unsigned. Separately marked `preview-*` prereleases
+distribute locally tested unsigned builds for evaluation, with checksums and explicit pending
+acceptance. Their local provenance records are not GitHub cryptographic attestations; see
+[the preview policy](docs/RELEASING.md#unsigned-testing-previews).
 
-Releases built by the CI workflow (the builds after 10.5.1.0, see
-[docs/RELEASING.md](docs/RELEASING.md)) also carry a CycloneDX SBOM and signed provenance
-attestations, which show that a file was built by this repository's workflow from a given
-commit: `gh attestation verify <file> --repo patnawa/openssh_server_pn`. They are
-Authenticode-signed only when a signing service is configured; the release notes say which.
-10.5.1.0 and the manager 1.5.0 release have hashes only.
+Signing is implemented but not configured: repository Actions variable and secret lists were empty on
+2026-10-08. No signed release was produced as part of this work. An owner must supply a signing identity
+as described in [RELEASING.md](docs/RELEASING.md); tag workflows fail without one.
+
+Check hashes with `Get-FileHash <file> -Algorithm SHA256`, signature status with
+`Get-AuthenticodeSignature <file>`, and provenance with
+`gh attestation verify <file> --repo patnawa/openssh_server_pn`. Provenance identifies the workflow and
+source commit; it is separate from Authenticode publisher trust. Treat any hash mismatch as a changed
+file and do not install it.
 
 ## Security design of the packages
 
@@ -53,7 +60,7 @@ Authenticode-signed only when a signing service is configured; the release notes
   (10.5.4.0 and later). During an interactive first install it also leaves, as LocalSystem, a
   request for the setup wizard in `%ProgramData%\ssh\manager`, which only administrators can read
   or change; the manager the package then starts runs as the installing user and asks for
-  administrator rights like any start of the manager, and a request older than 15 minutes is
+  administrator rights for explicit server/wizard mode, and a request older than 15 minutes is
   ignored.
 - **Exposure.** On Windows 10 and 11 the firewall rule applies to Domain and Private networks
   only; on Windows Server to all networks. Password logins are allowed after install so that
@@ -65,12 +72,12 @@ Authenticode-signed only when a signing service is configured; the release notes
   `HKLM\SOFTWARE\OpenSSH` key (which holds `DefaultShell`) is writable by administrators only.
   The Hardening tab of OpenSSH Server PN Manager and `OpenSSHServerPNManager.exe --check` verify all
   of this, and whether SSH is reachable on a public network.
-- **OpenSSH Server PN Manager.** It runs elevated and writes configuration only after `sshd -t`
-  accepts it. The key generator hands passphrases to `ssh-keygen` through `SSH_ASKPASS`, never on
+- **OpenSSH Server PN Manager.** Ordinary client workspace runs as the current user. Server administration and the setup wizard explicitly request elevation. Server configuration is validated with `sshd -t`, compared against its loaded file hash, and replaced atomically; replacement failure does not truncate the original. The key generator hands passphrases to `ssh-keygen` through `SSH_ASKPASS`, never on
   a command line. It never displays a private key, and it verifies that each private key is
   readable only by its owner, SYSTEM and Administrators. It converts keys to and from PuTTY's
   `.ppk` format in memory, never through an unprotected temporary file, and reads every exported
   file back before keeping it.
+- **Configuration recovery.** Unconfirmed server changes persist protected configuration and firewall snapshots and arm an independent SYSTEM task. Its protected runner can restore after GUI termination or reboot. Confirmation is durable; later external edits are not overwritten. Reboot and crash acceptance must be verified in disposable VMs; see [VALIDATION.md](docs/VALIDATION.md).
 - **Login-method changes.** The Authentication tab warns before a change would leave the
   administrator's own account without a method that works, and checks the result against the
   running server afterwards. It turns off keyboard-interactive, which has no Windows back end.
@@ -100,11 +107,11 @@ Authenticode-signed only when a signing service is configured; the release notes
 - **Alerts and automatic blocking.** Two scheduled tasks run the manager as SYSTEM: the copy
   installed next to `sshd.exe`, or a copy in `%ProgramFiles%\OpenSSH Server PN Manager`, both
   folders only administrators can change. There is no service and no listening port. Settings,
-  state, the agent's log and the transfer archive are in `%ProgramData%\ssh\manager`, which only
-  SYSTEM and Administrators can open; the SMTP password and the webhook address are encrypted
+  state and the agent's log are in `%ProgramData%\ssh\manager`; transfer archives are in
+  `%ProgramData%\ssh\transfers`. Only SYSTEM and Administrators can open them; the SMTP password and the webhook address are encrypted
   there with DPAPI for this computer. Mail is encrypted with STARTTLS when *STARTTLS* is ticked (the
   default); webhook addresses must be `https://`, and TLS 1.2 and 1.3 are enabled also where .NET
   would not offer them by default. Automatic blocking adds addresses to the one inbound block rule
   of the Logs tab; it never blocks this computer, the allow list or an address with a logged-in
   session, so failed attempts from the address of someone logged in (an administrator's included)
-  do not cut that address off. Uninstalling the package removes the tasks.
+  do not cut that address off. Incomplete listener or session inspection defers automatic blocking and reports degraded protection. Notifications persist per-destination retry state. Uninstall removes ordinary watch/daily tasks; pending recovery is reconciled before cleanup rather than discarded.

@@ -22,6 +22,7 @@
             ProductVersion=$(ProductVersion);
         </DefineConstants>
         <DefineSolutionProperties>false</DefineSolutionProperties>
+        <ManagerBinDir Condition="'$(ManagerBinDir)' == ''">$(MSBuildProjectDirectory)\..\..\..\..\tools\OpenSSH-Server-PN-Manager\bin</ManagerBinDir>
         <!-- Assumes WixToolPath is an input provided at runtime -->
         <!-- If building x86/x64 MSI and have Wix 3.11 installed, can also try the below line instead -->
         <!-- WixTargetsPath Condition="'$(WixTargetsPath)' == ''">$(MSBuildExtensionsPath)\Microsoft\WiX\v3.x\Wix.targets</WixTargetsPath -->
@@ -38,8 +39,8 @@
 
     <ItemGroup>
         <BindInputPaths Include="..\..\..\bin\$(Platform)\$(Configuration)" />
-        <!-- OpenSSH Server PN Manager (server.wxs): the committed build, the same file for every platform -->
-        <BindInputPaths Include="..\..\..\..\tools\OpenSSH-Server-PN-Manager\bin" />
+        <!-- OpenSSH Server PN Manager: CI supplies the tested artifact, identical on every platform. -->
+        <BindInputPaths Include="$(ManagerBinDir)" />
     </ItemGroup>
 
     <ItemGroup>

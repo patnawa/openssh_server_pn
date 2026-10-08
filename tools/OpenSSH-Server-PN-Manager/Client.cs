@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -12,7 +13,7 @@ namespace OpenSSHServerPNManager
     // ------------------------------------------------------------------------------------------
     // The ssh client of the account running this program: known_hosts, %USERPROFILE%\.ssh\config, ssh-agent
     // ------------------------------------------------------------------------------------------
-    internal sealed class KnownHost { public int Line; public string Marker = ""; public string Hosts; public string Type; public string Fingerprint; public bool Hashed; public string Raw; }
+    internal sealed class KnownHost { public int Line; public string Marker = ""; public string Hosts; public string Type; public string Fingerprint; public bool Hashed; public string Raw; public ClientFileSnapshot Snapshot; }
 
     internal sealed class ClientHost
     {
@@ -22,7 +23,9 @@ namespace OpenSSHServerPNManager
         /// <summary>First and last line of the block in the file (0-based, inclusive); the block ends before the next Host or Match.</summary>
         public int First, Last;
         public Dictionary<string, string> Values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, List<string>> AllValues = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         public string Get(string k) { string v; return Values.TryGetValue(k, out v) ? v : ""; }
+        public List<string> GetAll(string k) { List<string> v; return AllValues.TryGetValue(k, out v) ? new List<string>(v) : new List<string>(); }
     }
 
     internal static class SshClient
@@ -33,14 +36,18 @@ namespace OpenSSHServerPNManager
         /// <summary>The entries of a known_hosts file; comments and blank lines are skipped, fingerprints through ssh-keygen (cached).</summary>
         public static List<KnownHost> ReadKnownHosts(string path, bool fingerprints = true)
         {
+            return ReadKnownHosts(ClientFileSnapshot.Read(path), fingerprints);
+        }
+
+        public static List<KnownHost> ReadKnownHosts(ClientFileSnapshot snapshot, bool fingerprints = true)
+        {
             var l = new List<KnownHost>();
-            if (!File.Exists(path)) return l;
-            var lines = File.ReadAllLines(path);
-            for (int i = 0; i < lines.Length; i++)
+            var lines = snapshot.Lines;
+            for (int i = 0; i < lines.Count; i++)
             {
                 var k = ParseKnownHost(lines[i]);
                 if (k == null) continue;
-                k.Line = i;
+                k.Line = i; k.Snapshot = snapshot;
                 if (fingerprints) k.Fingerprint = Keys.Fingerprint(k.Type + " " + KeyMaterial(lines[i]));
                 l.Add(k);
             }
@@ -68,16 +75,75 @@ namespace OpenSSHServerPNManager
             return parts.Length > at + 2 ? parts[at + 2] : "";
         }
 
-        /// <summary>Removes lines (0-based numbers) from a known_hosts file; the previous file is kept as known_hosts.old, as ssh-keygen -R does.</summary>
-        public static int RemoveLines(string path, ICollection<int> lineNumbers)
+        /// <summary>Remove exactly the displayed trust entries, only from the unchanged displayed file.</summary>
+        public static int RemoveKnownHosts(string path, ICollection<KnownHost> entries)
         {
-            var lines = File.ReadAllLines(path).ToList();
+            if (entries.Count == 0) return 0;
+            var snapshot = entries.First().Snapshot;
+            if (snapshot == null || !string.Equals(Path.GetFullPath(path), snapshot.Path, StringComparison.OrdinalIgnoreCase)) throw new ConfigException("Refresh known hosts before removing a key.");
+            snapshot.RequireUnchanged();
+            foreach (var entry in entries)
+                if (entry.Snapshot != snapshot || entry.Line < 0 || entry.Line >= snapshot.Lines.Count || snapshot.Lines[entry.Line] != entry.Raw)
+                    throw new ConfigException("The trust selection is stale. Refresh known hosts before removing a key.");
+            var lineNumbers = new HashSet<int>(entries.Select(e => e.Line));
+            var lines = snapshot.Lines;
             var kept = lines.Where((l, i) => !lineNumbers.Contains(i)).ToList();
             int removed = lines.Count - kept.Count;
             if (removed == 0) return 0;
-            File.Copy(path, path + ".old", true);
-            File.WriteAllText(path, string.Join("\n", kept) + (kept.Count > 0 ? "\n" : ""), new UTF8Encoding(false));
+            snapshot.Write(kept, ".old", false);
             return removed;
+        }
+
+        public static void AddKnownHosts(ClientFileSnapshot snapshot, IEnumerable<string> lines)
+        {
+            var result = snapshot.Lines.ToList();
+            foreach (var line in lines) if (!result.Contains(line)) result.Add(line);
+            snapshot.Write(result, ".old", false);
+        }
+
+        /// <summary>Explicitly describe trust changes, including existing keys for this host/type.</summary>
+        public static string TrustChanges(ClientFileSnapshot snapshot, IEnumerable<string> offered)
+        {
+            var known = ReadKnownHosts(snapshot, false);
+            var messages = new List<string>();
+            foreach (var line in offered)
+            {
+                var key = ParseKnownHost(line); if (key == null) continue;
+                var matches = known.Where(k => key.Hosts.Split(',').Any(host => KnownHostMatches(k.Hosts, host)) && k.Type == key.Type).ToList();
+                if (matches.Any(k => k.Marker == "@revoked")) messages.Add(key.Type + ": a matching entry is marked REVOKED. Adding a key does not remove this revocation.");
+                if (matches.Any(k => k.Marker == "@cert-authority")) messages.Add(key.Type + ": certificate-authority trust is configured for this host. A direct host-key entry is separate from that authority.");
+                var direct = matches.Where(k => k.Marker.Length == 0).ToList();
+                if (direct.Any(k => KeyMaterial(k.Raw) == KeyMaterial(line))) messages.Add(key.Type + ": already present as a direct host key");
+                else if (direct.Count > 0) messages.Add(key.Type + ": DIFFERENT from the stored key. Verify a planned rotation with the server administrator before adding it. Existing keys will be retained.");
+                else messages.Add(key.Type + ": new trust entry");
+            }
+            return string.Join("\n", messages);
+        }
+
+        internal static bool KnownHostMatches(string patterns, string host)
+        {
+            bool matched = false;
+            foreach (var pattern in patterns.Split(','))
+            {
+                if (pattern.StartsWith("|1|", StringComparison.Ordinal))
+                {
+                    var parts = pattern.Split('|');
+                    if (parts.Length != 4) continue;
+                    try
+                    {
+                        using (var hash = new HMACSHA1(Convert.FromBase64String(parts[2])))
+                            if (hash.ComputeHash(Encoding.UTF8.GetBytes(host)).SequenceEqual(Convert.FromBase64String(parts[3]))) matched = true;
+                    }
+                    catch (FormatException) { }
+                    continue;
+                }
+                bool negative = pattern.StartsWith("!", StringComparison.Ordinal);
+                var glob = negative ? pattern.Substring(1) : pattern;
+                if (!Regex.IsMatch(host, "^" + Regex.Escape(glob).Replace("\\*", ".*").Replace("\\?", ".") + "$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)) continue;
+                if (negative) return false;
+                matched = true;
+            }
+            return matched;
         }
 
         /// <summary>The Host and Match blocks of an ssh client configuration, in order; settings before the first block are left out.</summary>
@@ -96,6 +162,8 @@ namespace OpenSSHServerPNManager
                 if (cur == null) continue;
                 cur.Last = i;
                 if (!cur.Values.ContainsKey(k)) cur.Values[k] = v; // first value wins in ssh too
+                if (!cur.AllValues.ContainsKey(k)) cur.AllValues[k] = new List<string>();
+                cur.AllValues[k].Add(v);
             }
             return l;
         }
@@ -105,38 +173,51 @@ namespace OpenSSHServerPNManager
 
         /// <summary>
         /// A configuration with one Host block added or changed: the Host line and the edited keywords are written, every
-        /// other line of the block is kept. existing null adds the block at the end. Empty values remove the keyword.
+        /// other line of the block is kept. New profiles precede defaults. Empty supplied values remove that keyword;
+        /// absent or unchanged fields preserve the original directives, including repeated IdentityFile entries.
         /// </summary>
         public static List<string> WithHost(IList<string> lines, ClientHost existing, string pattern, IDictionary<string, string> values)
         {
             pattern = (pattern ?? "").Trim();
             if (pattern.Length == 0) throw new ConfigException("Enter a name for the host (the name you type after ssh).");
-            foreach (var v in values.Values.Concat(new[] { pattern }))
-                if ((v ?? "").Any(c => char.IsControl(c))) throw new ConfigException("Values must be single lines.");
-            var block = new List<string> { "Host " + pattern };
+            if (pattern.Any(char.IsControl)) throw new ConfigException("Host names must be a single line.");
+            foreach (var pair in values)
+                if ((pair.Value ?? "").Any(c => char.IsControl(c) && !(pair.Key.Equals("IdentityFile", StringComparison.OrdinalIgnoreCase) && (c == '\r' || c == '\n')))) throw new ConfigException("Values must be single lines (one identity path per line).");
+            var changed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var block = new List<string> { existing != null && existing.Pattern == pattern ? lines[existing.First] : "Host " + pattern };
             foreach (var k in EditedKeywords)
             {
-                string v; if (values.TryGetValue(k, out v) && !string.IsNullOrWhiteSpace(v)) block.Add("    " + k + " " + Quote(v.Trim()));
+                string v; if (!values.TryGetValue(k, out v)) continue;
+                v = (v ?? "").Trim();
+                if (existing != null && (k == "IdentityFile" ? IdentityValues(v).SequenceEqual(existing.GetAll(k)) : v == existing.Get(k))) continue;
+                changed.Add(k);
+                if (v.Length > 0)
+                    foreach (var item in k == "IdentityFile" ? IdentityValues(v) : new List<string> { v }) block.Add("    " + k + " " + Quote(item));
             }
             var result = lines.ToList();
             if (existing == null)
             {
-                while (result.Count > 0 && result[result.Count - 1].Trim().Length == 0) result.RemoveAt(result.Count - 1);
-                if (result.Count > 0) result.Add("");
-                result.AddRange(block);
+                int at = 0; string firstKey = null, firstValue;
+                while (at < result.Count && !SshdConfig.Split(result[at], out firstKey, out firstValue)) at++;
+                block.Add("");
+                // A global option/Include must continue to apply to every host after the newly inserted profile.
+                if (at < result.Count && !firstKey.Equals("Host", StringComparison.OrdinalIgnoreCase) && !firstKey.Equals("Match", StringComparison.OrdinalIgnoreCase)) block.Add("Host *");
+                result.InsertRange(at, block);
                 return result;
             }
             // Keep the other lines of the block (comments, options the editor does not show).
             for (int i = existing.First + 1; i <= existing.Last && i < lines.Count; i++)
             {
                 string k, v;
-                if (SshdConfig.Split(lines[i], out k, out v) && EditedKeywords.Contains(k, StringComparer.OrdinalIgnoreCase)) continue;
+                if (SshdConfig.Split(lines[i], out k, out v) && changed.Contains(k)) continue;
                 block.Add(lines[i]);
             }
             result.RemoveRange(existing.First, existing.Last - existing.First + 1);
             result.InsertRange(existing.First, block);
             return result;
         }
+
+        private static List<string> IdentityValues(string value) { return value.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Select(v => v.Trim()).Where(v => v.Length > 0).ToList(); }
 
         public static List<string> WithoutHost(IList<string> lines, ClientHost existing)
         {
@@ -147,16 +228,47 @@ namespace OpenSSHServerPNManager
         }
 
         /// <summary>A value quoted when it has spaces (paths such as C:\Users\Jane Doe\.ssh\id_ed25519).</summary>
-        private static string Quote(string v) { return v.IndexOfAny(new[] { ' ', '\t' }) >= 0 && !v.StartsWith("\"") ? "\"" + v + "\"" : v; }
+        private static string Quote(string v)
+        {
+            if (v.StartsWith("\"", StringComparison.Ordinal) || v.StartsWith("'", StringComparison.Ordinal))
+            {
+                string error; var args = SshdArgs.Split(v, out error);
+                if (args == null || args.Count != 1) throw new ConfigException("Enter one value per field (one identity path per line): " + (error ?? v));
+                v = args[0];
+            }
+            return SshdArgs.Quote(v);
+        }
 
         /// <summary>Writes the ssh client configuration, keeping the previous one as config.bak; the file is readable by its owner only.</summary>
-        public static void WriteConfig(IList<string> lines)
+        public static void WriteConfig(ClientFileSnapshot snapshot, IList<string> lines)
         {
-            Directory.CreateDirectory(KeyGen.SshDir);
-            if (File.Exists(ConfigPath)) File.Copy(ConfigPath, ConfigPath + ".bak", true);
-            File.WriteAllText(ConfigPath, string.Join("\n", lines) + "\n", new UTF8Encoding(false));
-            // ssh refuses a configuration that others can write (w32-sshfileperm.c): the same rule as for private keys.
-            try { KeyGen.EnsurePrivateKeyAcl(ConfigPath); } catch (Exception ex) { Log.Error("Permissions of " + ConfigPath, ex, false); }
+            snapshot.Write(lines, ".bak", true);
+        }
+
+        public static bool Connectable(ClientHost host)
+        {
+            return host != null && !host.IsMatch && Regex.IsMatch(host.Pattern, @"^[A-Za-z0-9._@%+:\[\]][A-Za-z0-9._@%+:\[\]\-]*$");
+        }
+
+        public static string EffectivePreview(string host)
+        {
+            if (Elevation.IsAdministrator()) throw new ConfigException("Open the standard-user Client workspace to preview this connection. SSH configuration can execute local commands, so it is never evaluated with administrator rights.");
+            if (!Connectable(new ClientHost { Pattern = host })) throw new ConfigException("Choose a host with one plain name to preview.");
+            var result = Proc.Run(Ssh.Exe("ssh.exe"), "-G -- " + host, 20000);
+            if (!result.Ok) throw new ConfigException("Could not resolve this connection:\n" + result.Output);
+            return FormatEffectivePreview(result.StdOut);
+        }
+
+        internal static string FormatEffectivePreview(string output)
+        {
+            var wanted = new HashSet<string>(new[] { "hostname", "user", "port", "identityfile", "proxyjump", "proxycommand", "userknownhostsfile", "stricthostkeychecking", "identityagent" }, StringComparer.OrdinalIgnoreCase);
+            var result = new List<string>();
+            foreach (var line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                int at = line.IndexOf(' ');
+                if (at > 0 && wanted.Contains(line.Substring(0, at))) result.Add(line);
+            }
+            return "Effective connection settings (ssh -G; no network connection was made):\n\n" + string.Join("\n", result) + "\n\nIdentity paths may include defaults that do not exist on disk.";
         }
 
         /// <summary>The keys the agent holds: public key lines (ssh-add -L); empty with a message when it has none or does not run.</summary>

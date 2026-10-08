@@ -21,6 +21,28 @@ verbose "reparse regress config"
  $SUDO ${SSHD} -T -f $OBJ/sshd_config.1 >$OBJ/sshd_config.2 &&
  diff $OBJ/sshd_config.1 $OBJ/sshd_config.2) || fail "reparse regress config"
 
+# Quoted AuthorizedKeysFile paths must survive -T; losing their boundaries can
+# direct administrative tools to a different file. "none" must not disappear.
+verbose "authorized keys arguments survive dump and reparse"
+cat $OBJ/sshd_config_minimal > $OBJ/sshd_config_authkeys
+cat >> $OBJ/sshd_config_authkeys <<'EOD'
+AuthorizedKeysFile "keys dir/%u" "literal\\backslash" "literal\"quote" .ssh/%%u
+EOD
+($SUDO ${SSHD} -T -f $OBJ/sshd_config_authkeys >$OBJ/sshd_config.1 &&
+ $SUDO ${SSHD} -T -f $OBJ/sshd_config.1 >$OBJ/sshd_config.2 &&
+ diff $OBJ/sshd_config.1 $OBJ/sshd_config.2) ||
+ fail "authorized key argument boundaries changed"
+grep -i '^authorizedkeysfile "keys dir/%u" ' $OBJ/sshd_config.1 >/dev/null ||
+ fail "authorized key path with space is not quoted"
+cat $OBJ/sshd_config_minimal > $OBJ/sshd_config_authkeys
+echo 'AuthorizedKeysFile none' >> $OBJ/sshd_config_authkeys
+($SUDO ${SSHD} -T -f $OBJ/sshd_config_authkeys >$OBJ/sshd_config.1 &&
+ $SUDO ${SSHD} -T -f $OBJ/sshd_config.1 >$OBJ/sshd_config.2 &&
+ diff $OBJ/sshd_config.1 $OBJ/sshd_config.2) ||
+ fail "authorized key none changed on reparse"
+grep -i '^authorizedkeysfile none' $OBJ/sshd_config.1 >/dev/null ||
+ fail "authorized key none omitted from dump"
+
 # Detect IPv6 support and if found, define variables for the needed
 # config lines.  This allows tests to also work on Portable platforms
 # lacking IPv6 support without having diffs that make syncs harder.

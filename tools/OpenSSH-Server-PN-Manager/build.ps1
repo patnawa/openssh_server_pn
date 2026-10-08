@@ -3,7 +3,7 @@
     Builds OpenSSHServerPNManager.exe from the C# source files in this folder.
 
 .DESCRIPTION
-    Uses the Roslyn C# compiler shipped with Visual Studio 2022 Build Tools (or the one given with
+    Restores hash-verified pinned Roslyn and .NET Framework 4.5 reference packages (or the compiler given with
     -Csc). Targets .NET Framework 4.x so the result runs on Windows 7 SP1 / Server 2008 R2 and later
     without extra runtimes. Warnings stop the build.
 
@@ -16,31 +16,20 @@
 #>
 param(
     [string]$OutDir = (Join-Path $PSScriptRoot 'bin'),
-    # A Roslyn csc.exe to use instead of the one of Visual Studio Build Tools (for example from the
-    # Microsoft.Net.Compilers.Toolset package, to build with a pinned compiler version).
-    [string]$Csc
+    # Local overrides bypass the pinned inputs and are recorded as such in build-info.json.
+    [string]$Csc,
+    [string]$ReferenceDir
 )
 $ErrorActionPreference = 'Stop'
 
-$fw = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
-if (-not (Test-Path $fw)) { $fw = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319' }
-if (-not (Test-Path $fw)) { throw ".NET Framework 4.x runtime folder not found." }
-
-$compiler = $null
-if ($Csc) { if (-not (Test-Path $Csc)) { throw "No compiler at $Csc" }; $compiler = (Resolve-Path $Csc).Path }
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-if (-not $compiler -and (Test-Path $vswhere)) {
-    $vs = & $vswhere -products * -latest -property installationPath 2>$null
-    if ($vs) {
-        $cand = Join-Path $vs 'MSBuild\Current\Bin\Roslyn\csc.exe'
-        if (Test-Path $cand) { $compiler = $cand }
+if ($Csc -and -not (Test-Path -LiteralPath $Csc)) { throw "No compiler at $Csc" }
+$toolchain = Join-Path ([IO.Path]::GetTempPath()) ('openssh-toolchain-' + [guid]::NewGuid().ToString('N'))
+try {
+    if (-not $Csc -or -not $ReferenceDir) {
+        $restored = & (Join-Path $PSScriptRoot 'Restore-Toolchain.ps1') -Destination $toolchain
     }
-}
-# The inbox .NET Framework compiler (C# 5) cannot build this source: it uses C# 6 (exception filters, among others).
-if (-not $compiler) {
-    throw "The Roslyn C# compiler was not found. Install Visual Studio 2022 Build Tools (see docs/BUILDING.md, section 1), or pass its csc.exe with -Csc."
-}
-
+    $compiler = if ($Csc) { (Resolve-Path -LiteralPath $Csc).Path } else { $restored['microsoft.net.compilers.toolset'] }
+    $fw = if ($ReferenceDir) { (Resolve-Path -LiteralPath $ReferenceDir).Path } else { $restored['microsoft.netframework.referenceassemblies.net45'] }
 $src = @(Get-ChildItem -Path $PSScriptRoot -Filter *.cs | Sort-Object Name | ForEach-Object FullName)
 if ($src.Count -eq 0) { throw "No .cs files in $PSScriptRoot" }
 $manifest = Join-Path $PSScriptRoot 'app.manifest'
@@ -84,3 +73,20 @@ $config = @"
 $fi = Get-Item $out
 Write-Host "Built $($fi.FullName) ($($fi.Length) bytes)"
 Write-Host "SHA256 $((Get-FileHash $out -Algorithm SHA256).Hash)"
+
+# Metadata accompanies the exact bytes that tests and release signing consume.
+$metadata = [ordered]@{
+    compilerVersion = ((& $compiler -version) -join ' ').Trim()
+    pinnedToolchain = (-not $Csc -and -not $ReferenceDir)
+    toolchain = (Get-Content (Join-Path $PSScriptRoot 'build-toolchain.json') -Raw | ConvertFrom-Json)
+    files = @('OpenSSHServerPNManager.exe','OpenSSHServerPNManager.exe.config' | ForEach-Object {
+        [ordered]@{ name = $_; sha256 = (Get-FileHash (Join-Path $OutDir $_) -Algorithm SHA256).Hash.ToLowerInvariant() }
+    })
+}
+[IO.File]::WriteAllText((Join-Path $OutDir 'build-info.json'), ($metadata | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding $false))
+} finally {
+    $resolved = [IO.Path]::GetFullPath($toolchain)
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    if (-not $resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) { throw "Unexpected toolchain directory: $resolved" }
+    if (Test-Path -LiteralPath $resolved) { Remove-Item -LiteralPath $resolved -Recurse -Force }
+}

@@ -29,67 +29,16 @@ namespace OpenSSHServerPNManager
 
     internal static class Sessions
     {
-        [StructLayout(LayoutKind.Sequential)]
-        private struct MIB_TCPROW_OWNER_PID { public uint state; public uint localAddr; public uint localPort; public uint remoteAddr; public uint remotePort; public uint owningPid; }
-        [StructLayout(LayoutKind.Sequential)]
-        private struct MIB_TCP6ROW_OWNER_PID
+        /// <summary>Established peers on every requested listener, from a complete Windows TCP snapshot.</summary>
+        private static Dictionary<int, string> PeersByPid(int port) { return PeersByPid(new[] { port }); }
+        private static Dictionary<int, string> PeersByPid(IEnumerable<int> ports)
         {
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)] public byte[] localAddr; public uint localScopeId; public uint localPort;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)] public byte[] remoteAddr; public uint remoteScopeId; public uint remotePort;
-            public uint state; public uint owningPid;
+            List<TcpConnection> rows; string error;
+            if (!WindowsTcp.TryRead(out rows, out error)) throw new InvalidOperationException("Cannot inspect TCP peers: " + error);
+            var wanted = new HashSet<int>(ports);
+            return rows.Where(r => r.State == 5 && wanted.Contains(r.LocalPort)).GroupBy(r => r.Pid)
+                .ToDictionary(g => g.Key, g => string.Join(", ", g.Select(r => r.Peer)));
         }
-        [DllImport("iphlpapi.dll", SetLastError = true)]
-        private static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool sort, int family, int tableClass, uint reserved);
-
-        private static int NetPort(uint p) { return (int)(((p & 0xff) << 8) | ((p >> 8) & 0xff)); }
-
-        /// <summary>Maps process id to "remote:port" for established IPv4 and IPv6 connections on the given local port.</summary>
-        private static Dictionary<int, string> PeersByPid(int port)
-        {
-            var d = new Dictionary<int, string>();
-            Action<int, string> add = (pid, peer) => { d[pid] = d.ContainsKey(pid) ? d[pid] + ", " + peer : peer; };
-            foreach (int family in new[] { 2 /*AF_INET*/, 23 /*AF_INET6*/ })
-            {
-                try
-                {
-                    int size = 0;
-                    GetExtendedTcpTable(IntPtr.Zero, ref size, false, family, 5 /*TCP_TABLE_OWNER_PID_ALL*/, 0);
-                    if (size <= 0) continue;
-                    var buf = Marshal.AllocHGlobal(size);
-                    try
-                    {
-                        if (GetExtendedTcpTable(buf, ref size, false, family, 5, 0) != 0) continue;
-                        int n = Marshal.ReadInt32(buf);
-                        var p = new IntPtr(buf.ToInt64() + 4);
-                        if (family == 2)
-                        {
-                            int rowSize = Marshal.SizeOf(typeof(MIB_TCPROW_OWNER_PID));
-                            for (int i = 0; i < n; i++)
-                            {
-                                var row = (MIB_TCPROW_OWNER_PID)Marshal.PtrToStructure(new IntPtr(p.ToInt64() + i * rowSize), typeof(MIB_TCPROW_OWNER_PID));
-                                if (row.state != 5 /*ESTABLISHED*/ || NetPort(row.localPort) != port) continue;
-                                add((int)row.owningPid, new IPAddress(row.remoteAddr) + ":" + NetPort(row.remotePort));
-                            }
-                        }
-                        else
-                        {
-                            int rowSize = Marshal.SizeOf(typeof(MIB_TCP6ROW_OWNER_PID));
-                            for (int i = 0; i < n; i++)
-                            {
-                                var row = (MIB_TCP6ROW_OWNER_PID)Marshal.PtrToStructure(new IntPtr(p.ToInt64() + i * rowSize), typeof(MIB_TCP6ROW_OWNER_PID));
-                                if (row.state != 5 || NetPort(row.localPort) != port) continue;
-                                var addr = new IPAddress(row.remoteAddr, row.remoteScopeId);
-                                add((int)row.owningPid, (addr.IsIPv4MappedToIPv6 ? addr.MapToIPv4().ToString() : "[" + addr + "]") + ":" + NetPort(row.remotePort));
-                            }
-                        }
-                    }
-                    finally { Marshal.FreeHGlobal(buf); }
-                }
-                catch { }
-            }
-            return d;
-        }
-
         [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
         [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(IntPtr h);
         [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
@@ -116,15 +65,43 @@ namespace OpenSSHServerPNManager
         /// </summary>
         public static HashSet<string> LoggedInAddresses(int port)
         {
-            var set = new HashSet<string>();
-            var all = Snapshot();
-            foreach (var kv in PeersByPid(port))
+            HashSet<string> addresses; string error;
+            if (!TryLoggedInAddresses(new[] { port }, out addresses, out error)) throw new InvalidOperationException(error);
+            return addresses;
+        }
+
+        public static bool TryLoggedInAddresses(IEnumerable<int> ports, out HashSet<string> addresses, out string error)
+        {
+            addresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase); error = null;
+            try
             {
-                bool loggedIn = all.Any(p => p.ParentPid == kv.Key && p.Name.Equals("sshd-session.exe", StringComparison.OrdinalIgnoreCase) && OwnerOf(p.Pid).IndexOf("SYSTEM", StringComparison.OrdinalIgnoreCase) < 0);
-                if (!loggedIn) continue;
-                foreach (var peer in kv.Value.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries)) set.Add(AddressOf(peer));
+                var peers = PeersByPid(ports); var all = Snapshot(true);
+                foreach (var kv in peers)
+                {
+                    foreach (var child in all.Where(p => p.ParentPid == kv.Key && p.Name.Equals("sshd-session.exe", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        bool system;
+                        if (!TrySystemOwner(child.Pid, out system)) throw new InvalidOperationException("Cannot verify the owner of SSH session " + child.Pid + ".");
+                        if (!system) foreach (var peer in kv.Value.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries)) addresses.Add(AddressOf(peer));
+                    }
+                }
+                return true;
             }
-            return set;
+            catch (Exception ex) { addresses.Clear(); error = "Active SSH sessions could not be verified: " + ex.Message; return false; }
+        }
+
+        private static bool TrySystemOwner(int pid, out bool system)
+        {
+            system = false; IntPtr process = IntPtr.Zero, token = IntPtr.Zero;
+            try
+            {
+                process = OpenProcess(0x1000, false, pid);
+                if (process == IntPtr.Zero || !OpenProcessToken(process, 8, out token)) return false;
+                using (var identity = new WindowsIdentity(token)) system = identity.User.IsWellKnown(WellKnownSidType.LocalSystemSid);
+                return true;
+            }
+            catch { return false; }
+            finally { if (token != IntPtr.Zero) CloseHandle(token); if (process != IntPtr.Zero) CloseHandle(process); }
         }
 
         /// <summary>The address of "1.2.3.4:5678" or "[2001:db8::1]:5678".</summary>
@@ -138,9 +115,12 @@ namespace OpenSSHServerPNManager
 
         /// <summary>Established connections on the server port: "remote -> owning process".</summary>
         public static List<string[]> Connections(int port)
+        { return Connections(new[] { port }); }
+
+        public static List<string[]> Connections(IEnumerable<int> ports)
         {
             var l = new List<string[]>();
-            foreach (var kv in PeersByPid(port))
+            foreach (var kv in PeersByPid(ports))
             {
                 string name = "?"; try { using (var p = Process.GetProcessById(kv.Key)) name = p.ProcessName; } catch { }
                 foreach (var peer in kv.Value.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries)) l.Add(new[] { peer, name + " (PID " + kv.Key + ")" });
@@ -163,16 +143,21 @@ namespace OpenSSHServerPNManager
         internal struct ProcessEntry { public int Pid, ParentPid; public string Name; }
 
         /// <summary>Every process, with its parent and program name, from one snapshot.</summary>
-        private static List<ProcessEntry> Snapshot()
+        private static List<ProcessEntry> Snapshot(bool requireComplete = false)
         {
             var l = new List<ProcessEntry>();
             var snap = CreateToolhelp32Snapshot(0x2 /*TH32CS_SNAPPROCESS*/, 0);
-            if (snap == IntPtr.Zero || snap == new IntPtr(-1)) return l;
+            if (snap == IntPtr.Zero || snap == new IntPtr(-1))
+            {
+                if (requireComplete) throw new Win32Exception(Marshal.GetLastWin32Error());
+                return l;
+            }
             try
             {
                 var e = new PROCESSENTRY32W { dwSize = Marshal.SizeOf(typeof(PROCESSENTRY32W)) };
                 for (bool more = Process32FirstW(snap, ref e); more; more = Process32NextW(snap, ref e))
                     l.Add(new ProcessEntry { Pid = e.th32ProcessID, ParentPid = e.th32ParentProcessID, Name = e.szExeFile });
+                if (requireComplete && Marshal.GetLastWin32Error() != 18) throw new Win32Exception(Marshal.GetLastWin32Error());
             }
             finally { CloseHandle(snap); }
             return l;

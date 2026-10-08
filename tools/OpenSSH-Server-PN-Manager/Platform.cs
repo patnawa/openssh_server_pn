@@ -140,23 +140,12 @@ namespace OpenSSHServerPNManager
             return r;
         }
 
-        /// <summary>
-        /// Starts a program without administrator rights, in a window of its own: runas /trustlevel:0x20000 gives it a basic-user
-        /// token (Administrators deny-only, medium integrity). For ssh: it reads the user's own configuration, which may run
-        /// commands (ProxyCommand, LocalCommand), and must not run them with the manager's rights.
-        /// </summary>
+        /// <summary>Opens a client program as the original desktop user with that user's environment.</summary>
         public static void OpenUnelevated(string exe, string args)
         {
-            if ((args ?? "").IndexOf('"') >= 0) throw new ArgumentException("arguments with quotation marks cannot be passed through runas: " + args);
-            var cmd = "\"" + exe + "\"" + (string.IsNullOrEmpty(args) ? "" : " " + args);
-            try
-            {
-                // runas wants the whole command as one argument: its quotes are doubled inside the outer ones.
-                Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "runas.exe"), "/trustlevel:0x20000 \"" + cmd.Replace("\"", "\\\"") + "\"") { UseShellExecute = false, CreateNoWindow = true });
-            }
-            catch (Exception ex) { Log.Error("Could not start " + exe + " without administrator rights", ex, true); }
+            try { UserProcessLauncher.Open(exe, args); }
+            catch (Exception ex) { Log.Error("Could not start " + exe + " as the desktop user", ex, true); }
         }
-
         public static void OpenExternal(string target, string args = null)
         {
             try { Process.Start(new ProcessStartInfo(target, args ?? "") { UseShellExecute = true }); }

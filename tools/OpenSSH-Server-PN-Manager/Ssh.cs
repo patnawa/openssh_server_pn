@@ -66,7 +66,23 @@ namespace OpenSSHServerPNManager
         public static string DefaultConfigPath { get { return Path.Combine(InstallDir, "sshd_config_default"); } }
         public static string AdminKeysPath { get { return Path.Combine(ConfigDir, "administrators_authorized_keys"); } }
         public static string LogDir { get { return Path.Combine(ConfigDir, "logs"); } }
-        public static string Exe(string name) { return Path.Combine(InstallDir, name); }
+        public static string Exe(string name)
+        {
+            return ResolveExecutable(name, Program.ClientMode, Elevation.IsAdministrator(),
+                Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location), InstallDir, File.Exists);
+        }
+
+        internal static string ResolveExecutable(string name, bool clientMode, bool elevated, string managerDirectory, string serverDirectory, Func<string, bool> exists)
+        {
+            // A client-only MSI installation may have no sshd service or may coexist with a different server package.
+            // Only the unelevated client workspace selects the client tools delivered beside this manager.
+            if (clientMode && !elevated && new[] { "ssh.exe", "ssh-keygen.exe", "ssh-add.exe", "ssh-agent.exe", "ssh-keyscan.exe", "scp.exe", "sftp.exe" }.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                var sibling = Path.Combine(managerDirectory, name);
+                if (exists(sibling)) return sibling;
+            }
+            return Path.Combine(serverDirectory, name);
+        }
 
         public static string ServerVersion()
         {
@@ -106,30 +122,93 @@ namespace OpenSSHServerPNManager
         }
 
         /// <summary>
-        /// The first authorized_keys file sshd reads for an account, with Match blocks applied (sshd -T -C, optionally on a
-        /// candidate configuration), tokens expanded and relative paths resolved against the home folder. Null when sshd
-        /// cannot tell.
+        /// The first authorized_keys file sshd reads for an account. Discovery errors are explicit; they must never cause
+        /// a write to a guessed administrator key file. Null means the server explicitly disables file-based keys.
         /// </summary>
         public static string AuthorizedKeysFileFor(string user, string home, string configPath = null)
         {
-            // Match User compares with the login name in sshd's form, which sshd lower-cases.
-            var r = Proc.Run(Exe("sshd.exe"), "-T" + (configPath != null ? " -f " + Proc.Quote(configPath) : "") + " -C " + Proc.Quote("user=" + Accounts.AsciiLower(user) + ",host=localhost,addr=127.0.0.1"), 20000);
-            if (!r.Ok) return null;
-            // sshd prints keywords in mixed case since 10.4 (AuthorizedKeysFile), lower case before.
-            var m = Regex.Match(r.StdOut, @"^authorizedkeysfile\s+(.+?)\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
-            return m.Success ? ResolveKeysFile(m.Groups[1].Value, user, home) : null;
+            return AuthorizedKeysFilesFor(user, home, configPath).FirstOrDefault();
         }
 
-        /// <summary>The first file of an AuthorizedKeysFile value, tokens expanded; a relative path needs the home folder (null when unknown).</summary>
+        public static List<string> AuthorizedKeysFilesFor(string user, string home, string configPath = null)
+        {
+            // Match User compares with the login name in sshd's form, which sshd lower-cases.
+            var r = Proc.Run(Exe("sshd.exe"), "-T" + (configPath != null ? " -f " + Proc.Quote(configPath) : "") + " -C " + Proc.Quote("user=" + Accounts.AsciiLower(user) + ",host=localhost,addr=127.0.0.1"), 20000);
+            if (!r.Ok) throw new ConfigException("Cannot determine authorized key files for " + user + ": sshd -T failed.\n" + r.Output);
+            // sshd prints keywords in mixed case since 10.4 (AuthorizedKeysFile), lower case before.
+            var m = Regex.Match(r.StdOut, @"^authorizedkeysfile[ \t]+([^\r\n]+?)[ \t]*\r?$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+            if (!m.Success) throw new ConfigException("sshd -T did not report AuthorizedKeysFile for " + user + ". No key file was assumed.");
+            return ResolveEffectiveKeysFiles(m.Groups[1].Value, user, home);
+        }
+
+        private static bool? _quotedKeyDump;
+
+        /// <summary>Older sshd dumps lose path boundaries. Probe without loading host keys or user configuration.</summary>
+        public static List<string> ResolveEffectiveKeysFiles(string value, string user, string home)
+        {
+            bool needsQuoting = (value ?? "").IndexOfAny(new[] { ' ', '\t', '\\', '\'', '"' }) >= 0;
+            if (needsQuoting && !_quotedKeyDump.HasValue)
+            {
+                var probe = Proc.Run(Exe("sshd.exe"), "-G -f NUL -o " + Proc.Quote("AuthorizedKeysFile \"pn capability probe\""), 15000);
+                _quotedKeyDump = probe.Ok && Regex.IsMatch(probe.StdOut, @"^authorizedkeysfile ""pn capability probe""\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+            }
+            return ResolveEffectiveKeysFiles(value, user, home, !needsQuoting || _quotedKeyDump == true);
+        }
+
+        internal static List<string> ResolveEffectiveKeysFiles(string value, string user, string home, bool quotedDumpSupported)
+        {
+            if (!quotedDumpSupported) throw new ConfigException("This installed sshd does not preserve AuthorizedKeysFile argument boundaries in its effective settings. The reported paths are ambiguous; no key file was assumed. Upgrade the server before managing these key files in the GUI.");
+            return ResolveKeysFiles(value, user, home);
+        }
+
+        /// <summary>The first configured key file, with tokens expanded. Missing context is an explicit error; none returns null.</summary>
         public static string ResolveKeysFile(string value, string user, string home)
         {
-            var first = (value ?? "").Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-            if (string.IsNullOrEmpty(first) || first.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
-            if (string.IsNullOrEmpty(home) && first.Contains("%h")) return null;
-            first = first.Replace("__PROGRAMDATA__", Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData))
-                         .Replace("%h", home ?? "").Replace("%u", user).Replace("%%", "%").Replace('/', '\\');
-            if (Path.IsPathRooted(first)) return Path.GetFullPath(first);
-            return string.IsNullOrEmpty(home) ? null : Path.GetFullPath(Path.Combine(home, first));
+            return ResolveKeysFiles(value, user, home).FirstOrDefault();
+        }
+
+        /// <summary>All configured files in server order; quoted paths and percent tokens follow sshd argument semantics.</summary>
+        public static List<string> ResolveKeysFiles(string value, string user, string home)
+        {
+            if ((value ?? "").Any(c => char.IsControl(c) && c != '\t')) throw new ConfigException("AuthorizedKeysFile contains a control character.");
+            string error;
+            var arguments = SshdArgs.Split(value, out error);
+            if (arguments == null) throw new ConfigException("Invalid AuthorizedKeysFile: " + error);
+            if (arguments.Count == 0) throw new ConfigException("AuthorizedKeysFile was not reported; no key file was assumed.");
+            if (arguments.Count > 1 && arguments.Any(a => a.Equals("none", StringComparison.OrdinalIgnoreCase))) throw new ConfigException("AuthorizedKeysFile none must appear alone.");
+            var result = new List<string>();
+            foreach (var argument in arguments)
+            {
+                if (argument.Equals("none", StringComparison.OrdinalIgnoreCase)) continue;
+                var pattern = argument.Replace("__PROGRAMDATA__", Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData));
+                var expanded = new StringBuilder();
+                for (int i = 0; i < pattern.Length; i++)
+                {
+                    if (pattern[i] != '%') { expanded.Append(pattern[i]); continue; }
+                    if (++i == pattern.Length) throw new ConfigException("AuthorizedKeysFile ends with an incomplete percent token.");
+                    switch (pattern[i])
+                    {
+                        case '%': expanded.Append('%'); break;
+                        case 'u': expanded.Append(user); break;
+                        case 'U': expanded.Append('1'); break; // Win32 pwd.c initializes pw_uid to 1 for every account.
+                        case 'h':
+                            if (string.IsNullOrEmpty(home)) throw new ConfigException("The home folder is required to resolve AuthorizedKeysFile %h.");
+                            expanded.Append(home); break;
+                        default: throw new ConfigException("Cannot safely resolve AuthorizedKeysFile token %" + pattern[i] + ". Use a supported path (%h, %u, %U or %%).");
+                    }
+                }
+                var path = expanded.ToString().Replace('/', '\\');
+                if (path.Length == 0) throw new ConfigException("AuthorizedKeysFile contains an empty file name.");
+                if (!Path.IsPathRooted(path))
+                {
+                    if (string.IsNullOrEmpty(home)) throw new ConfigException("The home folder is required to resolve the relative authorized key file " + path + ".");
+                    path = Path.Combine(home, path);
+                }
+                if (!Regex.IsMatch(path, @"^[A-Za-z]:\\") && !path.StartsWith(@"\\", StringComparison.Ordinal))
+                    throw new ConfigException("AuthorizedKeysFile must resolve to a fully qualified path; the service's current drive or directory cannot be assumed: " + path);
+                result.Add(Path.GetFullPath(path));
+            }
+            return result.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         }
 
         /// <summary>Writes a known_hosts file that trusts only this server's own host keys, for connections to host:port.</summary>
@@ -154,6 +233,12 @@ namespace OpenSSHServerPNManager
 
     internal static class Services
     {
+        public static string CommandLine(string name)
+        {
+            using (var key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\" + name))
+                return key == null ? null : key.GetValue("ImagePath") as string;
+        }
+
         /// <summary>Executable named by a service's ImagePath (quotes, arguments and environment variables handled), or null.</summary>
         public static string ImagePath(string name)
         {

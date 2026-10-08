@@ -4256,6 +4256,33 @@ static void
 dump_cfg_strarray_oneline(ServerOpCodes code, u_int count, char **vals)
 {
 	u_int i;
+	const char *cp;
+	int quote;
+
+	/* AuthorizedKeysFile is reparsed by management tools and by -T round-trip
+	 * checks. Preserve argument boundaries, literal backslashes and quotes.
+	 * An empty array explicitly disables files; omitting it restores defaults
+	 * when the dump is read again. Other options retain their existing format.
+	 */
+	if (code == sAuthorizedKeysFile) {
+		printf("%s", lookup_opcode_name(code));
+		if (count == 0)
+			printf(" none");
+		for (i = 0; i < count; i++) {
+			quote = vals[i][0] == '#' ||
+			    strpbrk(vals[i], " \t\\\"'") != NULL;
+			printf(" %s", quote ? "\"" : "");
+			for (cp = vals[i]; *cp != '\0'; cp++) {
+				if (*cp == '\\' || *cp == '"')
+					putchar('\\');
+				putchar(*cp);
+			}
+			if (quote)
+				putchar('"');
+		}
+		putchar('\n');
+		return;
+	}
 
 	switch (code) {
 	case sAuthenticationMethods:

@@ -20,7 +20,7 @@
     |           | still Private only                                                                     |
     | Sessions  | opens a key login, installs the upgrade-test MSI with ACTIVE_SESSIONS=abort (refused,  |
     |           | session alive) and ACTIVE_SESSIONS=close (installed, session ended)                   |
-    | Uninstall | sets up the manager's two scheduled tasks (as its Alerts tab does), msiexec /x;        |
+    | Uninstall | creates the manager's alert and configuration-recovery tasks, then msiexec /x;       |
     |           | services, rule, program files, shortcuts and the tasks gone, %ProgramData%\ssh kept    |
     | FirstRun  | on the machine Uninstall left, installs the release MSI with a window (/qr): the       |
     |           | manager's setup wizard opens (it is ended), then uninstalls silently                   |
@@ -241,10 +241,10 @@ switch ($Scenario) {
     'Uninstall' {
         $product = Get-InstalledOpenSSHProduct
         if (-not $product) { throw 'Nothing to uninstall: OpenSSH Server PN is not installed.' }
-        # The Alerts tab of the manager has set up its scheduled tasks, which run the installed manager as SYSTEM; the
-        # uninstall step of the package removes them. Their trigger is a year away, so they do not run in between.
+        # Alert and recovery tasks run as SYSTEM; the uninstall step must remove all three names.
+        # Their fixture triggers are a year away, so no recovery or alert work runs in between.
         $manager = Get-ManagerPath
-        foreach ($t in @(@('Watch', '--agent watch'), @('Daily', '--agent daily'))) {
+        foreach ($t in @(@('Watch', '--agent watch'), @('Daily', '--agent daily'), @('Configuration recovery', '--recover-configuration'))) {
             Register-ScheduledTask -TaskName $t[0] -TaskPath $ManagerTaskPath -Action (New-ScheduledTaskAction -Execute $manager -Argument $t[1]) `
                 -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(1)) -Principal (New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -RunLevel Highest) -Force | Out-Null
         }
@@ -290,8 +290,7 @@ switch ($Scenario) {
         }
         $log = Get-Content -LiteralPath (Join-Path $LogDir '9-first-run.log') -Raw
         $ran = [regex]::Match($log, 'Action ended [\d:]+: OpenSSHOpenWizard\. Return value (\d+)')
-        $shellError = [regex]::Match($log, 'WixShellExec:\s+(Error .*)')
-        Test-Check 'MSI log: the step that opens the wizard started the manager' ($ran.Success -and -not $shellError.Success) "$(if ($shellError.Success) { $shellError.Groups[1].Value.Trim() } elseif ($ran.Success) { 'return value ' + $ran.Groups[1].Value } else { 'no OpenSSHOpenWizard in the log' })" | Out-Null
+        Test-Check 'MSI log: explicit wizard launch action completed' ($ran.Success -and $ran.Groups[1].Value -eq '1') "$(if ($ran.Success) { 'return value ' + $ran.Groups[1].Value } else { 'no OpenSSHOpenWizard in the log' })" | Out-Null
         $running = @(Get-ManagerProcess | ForEach-Object { $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner; [pscustomobject]@{ Id = $_.ProcessId; User = "$($o.Domain)\$($o.User)"; CommandLine = $_.CommandLine } })
         $running | ForEach-Object { Write-Host "OpenSSHServerPNManager.exe PID $($_.Id) as $($_.User): $($_.CommandLine)" }
         Test-Check 'The setup wizard of the manager opens after a first installation with a window' ($null -ne $opened) "$(if ($opened) { $opened } else { "no 'Setup wizard opened' in $managerLog within 60 s; $($running.Count) manager process(es)" })" | Out-Null

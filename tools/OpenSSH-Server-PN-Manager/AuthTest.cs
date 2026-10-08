@@ -439,12 +439,12 @@ namespace OpenSSHServerPNManager
         /// <summary>
         /// The agent against this computer: an address of the documentation range blocked in the firewall rule and unblocked
         /// by a Watch run when its time is up (the rule is put back as it was); the transfers of the partner test archived
-        /// (in a copy of the configuration folder of this test); and the Watch task run by Task Scheduler as SYSTEM, which
-        /// writes its state (only where the tasks are not set up already; the copy of the program it makes is removed).
+        /// (in isolated storage for this test); and a uniquely named Task Scheduler probe running as SYSTEM, which reads
+        /// the service/event log and writes only to its private scratch folder. Existing tasks and journals stay in place.
         /// </summary>
         private static int AgentTests(StringBuilder sb, string dir, string partner)
         {
-            int failed = 0; string uninstalled = null;
+            int failed = 0; string probeCleanup = null;
             Action<string, Func<string>> step = (name, body) =>
             {
                 try { sb.AppendLine("PASS  " + name + ": " + body()); }
@@ -452,10 +452,14 @@ namespace OpenSSHServerPNManager
             };
             step("Agent: an address is blocked after its failed logins and unblocked when its time is up", () =>
             {
-                var before = Firewall.BlockedAddresses(); var ports = SshdConfig.Load().EffectivePort.ToString();
+                var before = Firewall.BlockedAddresses(); var serverState = ServerState.Read();
+                if (!serverState.Verified) throw new Exception("the server's listener ports could not be verified: " + serverState.Error);
+                var ports = serverState.FirewallPorts;
+                var previousRoot = AgentStorage.RootOverride;
                 const string address = "192.0.2.77"; // TEST-NET-1, never a real client
                 try
                 {
+                    AgentStorage.RootOverride = Path.Combine(dir, "agent-expiry-state");
                     var s = new AlertSettings { OnSshdStopped = false, OnFailedLogins = false, OnUploads = false, OnDiskLow = false, MonthlyReport = false };
                     var st = new AgentState(); var now = DateTime.Now;
                     var src = new List<EventLogs.FailedSource> { new EventLogs.FailedSource { Address = address, Count = 12, First = now, Last = now } };
@@ -468,7 +472,7 @@ namespace OpenSSHServerPNManager
                     if (!st.Blocks.ContainsKey(address) || st.Blocks[address].Until != DateTime.MinValue || st.Blocks[address].Strikes != 1) throw new Exception("the strike is not remembered for a week");
                     return "blocked for 1 hour, unblocked by the Watch run when the time was up; the strike is kept for a week";
                 }
-                finally { Firewall.SetBlockedAddresses(before, ports); }
+                finally { AgentStorage.RootOverride = previousRoot; Firewall.SetBlockedAddresses(before, ports); }
             });
             step("Agent: the transfers of the partner test go into the archive", () =>
             {
@@ -482,48 +486,48 @@ namespace OpenSSHServerPNManager
                     int n = Agent.Archive(records);
                     int again = Agent.Archive(records);
                     var back = TransferArchive.Read(DateTime.Today, DateTime.Now.AddMinutes(1));
-                    int distinct = records.Select(r => r.Key).Distinct().Count(); // the same record twice in one second is kept once
+                    int distinct = records.Select(r => r.Key).Distinct().Count(); // only the same event identity is kept once
                     if (n != distinct || again != 0 || back.Count != distinct) throw new Exception("archived " + n + " then " + again + ", read back " + back.Count + " of " + distinct);
                     if (!Acl.IsAdminOnly(TransferArchive.FileOf(DateTime.Today))) throw new Exception("the archive is readable by others");
                     return records.Count + " record(s) of " + partner + " archived once (a second run added none), readable by SYSTEM and Administrators only";
                 }
                 finally { Ssh.ConfigDirOverride = old; }
             });
-            step("Agent: Task Scheduler runs the Watch task as SYSTEM", () =>
+            step("Agent: Task Scheduler runs the isolated event-log probe as SYSTEM", () =>
             {
-                if (SystemTasks.Exists(Agent.WatchTask)) return "skipped: the tasks are set up on this computer";
-                var stateFile = AgentState.FilePath; var snapshot = FileSnapshot.Take(stateFile); var start = DateTime.Now;
-                var exe = Agent.AgentExe(); bool copied = !exe.StartsWith(Ssh.InstallDir, StringComparison.OrdinalIgnoreCase);
+                var probeDir = Path.Combine(Path.GetTempPath(), "pn-agent-probe-" + Guid.NewGuid().ToString("N"));
+                Acl.CreatePrivateFolder(probeDir);
+                var marker = Path.Combine(probeDir, "agent-probe.marker"); File.WriteAllText(marker, "OpenSSH Server PN auth-test probe"); Acl.Restrict(marker, null);
+                var previousRoot = AgentStorage.RootOverride; AgentStorage.RootOverride = probeDir;
+                var stateFile = AgentState.FilePath; var start = DateTime.Now;
+                var task = Agent.TaskFolder + "\\Audit-" + Guid.NewGuid().ToString("N");
+                var exe = System.Windows.Forms.Application.ExecutablePath;
                 try
                 {
-                    Agent.InstallTasks();
-                    var r = Proc.Run(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), "/Run /TN " + Proc.Quote(Agent.WatchTask), 30000);
+                    SystemTasks.RegisterXml(task, Agent.TaskXml("OpenSSH Server PN isolated background-agent probe", exe,
+                        "--agent probe:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(probeDir)), false));
+                    var r = Proc.Run(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), "/Run /TN " + Proc.Quote(task), 30000);
                     if (!r.Ok) throw new Exception("schtasks /Run: " + r.Output);
                     var sw = Stopwatch.StartNew();
                     while (!(File.Exists(stateFile) && File.GetLastWriteTime(stateFile) >= start.AddSeconds(-1)) && sw.Elapsed.TotalSeconds < 90) Thread.Sleep(1000);
                     if (!File.Exists(stateFile) || File.GetLastWriteTime(stateFile) < start.AddSeconds(-1)) throw new Exception("the task did not write " + stateFile + " within 90 s; agent log: " + (File.Exists(Agent.LogPath) ? Short(string.Join(" | ", File.ReadAllLines(Agent.LogPath).Reverse().Take(3))) : "none"));
                     var st = AgentState.Load();
-                    if (st.SshdStatus != "Running" || st.LastRecordId <= 0) throw new Exception("the state after the run: sshd " + st.SshdStatus + ", last event " + st.LastRecordId);
-                    return "the task ran " + exe + " as SYSTEM; it saw sshd running and read the event log up to record " + st.LastRecordId;
+                    if (st.SshdStatus != "Running" || st.Journal.LastRecordId <= 0) throw new Exception("the state after the run: sshd " + st.SshdStatus + ", last event " + st.Journal.LastRecordId);
+                    return "the task ran " + exe + " as SYSTEM; it saw sshd running and read the event log up to record " + st.Journal.LastRecordId;
                 }
                 finally
                 {
-                    // What the MSI runs when the package is removed; checked by the next step.
-                    int code = Agent.Run("uninstall");
-                    var left = new[] { Agent.WatchTask, Agent.DailyTask }.Where(SystemTasks.Exists).ToList();
-                    if (copied && File.Exists(exe)) left.Add(exe);
-                    try { dynamic ts = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service")); ts.Connect(); ts.GetFolder("\\" + Agent.TaskFolder); left.Add("the task folder"); } catch { }
-                    uninstalled = code == 0 && left.Count == 0 ? "both tasks and their folder removed" + (copied ? ", and the copy " + exe : "") : "exit code " + code + "; left behind: " + string.Join(", ", left);
-                    if (left.Count > 0) Agent.RemoveTasks();
-                    try { snapshot.Restore(); } catch { }
-                    if (copied) try { Directory.Delete(Path.GetDirectoryName(exe), true); } catch { }
+                    Proc.Run(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), "/End /TN " + Proc.Quote(task), 10000);
+                    bool removed = SystemTasks.Delete(task) && !SystemTasks.Exists(task);
+                    probeCleanup = removed ? "the isolated probe task was removed; the normal watcher, daily job, and recovery task were untouched" : "the isolated probe task could not be removed";
+                    AgentStorage.RootOverride = previousRoot;
+                    if (removed) try { Directory.Delete(probeDir, true); } catch { }
                 }
             });
-            step("Agent: the uninstall step (--agent uninstall) removes what it set up", () =>
+            step("Agent: isolated task cleanup preserves operational tasks", () =>
             {
-                if (uninstalled == null) return "skipped: the tasks are set up on this computer";
-                if (!uninstalled.StartsWith("both", StringComparison.Ordinal)) throw new Exception(uninstalled);
-                return uninstalled;
+                if (probeCleanup == null || !probeCleanup.StartsWith("the isolated probe task was removed", StringComparison.Ordinal)) throw new Exception(probeCleanup ?? "probe cleanup was not reached");
+                return probeCleanup;
             });
             return failed;
         }

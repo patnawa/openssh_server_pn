@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace OpenSSHServerPNManager
@@ -22,6 +23,7 @@ namespace OpenSSHServerPNManager
         protected readonly FlowLayoutPanel Body = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Dock = DockStyle.Fill };
         private readonly FlowLayoutPanel _bar = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Width = Ui.Px(560), Margin = new Padding(3, 12, 3, 3) };
         protected const int Wide = 540;
+        private bool _working;
 
         protected KeyTaskDialog(string title, string okText)
         {
@@ -33,7 +35,8 @@ namespace OpenSSHServerPNManager
             _bar.Controls.Add(cancel); _bar.Controls.Add(ok);
             Controls.Add(Body);
             AcceptButton = ok; CancelButton = cancel;
-            ok.Click += (s, e) => RunOk();
+            ok.Click += async (s, e) => await RunOkAsync();
+            FormClosing += (s, e) => { if (_working) e.Cancel = true; };
         }
 
         protected override void OnLoad(EventArgs e)
@@ -43,16 +46,18 @@ namespace OpenSSHServerPNManager
         }
 
         /// <summary>Checks the input and does the work; a ConfigException is shown and keeps the dialog open.</summary>
-        protected abstract void Work();
+        protected abstract Task WorkAsync();
 
-        private void RunOk()
+        private async Task RunOkAsync()
         {
+            if (_working) return;
+            _working = true;
             Enabled = false; UseWaitCursor = true; LastError = null;
-            try { Work(); DialogResult = DialogResult.OK; }
+            try { await WorkAsync(); _working = false; if (!IsDisposed) DialogResult = DialogResult.OK; }
             catch (OperationCanceledException) { } // the user said no to a question: the dialog stays open
             catch (ConfigException ex) { UseWaitCursor = false; Refuse(ex.Message, MessageBoxIcon.Warning); }
             catch (Exception ex) { UseWaitCursor = false; Log.Error(Text, ex, false); Refuse(ex.Message, MessageBoxIcon.Error); }
-            finally { Enabled = true; UseWaitCursor = false; }
+            finally { _working = false; if (!IsDisposed) { Enabled = true; UseWaitCursor = false; } }
         }
 
         private void Refuse(string message, MessageBoxIcon icon)
@@ -64,7 +69,7 @@ namespace OpenSSHServerPNManager
         // ---------------- test hooks (--selftest): the dialog filled in and confirmed as a user would ----------------
         /// <summary>The message of the last refusal (a wrong passphrase, an input error), or null.</summary>
         internal string LastError;
-        internal void OkForTest() { RunOk(); }
+        internal void OkForTest() { AsyncUiTest.Wait(() => RunOkAsync()); }
         internal void TypeForTest(string accessibleName, string value) { Controls.Cast<Control>().SelectMany(All).OfType<TextBox>().First(t => t.AccessibleName == accessibleName).Text = value; }
         internal void TickForTest(string textStart) { var b = Controls.Cast<Control>().SelectMany(All).OfType<ButtonBase>().First(c => c.Text.StartsWith(textStart, StringComparison.Ordinal)); if (b is RadioButton) ((RadioButton)b).Checked = true; else ((CheckBox)b).Checked = true; }
 
@@ -100,12 +105,13 @@ namespace OpenSSHServerPNManager
         private readonly KeyFileInfo _key;
         private readonly TextBox _old, _new, _confirm;
         private readonly CheckBox _none;
-        private readonly Action<PassphraseChangeDialog> _run;
+        private readonly Func<PassphraseChangeDialog, Task> _run;
 
         public string OldPassphrase { get { return _key.Encrypted ? _old.Text : null; } }
         public string NewPassphrase { get { return _none.Checked ? null : _new.Text; } }
 
-        public PassphraseChangeDialog(KeyFileInfo key, Action<PassphraseChangeDialog> run) : base("Passphrase of " + key.FileName, key.Encrypted ? "Change passphrase" : "Set passphrase")
+        public PassphraseChangeDialog(KeyFileInfo key, Action<PassphraseChangeDialog> run) : this(key, d => { run(d); return Task.FromResult(0); }) { }
+        public PassphraseChangeDialog(KeyFileInfo key, Func<PassphraseChangeDialog, Task> run) : base("Passphrase of " + key.FileName, key.Encrypted ? "Change passphrase" : "Set passphrase")
         {
             _key = key; _run = run;
             Body.Controls.Add(Caption(key.Description + ", " + (key.Encrypted ? "protected by a passphrase" : "no passphrase") + "\n" + key.Path, true));
@@ -122,12 +128,12 @@ namespace OpenSSHServerPNManager
                                    (key.Format.StartsWith("PEM") ? " The file is saved in the OpenSSH format." : "")));
         }
 
-        protected override void Work()
+        protected override async Task WorkAsync()
         {
             if (_key.Encrypted && _old.Text.Length == 0) { _old.Focus(); throw new ConfigException("Enter the current passphrase of the key."); }
             KeyGen.ValidatePassphrase(_new.Text, _confirm.Text, _none.Checked);
             if (_key.Encrypted && !_none.Checked && _new.Text == _old.Text) throw new ConfigException("The new passphrase is the same as the current one.");
-            _run(this);
+            await _run(this);
         }
     }
 
@@ -135,7 +141,7 @@ namespace OpenSSHServerPNManager
     internal sealed class KeyExportDialog : KeyTaskDialog
     {
         private readonly KeyFileInfo _key;
-        private readonly Action<KeyExportDialog> _run;
+        private readonly Func<KeyExportDialog, Task> _run;
         private readonly Dictionary<KeyExportFormat, RadioButton> _formats = new Dictionary<KeyExportFormat, RadioButton>();
         private readonly Panel _private;
         private readonly TextBox _current, _new, _confirm, _path;
@@ -148,7 +154,8 @@ namespace OpenSSHServerPNManager
         public string CurrentPassphrase { get { return _key.Encrypted && IsPrivate ? _current.Text : null; } }
         public string NewPassphrase { get { return !IsPrivate ? null : _same.Checked ? CurrentPassphrase : _newPass.Checked ? _new.Text : null; } }
 
-        public KeyExportDialog(KeyFileInfo key, Action<KeyExportDialog> run) : base("Export " + key.FileName, "Export")
+        public KeyExportDialog(KeyFileInfo key, Action<KeyExportDialog> run) : this(key, d => { run(d); return Task.FromResult(0); }) { }
+        public KeyExportDialog(KeyFileInfo key, Func<KeyExportDialog, Task> run) : base("Export " + key.FileName, "Export")
         {
             _key = key; _run = run;
             bool putty = KeyFormats.PuttyCanUse(key.Type);
@@ -210,7 +217,7 @@ namespace OpenSSHServerPNManager
             }
         }
 
-        protected override void Work()
+        protected override async Task WorkAsync()
         {
             var target = Target;
             if (target.Length == 0 || !Path.IsPathRooted(target) || target.IndexOfAny(Path.GetInvalidPathChars()) >= 0) { _path.Focus(); throw new ConfigException("Enter the full path of the file to export to."); }
@@ -223,7 +230,7 @@ namespace OpenSSHServerPNManager
             var existing = File.Exists(target) || Format == KeyExportFormat.OpenSshPrivate && File.Exists(target + ".pub");
             if (existing && !Program.Unattended && MessageBox.Show(this, "A file with this name exists. It is kept as a backup (.bak-<date>) and the export takes its place. Go on?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
                 throw new OperationCanceledException();
-            _run(this);
+            await _run(this);
         }
     }
 
@@ -233,7 +240,7 @@ namespace OpenSSHServerPNManager
         private readonly ComboBox _type;
         private readonly TextBox _path, _comment, _pass1, _pass2;
         private readonly CheckBox _none;
-        private readonly Action<NewKeyDialog> _run;
+        private readonly Func<NewKeyDialog, Task> _run;
         private string _suggested;
 
         public KeyTypeChoice KeyType { get { return (KeyTypeChoice)_type.SelectedItem; } }
@@ -241,7 +248,8 @@ namespace OpenSSHServerPNManager
         public string Comment { get { return _comment.Text.Trim(); } }
         public string Passphrase { get { return _none.Checked ? null : _pass1.Text; } }
 
-        public NewKeyDialog(Action<NewKeyDialog> run) : base("Create a key for you", "Create key")
+        public NewKeyDialog(Action<NewKeyDialog> run) : this(d => { run(d); return Task.FromResult(0); }) { }
+        public NewKeyDialog(Func<NewKeyDialog, Task> run) : base("Create a key for you", "Create key")
         {
             _run = run;
             var me = KeyGen.LoginName();
@@ -288,13 +296,13 @@ namespace OpenSSHServerPNManager
             for (int n = 2; ; n++) { var p = path + "_" + n; if (!File.Exists(p) && !File.Exists(p + ".pub")) return p; }
         }
 
-        protected override void Work()
+        protected override async Task WorkAsync()
         {
             KeyGen.Validate(KeyType, _path.Text, Comment, _pass1.Text, _pass2.Text, _none.Checked);
             var path = PrivatePath;
             if ((File.Exists(path) || File.Exists(path + ".pub")) && !Program.Unattended && MessageBox.Show(this, "A key already exists at\n" + path + "\n\nReplace it? The existing files are kept with .bak-<date> added to their names.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
                 throw new OperationCanceledException();
-            _run(this);
+            await _run(this);
         }
     }
 }

@@ -121,6 +121,18 @@ Check 'the firewall script cannot fall through to phase pre' ($fw.TrimEnd() -mat
 
 # ---------------------------------------------------------------- load the functions
 . $Script -Phase functions
+
+# Exercise the actual phase setup: an empty REMOVE is also a fresh client-only install.
+. $Script -Phase functions -ServerAction none -ClientAction install -SharedAction install
+Check 'client-only install leaves sshd and its sessions alone' (-not $touchServer -and $touchClient -and $touchShared)
+. $Script -Phase functions -Remove ALL -ServerAction none -ClientAction remove -SharedAction remove
+Check 'client-only uninstall leaves the existing server alone' (-not $touchServer -and $touchClient -and $touchShared)
+. $Script -Phase functions -Remove Server -ServerAction remove -ClientAction none -SharedAction none
+Check 'server feature removal preserves the remaining client and shared service' ($touchServer -and -not $touchClient -and -not $touchShared)
+. $Script -Phase functions -ServerAction install -ClientAction install -SharedAction install
+Check 'full install touches both selected features and shared files' ($touchServer -and $touchClient -and $touchShared)
+. $Script -Phase functions
+Check 'missing feature actions never imply permission to stop services' (-not $touchServer -and -not $touchClient -and -not $touchShared)
 Check 'dot-sourcing with -Phase functions defines the functions' ((Get-Command Set-SshdConfigPortText -ErrorAction SilentlyContinue) -ne $null)
 $ErrorActionPreference = 'Stop'
 
@@ -244,15 +256,15 @@ try {
     Check 'Write-ConfigText: a UTF-8 BOM is kept' ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
     Same 'Write-ConfigText: text after the BOM' "Port 2222`n" ([IO.File]::ReadAllText($cfg2))
 
-    # ReplaceFile fails when the backup name is taken by a folder: the file is written in place.
+    # ReplaceFile fails when the backup name is taken by a folder: never truncate the live config.
     $cfg3 = Join-Path $tmp 'fallback_config'
     [IO.File]::WriteAllText($cfg3, "#Port 22`n")
     $null = New-Item -ItemType Directory -Path ($cfg3 + '.bak.dir')
     $how = ''
     try { $how = Write-ConfigText $cfg3 "Port 2222`n" ($cfg3 + '.bak.dir') } catch { $how = 'threw: ' + $_.Exception.Message }
-    Same 'Write-ConfigText: when ReplaceFile fails, the file is written in place' 'in place' $how
-    Same 'Write-ConfigText: in place, new content' "Port 2222`n" ([IO.File]::ReadAllText($cfg3))
-    Check 'Write-ConfigText: in place, no temporary file left' (@(Get-ChildItem -LiteralPath $tmp -Filter 'fallback_config.new-*').Count -eq 0)
+    Check 'Write-ConfigText: failed atomic replacement is reported' ($how -like 'threw:*') $how
+    Same 'Write-ConfigText: failed replacement keeps original content' "#Port 22`n" ([IO.File]::ReadAllText($cfg3))
+    Check 'Write-ConfigText: failed replacement leaves no temporary file' (@(Get-ChildItem -LiteralPath $tmp -Filter 'fallback_config.new-*').Count -eq 0)
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

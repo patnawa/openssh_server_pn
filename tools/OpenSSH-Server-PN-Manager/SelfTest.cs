@@ -49,6 +49,8 @@ namespace OpenSSHServerPNManager
                 AuditDialogTests.Run(test, tmpDir);
                 AuditStateTests.Run(test, tmpDir);
                 AuditGuiTests.Run(test, tmpDir);
+                ClientRegressionTests.Run(test, tmpDir);
+                AuditInfrastructureTests.Run(test, tmpDir);
                 if (!unitOnly) Server(test, tmpDir);
             }
             finally { try { Directory.Delete(tmpDir, true); } catch { } }
@@ -89,7 +91,7 @@ namespace OpenSSHServerPNManager
                 using (var f = new MainForm())
                 {
                     f.StartPosition = FormStartPosition.Manual; f.Location = new Point(-20000, -20000); f.ShowInTaskbar = false;
-                    f.Show(); Application.DoEvents();
+                    f.Show(); f.WaitForIdleForTest(); Application.DoEvents();
                     body(f);
                     f.Close();
                 }
@@ -557,7 +559,7 @@ namespace OpenSSHServerPNManager
                 var e = string.Join("|", edited);
                 if (!e.Contains("Host web|    HostName web2.example.com|    Port 2222|    IdentityFile \"C:\\Users\\Jane Doe\\.ssh\\id_ed25519\"|    ForwardAgent no|") || e.Contains("User alice") || !e.StartsWith("# my hosts|")) throw new Exception(e);
                 var added = SshClient.WithHost(lines, null, "db", new Dictionary<string, string> { { "HostName", "10.0.0.5" } });
-                if (added[added.Count - 2] != "Host db" || added.Last() != "    HostName 10.0.0.5") throw new Exception("add: " + string.Join("|", added));
+                if (added.IndexOf("Host db") >= added.IndexOf("Host *") || added[added.IndexOf("Host db") + 1] != "    HostName 10.0.0.5") throw new Exception("add: " + string.Join("|", added));
                 var removed = SshClient.WithoutHost(lines, hosts[0]);
                 if (string.Join("|", removed) != "# my hosts||Host *|    ServerAliveInterval 60") throw new Exception("remove: " + string.Join("|", removed));
                 try { SshClient.WithHost(lines, null, "x", new Dictionary<string, string> { { "User", "a\nProxyCommand evil" } }); throw new Exception("a line break was accepted"); } catch (ConfigException) { }

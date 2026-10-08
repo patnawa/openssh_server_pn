@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
     Probes of the built OpenSSH binaries and their libcrypto.dll, each in a process of its own with a timeout,
-    so that a crash or a hang in one probe cannot hide the others. Information only: the script never fails.
+    so that a crash or a hang in one probe cannot hide the others. Use -RequireSuccess for a required gate;
+    without it, failures are reported as diagnostics only.
 
 .DESCRIPTION
     Written when the first run of the ARM64 binaries (GitHub's windows-11-arm runner) crashed unittest-sshbuf and
@@ -21,6 +22,8 @@
       sshd-t         sshd -t with a configuration that names the ed25519 key as host key
 
     The libcrypto probes run only in a process of the DLL's own architecture (P/Invoke cannot load another one).
+    On an x64 host, x86 DLL probes use 32-bit Windows PowerShell automatically. Required gates reject
+    other unsupported host/DLL combinations instead of silently omitting the arithmetic checks.
 
 .EXAMPLE
     ./.github/scripts/Test-CryptoProbes.ps1 -BinPath src\bin\x64\Release -Label x64
@@ -32,7 +35,8 @@ param(
     [int]$TimeoutSeconds = 90,
     # Internal: run one probe in this process (the parent starts a child per probe).
     [string]$Probe = '',
-    [string]$WorkDir = ''
+    [string]$WorkDir = '',
+    [switch]$RequireSuccess
 )
 $ErrorActionPreference = 'Continue'
 # An empty passphrase (-N '') must reach ssh-keygen as an empty argument: PowerShell 7.3 and later do that in the Windows mode.
@@ -164,7 +168,16 @@ $grouped | ForEach-Object { Write-Host "  $_" }
 $processIs = switch -Regex (Get-ProcessMachine) { '^ARM64' { 'ARM64' } '^x64' { 'x64' } '^x86' { 'x86' } default { '?' } }
 $dllMachine = $machines['libcrypto.dll']
 $canLoad = ($dllMachine -eq $processIs)
-if (-not $canLoad) { Write-Host "libcrypto.dll is $dllMachine and this is a $processIs process: the libcrypto probes are skipped (the ssh-keygen and sshd probes still run)" }
+$dllHost = (Get-Process -Id $PID).Path
+if (-not $canLoad -and $dllMachine -eq 'x86' -and $processIs -eq 'x64') {
+    $dllHost = Join-Path $env:SystemRoot 'SysWOW64/WindowsPowerShell/v1.0/powershell.exe'
+    $canLoad = Test-Path -LiteralPath $dllHost
+    if ($canLoad) { Write-Host 'Running x86 libcrypto probes under 32-bit Windows PowerShell; native key/sshd probes retain the current PowerShell host.' }
+}
+if (-not $canLoad) {
+    if ($RequireSuccess) { throw "Cannot run required $dllMachine libcrypto probes in this $processIs process." }
+    Write-Host "libcrypto.dll is $dllMachine and this is a $processIs process: the libcrypto probes are skipped (the ssh-keygen and sshd probes still run)"
+}
 
 $work = if ($WorkDir) { $WorkDir } else { Join-Path ([IO.Path]::GetTempPath()) ("crypto-probes-" + [guid]::NewGuid().ToString('N').Substring(0, 8)) }
 New-Item -ItemType Directory -Force -Path $work | Out-Null
@@ -178,7 +191,8 @@ foreach ($p in $probes) {
     $out = Join-Path $work "$p.out.txt"; $err = Join-Path $work "$p.err.txt"
     $timeout = if ($p -eq 'keygen-rsa') { $TimeoutSeconds * 2 } else { $TimeoutSeconds }
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    $proc = Start-Process -FilePath $host7 -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $self + '"'), '-BinPath', ('"' + $BinPath + '"'), '-Probe', $p, '-WorkDir', ('"' + $work + '"')) -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
+    $probeHost = if ($p -in 'version','bn','ec','rand') { $dllHost } else { $host7 }
+    $proc = Start-Process -FilePath $probeHost -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $self + '"'), '-BinPath', ('"' + $BinPath + '"'), '-Probe', $p, '-WorkDir', ('"' + $work + '"')) -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
     $null = $proc.Handle
     $finished = $proc.WaitForExit($timeout * 1000)
     if (-not $finished) { try { $proc.Kill() } catch { Write-Verbose "already exited: $_" }; $proc.WaitForExit() }
@@ -197,4 +211,5 @@ if ($env:GITHUB_STEP_SUMMARY) {
 }
 $notOk = @($results | Where-Object { $_.Status -ne 'ok' })
 if ($notOk.Count -gt 0 -and $env:GITHUB_ACTIONS -eq 'true') { Write-Host "::warning title=Crypto probes $Label::$($notOk.Count) of $($results.Count) probes did not pass: $(($notOk | ForEach-Object { "$($_.Probe) $($_.Status)" }) -join '; ')" }
+if ($RequireSuccess -and $notOk.Count -gt 0) { throw "$($notOk.Count) crypto probes failed. See the per-process output above." }
 exit 0

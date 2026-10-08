@@ -36,6 +36,7 @@ namespace OpenSSHServerPNManager
         /// made meanwhile in Notepad or by another program is not lost without a question.
         /// </summary>
         public string LoadedHash;
+        public ConfigurationDependencies LoadedDependencies;
 
         /// <summary>Keywords whose lines add up in sshd (servconf.c appends each line to the list): all of them count.</summary>
         public static readonly string[] CumulativeKeywords = { "AllowUsers", "AllowGroups", "DenyUsers", "DenyGroups" };
@@ -55,6 +56,7 @@ namespace OpenSSHServerPNManager
             c.Lines = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None).ToList();
             if (c.Lines.Count > 0 && c.Lines[c.Lines.Count - 1] == "") c.Lines.RemoveAt(c.Lines.Count - 1);
             c.Path = path ?? Ssh.ConfigPath;
+            c.LoadedDependencies = ConfigurationDependencies.Capture(c.Lines);
             return c;
         }
 
@@ -70,7 +72,7 @@ namespace OpenSSHServerPNManager
         public string Text { get { return string.Join(NewLine, Lines) + NewLine; } }
 
         /// <summary>A copy to edit: changes reach the original only when the caller adopts the copy (after it was saved).</summary>
-        public SshdConfig Copy() { return new SshdConfig { Lines = Lines.ToList(), NewLine = NewLine, Path = Path, LoadedHash = LoadedHash }; }
+        public SshdConfig Copy() { return new SshdConfig { Lines = Lines.ToList(), NewLine = NewLine, Path = Path, LoadedHash = LoadedHash, LoadedDependencies = LoadedDependencies }; }
 
         /// <summary>A Match line, or the start of the rules section of the Authentication tab or of the SFTP tab (whose first line is a comment).</summary>
         private static bool StartsMatchSection(string line)
@@ -301,32 +303,7 @@ namespace OpenSSHServerPNManager
         /// overwrite is true. The new text is written to a temporary file next to sshd_config and swapped in (ReplaceFile keeps
         /// the file's permissions), so a crash or a full disk never leaves a half-written sshd_config.
         /// </summary>
-        public string SaveValidated(bool overwrite = false)
-        {
-            var tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "sshd_config.candidate." + Guid.NewGuid().ToString("N"));
-            File.WriteAllText(tmp, Text, new UTF8Encoding(false));
-            try
-            {
-                var t = Ssh.TestConfig(tmp);
-                if (!t.Ok) throw new ConfigException("The configuration was NOT saved because sshd rejected it:\n\n" + t.Output.Replace(tmp, "sshd_config"));
-            }
-            finally { try { File.Delete(tmp); } catch { } }
-            if (!overwrite && LoadedHash != null && FileHash(Path) != LoadedHash)
-                throw new ConfigChangedException(Path + " was changed by another program after this window read it.");
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path));
-            string backup = null;
-            if (File.Exists(Path))
-            {
-                backup = NewBackupPath(Path, DateTime.Now);
-                File.Copy(Path, backup, false);
-            }
-            WriteReplacing(Path, Text);
-            LoadedHash = FileHash(Path);
-            Log.Info("Saved " + Path + (backup != null ? " (backup " + backup + ")" : ""));
-            // Housekeeping only: a failure here must not turn a save that succeeded into an error.
-            try { PruneBackups(Path, KeepBackups); } catch (Exception ex) { Log.Error("Pruning old backups", ex, false); }
-            return backup;
-        }
+        public string SaveValidated(bool overwrite = false) { return ConfigurationTransaction.Save(this, overwrite); }
 
         /// <summary>How many sshd_config backups are kept; older ones are deleted after a save.</summary>
         public const int KeepBackups = 50;
@@ -369,23 +346,8 @@ namespace OpenSSHServerPNManager
         /// Writes text (UTF-8, no BOM) to a temporary file in the same folder and swaps it in with ReplaceFile, which keeps
         /// the permissions of the file it replaces. A file that does not exist yet is moved into place.
         /// </summary>
-        public static void WriteReplacing(string path, string text)
-        {
-            var tmp = path + ".new-" + Guid.NewGuid().ToString("N").Substring(0, 8);
-            File.WriteAllText(tmp, text, new UTF8Encoding(false));
-            try
-            {
-                if (File.Exists(path)) File.Replace(tmp, path, null);
-                else File.Move(tmp, path);
-            }
-            catch (Exception ex)
-            {
-                // Some file systems (network shares, FAT) cannot replace; write in place as before.
-                Log.Info("ReplaceFile failed for " + path + " (" + ex.Message + "); writing in place");
-                File.WriteAllText(path, text, new UTF8Encoding(false));
-            }
-            finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch { } }
-        }
+        public static void WriteReplacing(string path, string text) { ConfigurationTransaction.AtomicWrite(path, text); }
+
     }
 
     internal class ConfigException : Exception { public ConfigException(string m) : base(m) { } }

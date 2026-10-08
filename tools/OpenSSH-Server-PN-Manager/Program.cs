@@ -52,9 +52,9 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Management console of OpenSSH Server PN: service, configuration, login methods, SFTP, keys, firewall, logs and hardening")]
 [assembly: System.Reflection.AssemblyCompany(OpenSSHServerPNManager.Program.Publisher)]
 [assembly: System.Reflection.AssemblyCopyright(OpenSSHServerPNManager.Program.Copyright)]
-[assembly: System.Reflection.AssemblyVersion("2.2.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.2.1.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("2.2.1")]
+[assembly: System.Reflection.AssemblyVersion("2.3.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.3.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("2.3.0")]
 
 namespace OpenSSHServerPNManager
 {
@@ -64,7 +64,7 @@ namespace OpenSSHServerPNManager
     internal static class Program
     {
         public const string AppName = "OpenSSH Server PN Manager";
-        public const string AppVersion = "2.2.1";
+        public const string AppVersion = "2.3.0";
         public const string Publisher = "patnawa";
         public const string Copyright = "Copyright © 2026 patnawa";
         public const string Website = "https://github.com/patnawa/openssh_server_pn";
@@ -76,6 +76,8 @@ namespace OpenSSHServerPNManager
         public static bool StartWizard;
         /// <summary>Started by the package after a first installation, which asked for the setup wizard (WizardRequest).</summary>
         public static bool StartedByInstaller;
+        /// <summary>The client workspace operates on the interactive user's files without server administrator rights.</summary>
+        public static bool ClientMode;
 
         [DllImport("kernel32.dll")] private static extern bool AttachConsole(int pid);
         [DllImport("kernel32.dll")] private static extern bool FreeConsole();
@@ -99,6 +101,14 @@ namespace OpenSSHServerPNManager
             // generator sets only for its own child processes, so a passphrase never appears on a command line
             // (process-creation auditing and Sysmon record command lines, not environments).
             if (Environment.GetEnvironmentVariable(KeyGen.SecretVariable) != null) return KeyGen.AskpassMain(args);
+            if (args.Any(a => a.Equals("--recover-configuration", StringComparison.OrdinalIgnoreCase)))
+            { Unattended = true; return ConfigurationRecovery.Run(); }
+            if (args.Any(a => a.Equals("--start-client-agent", StringComparison.OrdinalIgnoreCase)))
+            {
+                if (!Elevation.IsAdministrator()) return Elevation.Relaunch("--start-client-agent") ? 0 : 1;
+                try { Services.SetStartMode("ssh-agent", "auto"); Services.Start("ssh-agent"); return 0; }
+                catch (Exception ex) { Log.Error("Could not start the SSH authentication agent", ex, true); return 1; }
+            }
             {
                 int ci = Array.FindIndex(args, a => a.Equals("--check", StringComparison.OrdinalIgnoreCase) || a.Equals("/check", StringComparison.OrdinalIgnoreCase));
                 if (ci >= 0) { Unattended = true; return RunCheck(ci + 1 < args.Length ? args[ci + 1] : null); }
@@ -108,7 +118,7 @@ namespace OpenSSHServerPNManager
                 if (ai >= 0) { Unattended = true; return AuthTest.Run(ai + 1 < args.Length ? args[ai + 1] : null); }
                 // The scheduled tasks of the Alerts tab (as SYSTEM): --agent watch (every minute), --agent daily (each night); --agent uninstall (the MSI, as SYSTEM, when the package is removed).
                 int gi = Array.FindIndex(args, a => a.Equals("--agent", StringComparison.OrdinalIgnoreCase));
-                if (gi >= 0) { Unattended = true; return Agent.Run(gi + 1 < args.Length ? args[gi + 1].ToLowerInvariant() : ""); }
+                if (gi >= 0) { Unattended = true; return Agent.Run(gi + 1 < args.Length ? args[gi + 1] : ""); }
             }
 
             Application.EnableVisualStyles();
@@ -123,10 +133,12 @@ namespace OpenSSHServerPNManager
                 if (us >= 0 && us + 1 < args.Length && float.TryParse(args[us + 1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out scale) && scale >= 0.5f && scale <= 4f) Ui.Scale = scale;
                 // --theme dark|light: the colours for --screenshot (and the unattended modes), without touching the saved preference.
                 int th = Array.FindIndex(args, a => a.Equals("--theme", StringComparison.OrdinalIgnoreCase));
-                bool unattended = args.Any(a => a.Equals("--screenshot", StringComparison.OrdinalIgnoreCase) || a.Equals("--selftest", StringComparison.OrdinalIgnoreCase) || a.Equals("--unittest", StringComparison.OrdinalIgnoreCase));
+                bool unattended = args.Any(a => a.Equals("--screenshot", StringComparison.OrdinalIgnoreCase) || a.Equals("--uitest", StringComparison.OrdinalIgnoreCase) || a.Equals("--selftest", StringComparison.OrdinalIgnoreCase) || a.Equals("--unittest", StringComparison.OrdinalIgnoreCase));
                 if (unattended) Unattended = true; // Prefs then stay in memory
                 if (th >= 0 && th + 1 < args.Length && unattended) Prefs.Theme = args[th + 1].ToLowerInvariant();
                 Theme.Current = Theme.For(unattended && th < 0 ? "light" : Prefs.Theme);
+                int uit = Array.FindIndex(args, a => a.Equals("--uitest", StringComparison.OrdinalIgnoreCase));
+                if (uit >= 0) return UiRegressionTests.Run(uit + 1 < args.Length ? args[uit + 1] : Path.Combine(Path.GetTempPath(), "openssh-pn-ui"));
                 // Automated UI test: render every tab off-screen to PNG files without touching the desktop.
                 int si = Array.FindIndex(args, a => a.Equals("--screenshot", StringComparison.OrdinalIgnoreCase));
                 if (si >= 0) { Unattended = true; return RunScreenshots(si + 1 < args.Length ? args[si + 1] : Path.GetTempPath()); }
@@ -136,21 +148,26 @@ namespace OpenSSHServerPNManager
                 if (ui >= 0) { Unattended = true; return SelfTest.Run(ui + 1 < args.Length ? args[ui + 1] : null, true); }
             }
 
-            // After a first installation the package starts the manager, which then opens the wizard when the package left its
-            // request (WizardRequest): the step that starts it (WixShellExec) passes no arguments, and cannot start the wizard's
-            // shortcut, since that 32-bit process resolves a shortcut into the 64-bit Program Files as Program Files (x86).
-            // Without administrator rights the request cannot be read; the elevated start below takes it.
+            // Current packages launch --wizard explicitly. Keep the protected marker for older packages:
+            // the elevated restart takes it when server administration was requested.
             StartedByInstaller = WizardRequest.Take(DateTime.Now);
             StartWizard = StartedByInstaller || args.Any(a => a.Equals("--wizard", StringComparison.OrdinalIgnoreCase) || a.Equals("/wizard", StringComparison.OrdinalIgnoreCase));
-            if (!Elevation.IsAdministrator())
+            bool serverRequested = StartWizard || args.Any(a => a.Equals("--server", StringComparison.OrdinalIgnoreCase));
+            ClientMode = args.Any(a => a.Equals("--client", StringComparison.OrdinalIgnoreCase)) || (!serverRequested && !Elevation.IsAdministrator());
+            if (ClientMode && Elevation.IsAdministrator())
             {
-                if (Elevation.Relaunch(StartWizard ? "--wizard" : null)) return 0;
+                Proc.OpenUnelevated(Application.ExecutablePath, "--client");
+                return 0;
+            }
+            if (!ClientMode && !Elevation.IsAdministrator())
+            {
+                if (Elevation.Relaunch(StartWizard ? "--wizard" : "--server")) return 0;
                 MessageBox.Show("OpenSSH Server PN Manager needs administrator rights to control the sshd service, edit the server configuration and manage keys.\n\nRight-click the program and choose \"Run as administrator\".",
                     AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return 1;
             }
 
-            Application.Run(new MainForm());
+            Application.Run(new MainForm(ClientMode));
             return 0;
         }
 
@@ -165,7 +182,7 @@ namespace OpenSSHServerPNManager
                     f.Location = new Point(-20000, -20000);
                     f.ShowInTaskbar = false;
                     f.Show();
-                    Application.DoEvents();
+                    f.WaitForIdleForTest(); Application.DoEvents();
                     int n = f.TabCount;
                     for (int i = 0; i < n; i++)
                     {

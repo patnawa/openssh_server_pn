@@ -466,7 +466,8 @@ function Get-ManagerPath { Join-Path (Get-OpenSSHInstallDir) 'OpenSSHServerPNMan
 function Get-ManagerShortcut {
     <# The Start-menu shortcuts that the Server feature installs (server.wxs, ManagerShortcuts): path and arguments. #>
     $dir = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'
-    [pscustomobject]@{ Name = 'OpenSSH Server PN Manager'; Path = (Join-Path $dir 'OpenSSH Server PN Manager.lnk'); Arguments = '' }
+    [pscustomobject]@{ Name = 'OpenSSH Server PN Manager'; Path = (Join-Path $dir 'OpenSSH Server PN Manager.lnk'); Arguments = '--server' }
+    [pscustomobject]@{ Name = 'OpenSSH Client PN'; Path = (Join-Path $dir 'OpenSSH Client PN.lnk'); Arguments = '--client' }
     [pscustomobject]@{ Name = 'OpenSSH Server PN setup wizard'; Path = (Join-Path $dir 'OpenSSH Server PN setup wizard.lnk'); Arguments = '--wizard' }
 }
 
@@ -534,11 +535,11 @@ function New-AdminTestKey {
       administrator) in %ProgramData%\ssh\administrators_authorized_keys, readable by SYSTEM and
       Administrators only. Returns the private key path.
     #>
-    param([Parameter(Mandatory = $true)][string]$Dir)
+    param([Parameter(Mandatory = $true)][string]$Dir, [string]$BinDir = (Get-OpenSSHInstallDir))
     New-Item -ItemType Directory -Force -Path $Dir | Out-Null
     $key = Join-Path $Dir 'ci_ed25519'
     Remove-Item -LiteralPath $key, "$key.pub" -ErrorAction SilentlyContinue
-    $gen = Invoke-Native -FilePath (Join-Path (Get-OpenSSHInstallDir) 'ssh-keygen.exe') -Arguments ('-q -t ed25519 -N "" -C ci-session-test -f "' + $key + '"')
+    $gen = Invoke-Native -FilePath (Join-Path $BinDir 'ssh-keygen.exe') -Arguments ('-q -t ed25519 -N "" -C ci-session-test -f "' + $key + '"')
     if ($gen.ExitCode -ne 0) { throw "ssh-keygen failed: $($gen.Output)" }
     $authorized = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
     Add-Content -LiteralPath $authorized -Value (Get-Content -LiteralPath "$key.pub") -Encoding ascii
@@ -558,7 +559,8 @@ function Start-TestSshSession {
         [Parameter(Mandatory = $true)][string]$KeyPath,
         [Parameter(Mandatory = $true)][int]$Port,
         [Parameter(Mandatory = $true)][string]$Dir,
-        [int]$Seconds = 900
+        [int]$Seconds = 900,
+        [string]$BinDir = (Get-OpenSSHInstallDir)
     )
     $out = Join-Path $Dir 'session.out'
     $err = Join-Path $Dir 'session.err'
@@ -568,7 +570,7 @@ function Start-TestSshSession {
         '-o', ('UserKnownHostsFile="' + $knownHosts + '"'), '-p', $Port, ($env:USERNAME + '@127.0.0.1'),
         ('"echo session-started & ping -n ' + $Seconds + ' 127.0.0.1 >nul"')
     ) -join ' '
-    $p = Start-Process -FilePath (Join-Path (Get-OpenSSHInstallDir) 'ssh.exe') -ArgumentList $arguments -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+    $p = Start-Process -FilePath (Join-Path $BinDir 'ssh.exe') -ArgumentList $arguments -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
     $null = $p.Handle
     $deadline = (Get-Date).AddSeconds(60)
     while ((Get-Date) -lt $deadline) {
@@ -577,6 +579,7 @@ function Start-TestSshSession {
         Start-Sleep -Seconds 1
     }
     $detail = if (Test-Path -LiteralPath $err) { Get-Content -LiteralPath $err -Raw } else { '' }
+    if (-not $p.HasExited) { $p.Kill(); $p.WaitForExit() }
     throw "The test SSH session did not start (exited: $($p.HasExited)). $detail"
 }
 

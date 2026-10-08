@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace OpenSSHServerPNManager
@@ -52,13 +53,17 @@ namespace OpenSSHServerPNManager
         private readonly RadioButton _keep, _adminKeys, _allKeys;
         private readonly TextBox _groups;
         private readonly Label _keysState, _summary, _keyNote;
-        private readonly Func<int> _myKeyCount;
-        private readonly Action _addKey;
-        private readonly Func<IWin32Window, string> _createKey;
+        private readonly Func<Task<int>> _myKeyCount;
+        private readonly Func<Task> _addKey;
+        private readonly Func<IWin32Window, Task<string>> _createKey;
+        private bool _working;
         private readonly int _currentPort, _currentProfiles; private readonly bool _fwExists, _fwEnabled, _hadRestriction;
         public WizardPlan Plan;
 
         public SetupWizard(int currentPort, FirewallRule fw, string allowGroups, Func<int> myKeyCount, Action addKey, Func<IWin32Window, string> createKey)
+            : this(currentPort, fw, allowGroups, () => Task.FromResult(myKeyCount()), () => { addKey(); return Task.FromResult(0); }, owner => Task.FromResult(createKey(owner))) { }
+
+        public SetupWizard(int currentPort, FirewallRule fw, string allowGroups, Func<Task<int>> myKeyCount, Func<Task> addKey, Func<IWin32Window, Task<string>> createKey)
         {
             _myKeyCount = myKeyCount; _addKey = addKey; _createKey = createKey; _currentPort = currentPort; _fwExists = fw != null; _hadRestriction = !string.IsNullOrEmpty(allowGroups);
             _fwEnabled = fw != null && fw.Enabled;
@@ -98,9 +103,9 @@ namespace OpenSSHServerPNManager
             _keysState = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(680), 0), Font = new Font("Segoe UI", Ui.Pt(9.5f), FontStyle.Bold), Margin = new Padding(3, 8, 3, 8) };
             Add(p2, _keysState);
             var createKeyButton = new Button { Text = "Create a key for me...", AutoSize = true, MinimumSize = new Size(Ui.Px(200), Ui.Px(32)), Margin = new Padding(3, 3, 8, 3) };
-            createKeyButton.Click += (s, e) => { try { var note = _createKey(this); if (note != null) _keyNote.Text = note; } catch (Exception ex) { Log.Error("Creating a key in the setup wizard", ex, false); MessageBox.Show(this, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); } UpdateKeys(); };
+            createKeyButton.Click += async (s, e) => await WorkAsync(async () => { var note = await _createKey(this); if (note != null) _keyNote.Text = note; await UpdateKeys(); });
             var addKeyButton = new Button { Text = "Add my public key (.pub file)...", AutoSize = true, MinimumSize = new Size(0, Ui.Px(32)) };
-            addKeyButton.Click += (s, e) => { try { _addKey(); } catch (Exception ex) { MessageBox.Show(this, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); } UpdateKeys(); };
+            addKeyButton.Click += async (s, e) => await WorkAsync(async () => { await _addKey(); await UpdateKeys(); });
             var keyButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
             keyButtons.Controls.Add(createKeyButton); keyButtons.Controls.Add(addKeyButton);
             Add(p2, keyButtons);
@@ -139,7 +144,24 @@ namespace OpenSSHServerPNManager
             Controls.Add(_step); Controls.Add(_title); Controls.Add(bar);
             _back.Click += (s, e) => ShowPage(_page - 1);
             _next.Click += (s, e) => { if (_page == _pages.Length - 1) Finish(); else ShowPage(_page + 1); };
-            Load += (s, e) => { UpdateKeys(); ShowPage(0); };
+            Load += async (s, e) => { ShowPage(0); await WorkAsync(UpdateKeys); };
+            FormClosing += (s, e) => { if (_working) e.Cancel = true; };
+        }
+
+        private async Task WorkAsync(Func<Task> work)
+        {
+            if (_working) return;
+            _working = true; Enabled = false; UseWaitCursor = true;
+            try { await work(); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                _keep.Checked = true; _adminKeys.Enabled = _allKeys.Enabled = false;
+                _keysState.Text = "Key authorization could not be verified: " + ex.Message; _keysState.ForeColor = Theme.Warn;
+                Log.Error("Setup wizard", ex, false);
+                if (!Program.Unattended) MessageBox.Show(this, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally { _working = false; if (!IsDisposed) { Enabled = true; UseWaitCursor = false; } }
         }
 
         /// <summary>Windows Server: every profile; Windows 10 and 11: Domain and Private (as the installer does).</summary>
@@ -159,9 +181,10 @@ namespace OpenSSHServerPNManager
         private static void Add(Panel p, Control c) { p.Controls.Add(c); }
         private static Label Note(string text) { return new Label { Text = text, AutoSize = true, ForeColor = Theme.Muted, MaximumSize = new Size(Ui.Px(680), 0), Margin = new Padding(3, 10, 3, 3) }; }
 
-        private void UpdateKeys()
+        private async Task UpdateKeys()
         {
-            int n = _myKeyCount();
+            int n = await _myKeyCount();
+            if (IsDisposed) return;
             _keysState.Text = n > 0 ? n + " key(s) are authorized for " + KeyGen.LoginName() + " (you). You can log in with a key." : "No key is authorized for " + KeyGen.LoginName() + " (you) yet.";
             _keysState.ForeColor = n > 0 ? Theme.Good : Theme.Warn;
             _adminKeys.Enabled = _allKeys.Enabled = n > 0;

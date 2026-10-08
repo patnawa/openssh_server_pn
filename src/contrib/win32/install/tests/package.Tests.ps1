@@ -66,7 +66,20 @@ Before 'OpenSSHCheckSessions' 'InstallValidate'
 Before 'SetOpenSSHCheckSessionsCommand' 'OpenSSHCheckSessions'
 Check 'OpenSSHCheckSessions condition' ($cond['OpenSSHCheckSessions'] -match 'ACTIVE_SESSIONS ~= "abort"') $cond['OpenSSHCheckSessions']
 Check 'OpenSSHCheckSessions: immediate (not in script), return code checked' (($type['OpenSSHCheckSessions'] -band 0x400) -eq 0 -and ($type['OpenSSHCheckSessions'] -band 0x40) -eq 0) ([string]$type['OpenSSHCheckSessions'])
-Check 'the check runs the pre-install script with phase sessions' ($target['SetOpenSSHCheckSessionsCommand'] -match '\[PreInstallCommand\] .* sessions"$') $target['SetOpenSSHCheckSessionsCommand']
+Check 'the check runs the pre-install script with phase sessions and resolved feature actions' ($target['SetOpenSSHCheckSessionsCommand'] -match '\[PreInstallCommand\] .* sessions \[OpenSSHFeatureArguments\]"$') $target['SetOpenSSHCheckSessionsCommand']
+Before 'CostFinalize' 'ResolveServerInstall'
+Before 'ResolveSharedRemove' 'SetOpenSSHFeatureArguments'
+Before 'SetOpenSSHFeatureArguments' 'SetOpenSSHCheckSessionsCommand'
+Check 'server install action uses the selected feature action' ($cond['ResolveServerInstall'] -eq '&Server = 3')
+Check 'server removal requires an installed server feature' ($cond['ResolveServerRemove'] -eq '&Server = 2 AND !Server = 3')
+Check 'client install action uses the selected feature action' ($cond['ResolveClientInstall'] -eq '&Client = 3')
+Check 'client removal requires an installed client feature' ($cond['ResolveClientRemove'] -eq '&Client = 2 AND !Client = 3')
+Check 'shared service follows component installation' ($cond['ResolveSharedInstall'] -eq '$SshAgentComponent = 3')
+Check 'shared service removal requires an installed component' ($cond['ResolveSharedRemove'] -eq '$SshAgentComponent = 2 AND ?SshAgentComponent = 3')
+foreach ($name in @('Server', 'Client', 'Shared')) {
+    Check ($name + ' action reaches the preinstall script') ($target['SetOpenSSHFeatureArguments'].Contains('-' + $name + "Action '[OpenSSH" + $name + "Action]'"))
+}
+Check 'deferred cleanup receives resolved feature actions' ($target['SetOpenSSHPreInstall'].Contains('[OpenSSHFeatureArguments]'))
 
 # firewall save before the removal of the old package
 Before 'InstallInitialize' 'OpenSSHFirewallSaveRollback'
@@ -133,19 +146,25 @@ $serverComps = @((Rows 'SELECT `Component_` FROM `FeatureComponents` WHERE `Feat
 foreach ($f in @('OpenSSHServerPNManager.exe', 'OpenSSHServerPNManager.exe.config')) {
     Check ($f + ' is installed with the Server feature') ($fileComp.ContainsKey($f) -and $serverComps -contains $fileComp[$f])
 }
+$clientComps = @((Rows 'SELECT `Component_` FROM `FeatureComponents` WHERE `Feature_` = ''Client''') | ForEach-Object { $_[0] })
+foreach ($f in @('OpenSSHServerPNManager.exe', 'OpenSSHServerPNManager.exe.config')) {
+    Check ($f + ' is also installed with the Client feature') ($fileComp.ContainsKey($f) -and $clientComps -contains $fileComp[$f])
+}
 $shortcuts = @{}
 foreach ($r in (Rows 'SELECT `Shortcut`, `Directory_`, `Name`, `Component_`, `Target`, `Arguments` FROM `Shortcut`')) { $shortcuts[$r[0]] = $r }
-foreach ($s in @(@('ManagerShortcut', 'OpenSSH Server PN Manager', ''), @('WizardShortcut', 'OpenSSH Server PN setup wizard', '--wizard'))) {
+foreach ($s in @(@('ManagerShortcut', 'OpenSSH Server PN Manager', '--server'), @('WizardShortcut', 'OpenSSH Server PN setup wizard', '--wizard'))) {
     $r = $shortcuts[$s[0]]
     Check ('Start-menu shortcut "' + $s[1] + '"') ($r -and $r[1] -eq 'ProgramMenuFolder' -and (LongName $r[2]) -eq $s[1] -and $r[4] -eq '[INSTALLFOLDER]OpenSSHServerPNManager.exe' -and $r[5] -eq $s[2] -and $serverComps -contains $r[3]) $(if ($r) { $r -join ' | ' } else { 'missing' })
 }
+$clientShortcut = $shortcuts['ClientManagerShortcut']
+Check 'client workspace shortcut is present with Client' ($clientShortcut -and $clientShortcut[5] -eq '--client' -and $clientComps -contains $clientShortcut[3])
 $keyPath = @(Rows 'SELECT `Root`, `Key`, `Name` FROM `Registry`, `Component` WHERE `Component`.`KeyPath` = `Registry`.`Registry` AND `Component`.`Component` = ''ManagerShortcuts''')
 Check 'the shortcuts: a per-machine registry key path (HKMU, root -1)' ($keyPath.Count -eq 1 -and $keyPath[0][0] -eq '-1') $(if ($keyPath.Count) { $keyPath[0] -join ' ' })
 Before 'OpenSSHManagerUninstall' 'OpenSSHPreInstall'
 Before 'OpenSSHManagerUninstall' 'RemoveFiles'
 Before 'RemoveExistingProducts' 'OpenSSHManagerUninstall'
 Check 'OpenSSHManagerUninstall: deferred, no impersonation, exit code ignored' (($type['OpenSSHManagerUninstall'] -band 0xF40) -eq 0xC40) ([string]$type['OpenSSHManagerUninstall'])
-Check 'OpenSSHManagerUninstall: only when the Server feature is removed, not by an upgrade' ($cond['OpenSSHManagerUninstall'] -eq '&Server = 2 AND NOT UPGRADINGPRODUCTCODE AND NETFX45_RELEASE') $cond['OpenSSHManagerUninstall']
+Check 'OpenSSHManagerUninstall: only when the Server feature is removed, not by an upgrade' ($cond['OpenSSHManagerUninstall'] -eq 'OpenSSHServerAction = "remove" AND NOT UPGRADINGPRODUCTCODE AND NETFX45_RELEASE') $cond['OpenSSHManagerUninstall']
 Check 'OpenSSHManagerUninstall runs the manager from the install folder' ($target['SetOpenSSHManagerUninstall'] -eq '"[INSTALLFOLDER]OpenSSHServerPNManager.exe" --agent uninstall') $target['SetOpenSSHManagerUninstall']
 Before 'InstallFiles' 'OpenSSHWizardRequest'
 Before 'OpenSSHWizardRequest' 'InstallFinalize'
@@ -153,8 +172,8 @@ Check 'OpenSSHWizardRequest: deferred, no impersonation, exit code ignored' (($t
 Check 'OpenSSHWizardRequest runs the manager from the install folder' ($target['SetOpenSSHWizardRequest'] -eq '"[INSTALLFOLDER]OpenSSHServerPNManager.exe" --agent open-wizard') $target['SetOpenSSHWizardRequest']
 Check 'OpenSSHWizardRequest: the condition of the step that starts the manager' ($cond['OpenSSHWizardRequest'] -eq $cond['OpenSSHOpenWizard']) $cond['OpenSSHWizardRequest']
 Before 'InstallFinalize' 'OpenSSHOpenWizard'
-Check 'OpenSSHOpenWizard: immediate, as the user, exit code ignored' (($type['OpenSSHOpenWizard'] -band 0xC40) -eq 0x40) ([string]$type['OpenSSHOpenWizard'])
-Check 'OpenSSHOpenWizard starts the installed manager (it opens the wizard on the request)' ($props['WixShellExecTarget'] -eq '[#OpenSSHServerPNManager.exe]') $props['WixShellExecTarget']
+Check 'OpenSSHOpenWizard: installed executable, asynchronous, as the user' ($type['OpenSSHOpenWizard'] -eq 210) ([string]$type['OpenSSHOpenWizard'])
+Check 'OpenSSHOpenWizard explicitly requests the wizard' ($target['OpenSSHOpenWizard'] -eq '--wizard') $target['OpenSSHOpenWizard']
 Check 'OPEN_WIZARD defaults to 1 and is a secure property' ($props['OPEN_WIZARD'] -eq '1' -and $secure -contains 'OPEN_WIZARD')
 Before 'FindRelatedProducts' 'SetOpenSSHFirstInstall'
 Check 'a first installation: the condition of the fresh firewall step' ($cond['SetOpenSSHFirstInstall'] -eq $cond['SetOpenSSHFirewallSaveFresh']) $cond['SetOpenSSHFirstInstall']
@@ -183,8 +202,12 @@ foreach ($c in @(@('', 1), @('close', 1), @('abort', 1), @('ABORT', 1), @('Close
     Check ("ACTIVE_SESSIONS='" + $c[0] + "' " + $(if ($c[1] -eq 1) { 'accepted' } else { 'refused' })) ($got -eq $c[1]) ('EvaluateCondition=' + $got)
 }
 # The check itself only runs for abort, whatever the case.
+SetP $session 'Property' @('OpenSSHServerAction', 'install')
 SetP $session 'Property' @('ACTIVE_SESSIONS', 'Abort')
 Check 'OpenSSHCheckSessions condition true for ACTIVE_SESSIONS=Abort on a first install' ([int](Invoke $session 'EvaluateCondition' @($cond['OpenSSHCheckSessions'])) -eq 1)
+SetP $session 'Property' @('OpenSSHServerAction', 'none')
+Check 'Client-only install never runs the server session abort check' ([int](Invoke $session 'EvaluateCondition' @($cond['OpenSSHCheckSessions'])) -eq 0)
+SetP $session 'Property' @('OpenSSHServerAction', 'install')
 SetP $session 'Property' @('ACTIVE_SESSIONS', 'close')
 Check 'OpenSSHCheckSessions condition false for close' ([int](Invoke $session 'EvaluateCondition' @($cond['OpenSSHCheckSessions'])) -eq 0)
 # The wizard after installing; the feature state is not costed in this session, so "&Server = 3" counts as true.

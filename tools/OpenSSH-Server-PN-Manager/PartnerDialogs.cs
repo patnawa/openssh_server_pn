@@ -5,6 +5,8 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace OpenSSHServerPNManager
@@ -21,7 +23,7 @@ namespace OpenSSHServerPNManager
         private readonly RadioButton _full, _readOnly, _password, _keyOnly;
         private readonly CheckBox _expires;
         private readonly DateTimePicker _lastDay;
-        private readonly Action<PartnerDialog> _run;
+        private readonly Func<PartnerDialog, Task> _run;
 
         public string AccountName { get { return _existing != null ? _existing.Name : _name.Text.Trim(); } }
         public string FullName { get { return _fullName.Text.Trim(); } }
@@ -33,7 +35,8 @@ namespace OpenSSHServerPNManager
         /// <summary>Who is told when the partner's files arrive (Alerts tab): e-mail addresses, or empty for the admins.</summary>
         public string Notify { get { return string.Join(", ", AlertSettings.Addresses(_notify.Text)); } }
 
-        public PartnerDialog(PartnerAccount existing, string root, string notify, Action<PartnerDialog> run)
+        public PartnerDialog(PartnerAccount existing, string root, string notify, Action<PartnerDialog> run) : this(existing, root, notify, d => { run(d); return Task.FromResult(0); }) { }
+        public PartnerDialog(PartnerAccount existing, string root, string notify, Func<PartnerDialog, Task> run)
             : base(existing == null ? "New SFTP partner" : "SFTP partner " + existing.Name, existing == null ? "Create partner" : "Save")
         {
             _existing = existing; _run = run;
@@ -76,13 +79,13 @@ namespace OpenSSHServerPNManager
             Body.Controls.Add(Note("The password never expires and the partner cannot change it (over SFTP it could not anyway); the date above decides until when the account can log in. The account is hidden from the Windows sign-in screen and cannot use a shell, commands or forwarding."));
         }
 
-        protected override void Work()
+        protected override async Task WorkAsync()
         {
             if (_existing == null) { var e = Partners.NameError(AccountName); if (e != null) { _name.Focus(); throw new ConfigException(e); } }
             if (FullName.Any(char.IsControl) || Company.Any(char.IsControl) || FullName.Length > 100 || Company.Length > 100) throw new ConfigException("The contact name and the company are one line each, at most 100 characters.");
             if (LastDay != null && LastDay.Value < DateTime.Today) throw new ConfigException("The last day to log in is in the past. Choose a later date, or disable the partner instead.");
             AlertSettings.Addresses(_notify.Text); // throws ConfigException for an address that is not valid
-            _run(this);
+            await _run(this);
         }
     }
 
@@ -216,8 +219,12 @@ namespace OpenSSHServerPNManager
         private readonly ListView _list;
         private readonly Label _summary;
         private readonly Button _more;
-        private readonly Func<DateTime, DateTime, List<TransferRecord>> _load;
-        private readonly Func<bool> _enlarge;
+        private readonly Func<DateTime, DateTime, CancellationToken, Task<List<TransferRecord>>> _load;
+        private readonly Func<Task<bool>> _enlarge;
+        private int _loadGeneration;
+        private bool _enlarging;
+        private CancellationTokenSource _readCancellation;
+        private Button _cancelRead;
         private readonly IDictionary<string, string> _companies;
         private List<TransferRecord> _records = new List<TransferRecord>();
         private DateTime _from, _to;
@@ -226,6 +233,12 @@ namespace OpenSSHServerPNManager
 
         /// <summary>load reads a period (in the background); enlarge makes the event log keep more (null when it does already).</summary>
         public TransfersWindow(Func<DateTime, DateTime, List<TransferRecord>> load, Func<bool> enlarge, IDictionary<string, string> companies, string account)
+            : this((from, to) => Task.FromResult(load(from, to)), enlarge == null ? (Func<Task<bool>>)null : () => Task.FromResult(enlarge()), companies, account) { }
+
+        public TransfersWindow(Func<DateTime, DateTime, Task<List<TransferRecord>>> load, Func<Task<bool>> enlarge, IDictionary<string, string> companies, string account)
+            : this((from, to, cancellation) => load(from, to), enlarge, companies, account) { }
+
+        public TransfersWindow(Func<DateTime, DateTime, CancellationToken, Task<List<TransferRecord>>> load, Func<Task<bool>> enlarge, IDictionary<string, string> companies, string account)
         {
             _load = load; _enlarge = enlarge; _companies = companies ?? new Dictionary<string, string>();
             Text = "SFTP transfers"; StartPosition = FormStartPosition.CenterParent; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
@@ -255,19 +268,35 @@ namespace OpenSSHServerPNManager
             root.Controls.Add(_summary, 0, 2);
             var bar = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 0) };
             Func<string, EventHandler, Button> btn = (t, h) => { var b = new Button { Text = t, AutoSize = true, MinimumSize = new Size(Ui.Px(110), Ui.Px(30)) }; b.Click += h; bar.Controls.Add(b); return b; };
-            btn("Refresh", (s, e) => Guard(Reload));
+            btn("Refresh", async (s, e) => await GuardAsync(Reload));
+            _cancelRead = btn("Cancel reading", (s, e) => { if (_readCancellation != null) _readCancellation.Cancel(); });
+            _cancelRead.Visible = false;
             btn("Export CSV...", (s, e) => Guard(ExportCsv));
             btn("Report...", (s, e) => Guard(SaveReport));
-            _more = btn("Keep more history", (s, e) => Guard(() => { if (_enlarge != null && _enlarge()) { _more.Visible = false; _summary.Text += " The event log keeps " + Ui.Bytes(Transfers.WantedLogBytes) + " from now on."; } }));
+            _more = btn("Keep more history", async (s, e) => await GuardAsync(async () =>
+            {
+                if (_enlarging || _enlarge == null) return;
+                _enlarging = true; _more.Enabled = false;
+                try { if (await _enlarge() && !IsDisposed) { _more.Visible = false; _summary.Text += " The event log keeps " + Ui.Bytes(Transfers.WantedLogBytes) + " from now on."; } }
+                finally { _enlarging = false; if (!IsDisposed) _more.Enabled = true; }
+            }));
             _more.Visible = _enlarge != null;
             var close = btn("Close", (s, e) => Close());
             root.Controls.Add(bar, 0, 3);
             Controls.Add(root);
             CancelButton = close;
-            _period.SelectedIndexChanged += (s, e) => Guard(Reload);
+            _period.SelectedIndexChanged += async (s, e) => await GuardAsync(Reload);
             _account.SelectedIndexChanged += (s, e) => Fill();
             _changes.CheckedChanged += (s, e) => Fill();
-            Shown += (s, e) => Guard(Reload);
+            Shown += async (s, e) => await GuardAsync(Reload);
+            FormClosing += (s, e) => { if (_enlarging) e.Cancel = true; else { _loadGeneration++; if (_readCancellation != null) _readCancellation.Cancel(); } };
+        }
+
+        private async Task GuardAsync(Func<Task> work)
+        {
+            try { await work(); }
+            catch (OperationCanceledException) { if (!IsDisposed && _readCancellation == null) _summary.Text = "Reading cancelled; the previously displayed history is unchanged."; }
+            catch (Exception ex) { Log.Error(Text, ex, false); if (!IsDisposed && !Program.Unattended) MessageBox.Show(this, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }
 
         private void Guard(Action a)
@@ -293,12 +322,26 @@ namespace OpenSSHServerPNManager
             }
         }
 
-        private void Reload()
+        private async Task Reload()
         {
-            Range((string)_period.SelectedItem, DateTime.Now, out _from, out _to);
-            UseWaitCursor = true;
-            try { _records = _load(_from, _to); }
-            finally { UseWaitCursor = false; }
+            int generation = ++_loadGeneration;
+            if (_readCancellation != null) _readCancellation.Cancel();
+            var cancellation = new CancellationTokenSource(); _readCancellation = cancellation;
+            DateTime from, to; Range((string)_period.SelectedItem, DateTime.Now, out from, out to);
+            UseWaitCursor = true; _cancelRead.Visible = true;
+            try
+            {
+                var records = await _load(from, to, cancellation.Token);
+                cancellation.Token.ThrowIfCancellationRequested();
+                if (IsDisposed || generation != _loadGeneration) return;
+                _records = records; _from = from; _to = to;
+            }
+            finally
+            {
+                if (_readCancellation == cancellation) _readCancellation = null;
+                cancellation.Dispose();
+                if (!IsDisposed && generation == _loadGeneration) { UseWaitCursor = false; _cancelRead.Visible = false; }
+            }
             foreach (var u in _records.Select(r => r.User).Distinct(StringComparer.OrdinalIgnoreCase)) if (!_account.Items.Contains(u)) _account.Items.Add(u);
             Fill();
         }
@@ -351,7 +394,7 @@ namespace OpenSSHServerPNManager
     internal sealed class PartnerSetupDialog : KeyTaskDialog
     {
         private readonly TextBox _root;
-        private readonly Action<PartnerSetupDialog> _run;
+        private readonly Func<PartnerSetupDialog, Task> _run;
         public string Root
         {
             get
@@ -362,7 +405,8 @@ namespace OpenSSHServerPNManager
             }
         }
 
-        public PartnerSetupDialog(PartnerSetupState st, PartnerGroups g, Action<PartnerSetupDialog> run) : base("Set up SFTP partners", "Set up")
+        public PartnerSetupDialog(PartnerSetupState st, PartnerGroups g, Action<PartnerSetupDialog> run) : this(st, g, d => { run(d); return Task.FromResult(0); }) { }
+        public PartnerSetupDialog(PartnerSetupState st, PartnerGroups g, Func<PartnerSetupDialog, Task> run) : base("Set up SFTP partners", "Set up")
         {
             _run = run;
             Body.Controls.Add(Caption("Once this is set up, adding, changing or removing a partner no longer changes sshd_config or restarts sshd.", true));
@@ -389,11 +433,11 @@ namespace OpenSSHServerPNManager
             Body.Controls.Add(Note("Partners are in " + g.Full + " (upload and download) or " + g.ReadOnly + " (download only), and also in " + g.KeyOnly + " when they log in with a key only. Their keys are in " + g.KeysDir + ", which only administrators change."));
         }
 
-        protected override void Work()
+        protected override async Task WorkAsync()
         {
             var e = SftpConfig.FolderError(Root + "\\%u");
             if (e != null) { _root.Focus(); throw new ConfigException(e.Replace("%u", "<account>")); }
-            _run(this);
+            await _run(this);
         }
     }
 
@@ -401,10 +445,11 @@ namespace OpenSSHServerPNManager
     internal sealed class PartnerDeleteDialog : KeyTaskDialog
     {
         private readonly CheckBox _files;
-        private readonly Action<PartnerDeleteDialog> _run;
+        private readonly Func<PartnerDeleteDialog, Task> _run;
         public bool DeleteFiles { get { return _files.Checked; } }
 
-        public PartnerDeleteDialog(PartnerAccount p, string folder, string folderSize, Action<PartnerDeleteDialog> run) : base("Delete SFTP partner " + p.Name, "Delete partner")
+        public PartnerDeleteDialog(PartnerAccount p, string folder, string folderSize, Action<PartnerDeleteDialog> run) : this(p, folder, folderSize, d => { run(d); return Task.FromResult(0); }) { }
+        public PartnerDeleteDialog(PartnerAccount p, string folder, string folderSize, Func<PartnerDeleteDialog, Task> run) : base("Delete SFTP partner " + p.Name, "Delete partner")
         {
             _run = run;
             Body.Controls.Add(Caption("Delete the account " + p.Name + (p.Company.Length > 0 ? " (" + p.Company + ")" : "") + "? Its open sessions end, and it can no longer log in. Its keys are removed.", true));
@@ -413,11 +458,11 @@ namespace OpenSSHServerPNManager
             Body.Controls.Add(Note("Without the tick, the folder stays with its files, for administrators only; a partner created again with the same name gets it back."));
         }
 
-        protected override void Work()
+        protected override async Task WorkAsync()
         {
             if (_files.Checked && !Program.Unattended && MessageBox.Show(this, "Delete the folder and every file in it? This cannot be undone.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
                 throw new OperationCanceledException();
-            _run(this);
+            await _run(this);
         }
     }
 }

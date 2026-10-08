@@ -59,13 +59,37 @@ namespace OpenSSHServerPNManager
         }
     }
 
-    internal sealed class FirewallRule { public string Name; public bool Enabled; public int Profiles; public string Ports; public string Program; public string ProfilesText { get { return ProfileText(Profiles); } }
+    internal sealed class FirewallRule { public string Name; public bool Enabled; public int Profiles; public string Ports; public string Program; public bool Exists = true;
+        public Dictionary<string, string> Attributes = new Dictionary<string, string>(StringComparer.Ordinal);
+        /// <summary>Non-null for a complete recovery snapshot of both managed names, including outbound/duplicate rules.</summary>
+        public List<FirewallRule> RelatedRules;
+        public string ProfilesText { get { return ProfileText(Profiles); } }
+        internal void Store(IDictionary<string, string> values, string prefix)
+        {
+            values[prefix + "name"] = Name ?? ""; values[prefix + "exists"] = Exists ? "1" : "0";
+            values[prefix + "enabled"] = Enabled ? "1" : "0"; values[prefix + "profiles"] = Profiles.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            values[prefix + "ports"] = Ports ?? ""; values[prefix + "program"] = Program ?? "";
+            foreach (var pair in Attributes) values[prefix + "attribute." + pair.Key] = pair.Value;
+            values[prefix + "related"] = RelatedRules == null ? "-1" : RelatedRules.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (RelatedRules != null) for (int i = 0; i < RelatedRules.Count; i++) RelatedRules[i].Store(values, prefix + "rule." + i + ".");
+        }
+        internal static FirewallRule Read(IDictionary<string, string> values, string prefix)
+        {
+            var rule = new FirewallRule { Name = values[prefix + "name"], Exists = values[prefix + "exists"] == "1", Enabled = values[prefix + "enabled"] == "1",
+                Profiles = int.Parse(values[prefix + "profiles"], System.Globalization.CultureInfo.InvariantCulture), Ports = values[prefix + "ports"], Program = values[prefix + "program"] };
+            foreach (var pair in values.Where(v => v.Key.StartsWith(prefix + "attribute.", StringComparison.Ordinal))) rule.Attributes[pair.Key.Substring((prefix + "attribute.").Length)] = pair.Value;
+            int count = int.Parse(values[prefix + "related"], System.Globalization.CultureInfo.InvariantCulture);
+            if (count < -1 || count > 10000) throw new ConfigException("The firewall recovery snapshot is invalid.");
+            if (count >= 0) { rule.RelatedRules = new List<FirewallRule>(); for (int i = 0; i < count; i++) rule.RelatedRules.Add(Read(values, prefix + "rule." + i + ".")); }
+            return rule;
+        }
         public static string ProfileText(int p) { if ((p & 0x7fffffff) == 0x7fffffff || (p & 7) == 7) return "Domain, Private, Public"; var l = new List<string>(); if ((p & 1) != 0) l.Add("Domain"); if ((p & 2) != 0) l.Add("Private"); if ((p & 4) != 0) l.Add("Public"); return l.Count == 0 ? "none" : string.Join(", ", l); } }
 
     internal static class Firewall
     {
         public const string RuleName = "OpenSSH SSH Server Preview (sshd)";
         public const string ManagedRuleName = "OpenSSH SSH Server (sshd)";
+        private const string RecoveryRemovalPrefix = "OpenSSH Server PN Manager recovery ";
 
         private static dynamic Policy() { return Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2")); }
 
@@ -103,7 +127,135 @@ namespace OpenSSHServerPNManager
 
         private static FirewallRule FromRule(string name, dynamic r)
         {
-            return new FirewallRule { Name = name, Enabled = (bool)r.Enabled, Profiles = (int)r.Profiles, Ports = (string)r.LocalPorts, Program = (string)r.ApplicationName };
+            return CaptureRule((object)r);
+        }
+
+        internal static FirewallRule CaptureRule(object value)
+        {
+            dynamic r = value;
+            var result = new FirewallRule { Name = (string)r.Name, Enabled = (bool)r.Enabled, Profiles = (int)r.Profiles, Program = (string)r.ApplicationName };
+            int protocol = (int)r.Protocol;
+            var a = result.Attributes;
+            a["Protocol"] = protocol.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            a["Direction"] = ((int)r.Direction).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            a["Action"] = ((int)r.Action).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            a["Description"] = (string)r.Description ?? ""; a["ServiceName"] = (string)r.ServiceName ?? "";
+            a["LocalAddresses"] = (string)r.LocalAddresses; a["RemoteAddresses"] = (string)r.RemoteAddresses;
+            a["InterfaceTypes"] = (string)r.InterfaceTypes; a["Grouping"] = (string)r.Grouping ?? "";
+            a["EdgeTraversal"] = (bool)r.EdgeTraversal ? "1" : "0";
+            if (protocol == 6 || protocol == 17) { result.Ports = (string)r.LocalPorts; a["RemotePorts"] = (string)r.RemotePorts; }
+            if (protocol == 1 || protocol == 58) a["IcmpTypesAndCodes"] = (string)r.IcmpTypesAndCodes;
+            var interfaces = (object)r.Interfaces as System.Collections.IEnumerable;
+            a["Interfaces"] = interfaces == null ? "" : string.Join("\n", interfaces.Cast<object>().Select(x => Convert.ToBase64String(Encoding.UTF8.GetBytes(Convert.ToString(x, System.Globalization.CultureInfo.InvariantCulture)))));
+            CaptureOptional(a, "EdgeTraversalOptions", () => (object)r.EdgeTraversalOptions);
+            CaptureOptional(a, "LocalAppPackageId", () => (object)r.LocalAppPackageId);
+            CaptureOptional(a, "LocalUserOwner", () => (object)r.LocalUserOwner);
+            CaptureOptional(a, "LocalUserAuthorizedList", () => (object)r.LocalUserAuthorizedList);
+            CaptureOptional(a, "RemoteUserAuthorizedList", () => (object)r.RemoteUserAuthorizedList);
+            CaptureOptional(a, "RemoteMachineAuthorizedList", () => (object)r.RemoteMachineAuthorizedList);
+            CaptureOptional(a, "SecureFlags", () => (object)r.SecureFlags);
+            return result;
+        }
+
+        private static void CaptureOptional(IDictionary<string, string> values, string name, Func<object> read)
+        {
+            try { values[name] = Convert.ToString(read(), System.Globalization.CultureInfo.InvariantCulture) ?? ""; }
+            catch (Microsoft.CSharp.RuntimeBinder.RuntimeBinderException) { }
+            catch (COMException ex) when (ex.ErrorCode == unchecked((int)0x80020003) || ex.ErrorCode == unchecked((int)0x80004001)) { }
+        }
+
+        /// <summary>Recovery must distinguish an absent rule from a failed query and preserve all rule scopes.</summary>
+        public static FirewallRule CaptureForRecovery()
+        {
+            dynamic policy = Policy();
+            var result = new FirewallRule { Name = ManagedRuleName, Exists = false, RelatedRules = new List<FirewallRule>() };
+            foreach (dynamic r in policy.Rules)
+                if ((string)r.Name == RuleName || (string)r.Name == ManagedRuleName || ((string)r.Name).StartsWith(RecoveryRemovalPrefix, StringComparison.Ordinal)) result.RelatedRules.Add(CaptureRule((object)r));
+            result.Exists = result.RelatedRules.Count > 0;
+            return result;
+        }
+
+        internal static void ApplySnapshot(object value, FirewallRule snapshot)
+        {
+            dynamic r = value;
+            var a = snapshot.Attributes;
+            r.Enabled = false; r.Name = snapshot.Name;
+            int protocol = a.ContainsKey("Protocol") ? int.Parse(a["Protocol"], System.Globalization.CultureInfo.InvariantCulture) : 6;
+            r.Protocol = protocol;
+            r.Direction = a.ContainsKey("Direction") ? int.Parse(a["Direction"], System.Globalization.CultureInfo.InvariantCulture) : 1;
+            r.Action = a.ContainsKey("Action") ? int.Parse(a["Action"], System.Globalization.CultureInfo.InvariantCulture) : 1;
+            r.ApplicationName = snapshot.Program ?? "";
+            if (protocol == 6 || protocol == 17) { r.LocalPorts = snapshot.Ports; if (a.ContainsKey("RemotePorts")) r.RemotePorts = a["RemotePorts"]; }
+            if (a.ContainsKey("Description")) r.Description = a["Description"];
+            if (a.ContainsKey("ServiceName")) r.ServiceName = a["ServiceName"];
+            if (a.ContainsKey("LocalAddresses")) r.LocalAddresses = a["LocalAddresses"];
+            if (a.ContainsKey("RemoteAddresses")) r.RemoteAddresses = a["RemoteAddresses"];
+            if (a.ContainsKey("IcmpTypesAndCodes")) r.IcmpTypesAndCodes = a["IcmpTypesAndCodes"];
+            if (a.ContainsKey("InterfaceTypes")) r.InterfaceTypes = a["InterfaceTypes"];
+            if (a.ContainsKey("Interfaces")) r.Interfaces = a["Interfaces"].Length == 0 ? null : a["Interfaces"].Split('\n').Select(s => (object)Encoding.UTF8.GetString(Convert.FromBase64String(s))).ToArray();
+            if (a.ContainsKey("Grouping")) r.Grouping = a["Grouping"];
+            if (a.ContainsKey("EdgeTraversal")) r.EdgeTraversal = a["EdgeTraversal"] == "1";
+            if (a.ContainsKey("EdgeTraversalOptions")) r.EdgeTraversalOptions = int.Parse(a["EdgeTraversalOptions"], System.Globalization.CultureInfo.InvariantCulture);
+            if (a.ContainsKey("LocalAppPackageId")) r.LocalAppPackageId = a["LocalAppPackageId"];
+            if (a.ContainsKey("LocalUserOwner")) r.LocalUserOwner = a["LocalUserOwner"];
+            if (a.ContainsKey("LocalUserAuthorizedList")) r.LocalUserAuthorizedList = a["LocalUserAuthorizedList"];
+            if (a.ContainsKey("RemoteUserAuthorizedList")) r.RemoteUserAuthorizedList = a["RemoteUserAuthorizedList"];
+            if (a.ContainsKey("RemoteMachineAuthorizedList")) r.RemoteMachineAuthorizedList = a["RemoteMachineAuthorizedList"];
+            if (a.ContainsKey("SecureFlags")) r.SecureFlags = int.Parse(a["SecureFlags"], System.Globalization.CultureInfo.InvariantCulture);
+            r.Profiles = snapshot.Profiles; r.Enabled = snapshot.Enabled;
+        }
+
+        public static void Restore(FirewallRule before)
+        {
+            if (before == null) throw new ArgumentNullException("before");
+            dynamic policy = Policy();
+            var current = new List<object>();
+            foreach (dynamic rule in policy.Rules)
+                if ((string)rule.Name == RuleName || (string)rule.Name == ManagedRuleName || ((string)rule.Name).StartsWith(RecoveryRemovalPrefix, StringComparison.Ordinal)) current.Add((object)rule);
+            RestoreRules(current, before, name => policy.Rules.Remove(name));
+        }
+
+        internal static void RestoreRules(IList<object> current, FirewallRule before, Action<string> remove)
+        {
+            var original = before.RelatedRules ?? (before.Exists ? new List<FirewallRule> { before } : new List<FirewallRule>());
+            var available = current.Select(rule => new KeyValuePair<object, FirewallRule>(rule, CaptureRule(rule))).ToList();
+            var matched = new List<KeyValuePair<object, FirewallRule>>();
+            foreach (var snapshot in original)
+            {
+                var match = available.FirstOrDefault(pair => SameScope(pair.Value, snapshot));
+                if (match.Key == null) throw new ConfigChangedException("An SSH firewall rule was removed or its scope changed outside this transaction. Recovery will not replace that external change: " + snapshot.Name);
+                matched.Add(new KeyValuePair<object, FirewallRule>(match.Key, snapshot)); available.Remove(match);
+            }
+            // Apply never deletes an existing rule. Preserve its COM identity, optional properties, and outbound duplicates.
+            // INetFwRules.Add does not support recreating packaged-app rules and may overwrite duplicate identifiers.
+            foreach (var extra in available)
+            {
+                string description, protocol, direction, action;
+                if ((extra.Value.Name != ManagedRuleName && !extra.Value.Name.StartsWith(RecoveryRemovalPrefix, StringComparison.Ordinal)) || extra.Value.Program != Ssh.Exe("sshd.exe") ||
+                    !extra.Value.Attributes.TryGetValue("Description", out description) || description != "Inbound rule for OpenSSH SSH Server (sshd), managed by OpenSSH Server PN Manager" ||
+                    !extra.Value.Attributes.TryGetValue("Protocol", out protocol) || protocol != "6" || !extra.Value.Attributes.TryGetValue("Direction", out direction) || direction != "1" ||
+                    !extra.Value.Attributes.TryGetValue("Action", out action) || action != "1")
+                    throw new ConfigChangedException("An additional SSH firewall rule appeared outside this transaction. Recovery will not delete it.");
+            }
+            foreach (var pair in matched)
+            {
+                dynamic rule = pair.Key; var snapshot = pair.Value;
+                if (snapshot.Attributes["Protocol"] == "6" || snapshot.Attributes["Protocol"] == "17") rule.LocalPorts = snapshot.Ports;
+                rule.Profiles = snapshot.Profiles; rule.Enabled = snapshot.Enabled;
+            }
+            foreach (var extra in available)
+            {
+                // Removing by a shared display name could remove an original outbound rule. Give only our new rule a
+                // unique name before removal, so the operation cannot target an unrelated duplicate.
+                dynamic rule = extra.Key; string unique = RecoveryRemovalPrefix + Guid.NewGuid().ToString("N");
+                rule.Name = unique; remove(unique);
+            }
+        }
+
+        private static bool SameScope(FirewallRule first, FirewallRule second)
+        {
+            return first.Name == second.Name && first.Program == second.Program && first.Attributes.Count == second.Attributes.Count &&
+                first.Attributes.All(pair => second.Attributes.ContainsKey(pair.Key) && second.Attributes[pair.Key] == pair.Value);
         }
 
         /// <summary>True when a rule's LocalPorts value ("22", "22,2222", "2000-3000", "*") admits the port.</summary>
@@ -242,6 +394,23 @@ namespace OpenSSHServerPNManager
             rule.Profiles = 0x7fffffff;
             rule.Enabled = true;
             policy.Rules.Add(rule);
+        }
+
+        /// <summary>Expiry only removes requested addresses; each existing rule retains its port scope and enabled state.</summary>
+        public static void RemoveBlockedAddresses(IEnumerable<string> addresses)
+        {
+            var remove = new HashSet<string>(addresses.Select(NormaliseAddress), StringComparer.OrdinalIgnoreCase);
+            dynamic policy = Policy();
+            foreach (var entry in BlockRules((object)policy))
+            {
+                string remote = (string)entry.Value.RemoteAddresses;
+                if (string.IsNullOrEmpty(remote) || remote == "*") continue;
+                var previous = remote.Split(',');
+                var remaining = previous.Where(a => !remove.Contains(NormaliseAddress(a.Trim()))).ToArray();
+                if (remaining.Length == previous.Length) continue;
+                if (remaining.Length == 0) policy.Rules.Remove(entry.Key);
+                else entry.Value.RemoteAddresses = string.Join(",", remaining);
+            }
         }
 
         /// <summary>Why an address should not be blocked (this computer, loopback, an address it cannot parse), or null.</summary>

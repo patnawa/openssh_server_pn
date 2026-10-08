@@ -177,8 +177,9 @@ namespace OpenSSHServerPNManager
             if (c is LinkLabel)
             {
                 var ll = (LinkLabel)c;
-                ll.LinkColor = dark ? Color.FromArgb(120, 180, 255) : Color.FromArgb(0, 102, 204);
-                ll.ActiveLinkColor = dark ? Color.FromArgb(160, 205, 255) : Color.Red; ll.VisitedLinkColor = dark ? Color.FromArgb(190, 150, 255) : Color.FromArgb(128, 0, 128);
+                ll.LinkColor = p.HighContrast ? SystemColors.HotTrack : dark ? Color.FromArgb(120, 180, 255) : Color.FromArgb(0, 102, 204);
+                ll.ActiveLinkColor = p.HighContrast ? SystemColors.Highlight : dark ? Color.FromArgb(160, 205, 255) : Color.Red;
+                ll.VisitedLinkColor = p.HighContrast ? SystemColors.HotTrack : dark ? Color.FromArgb(190, 150, 255) : Color.FromArgb(128, 0, 128);
             }
             if (semantic) c.ForeColor = newFore;
             var tabs = c as ThemedTabControl; if (tabs != null) tabs.UpdateTheme();
@@ -248,6 +249,12 @@ namespace OpenSSHServerPNManager
     /// <summary>A TabControl that draws its tab strip itself in the dark palette (the system draws it light only).</summary>
     internal sealed class ThemedTabControl : TabControl
     {
+        public bool HideHeaders;
+        protected override void WndProc(ref Message m)
+        {
+            if (HideHeaders && m.Msg == 0x1328 /*TCM_ADJUSTRECT*/) { m.Result = new IntPtr(1); return; }
+            base.WndProc(ref m);
+        }
         [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
         [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr value);
         private IntPtr _nativeFont;
@@ -286,7 +293,7 @@ namespace OpenSSHServerPNManager
         {
             var p = Theme.Current;
             using (var bg = new SolidBrush(p.Back)) e.Graphics.FillRectangle(bg, ClientRectangle);
-            for (int i = 0; i < TabCount; i++)
+            for (int i = 0; !HideHeaders && i < TabCount; i++)
             {
                 var r = GetTabRect(i);
                 bool sel = i == SelectedIndex;
@@ -301,7 +308,7 @@ namespace OpenSSHServerPNManager
                 using (var pen = new Pen(p.Border)) e.Graphics.DrawRectangle(pen, page.X, page.Y, page.Width - 1, page.Height - 1);
             }
             // Focus cue for keyboard users.
-            if (Focused && SelectedIndex >= 0) { var fr = GetTabRect(SelectedIndex); fr.Inflate(-3, -3); ControlPaint.DrawFocusRectangle(e.Graphics, fr, p.Text, p.Surface); }
+            if (!HideHeaders && Focused && SelectedIndex >= 0) { var fr = GetTabRect(SelectedIndex); fr.Inflate(-3, -3); ControlPaint.DrawFocusRectangle(e.Graphics, fr, p.Text, p.Surface); }
         }
     }
 }

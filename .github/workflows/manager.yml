@@ -1,22 +1,16 @@
 name: OpenSSH Server PN Manager
 
-# Builds the manager from source and runs its unit tests (--unittest: no sshd, no service, no
-# administrator rights needed), on the fresh build and on the executable committed in bin/, and reports
-# whether the fresh build reproduces the committed executable byte for byte.
-# A tag manager-vX.Y.Z publishes the committed executable, its .exe.config and SHA256SUMS.txt as a GitHub
-# release, not marked Latest (the product release v<version> keeps that), with a signed provenance
-# attestation for each file.
-#
-# Third-party actions are pinned to full commit SHAs (Dependabot keeps them current, .github/dependabot.yml).
-
+# The same tested artifact is consumed by the product MSI and standalone manager release.
+# Compiler and .NET reference packages are pinned by SHA-256 in build-toolchain.json.
 on:
   push:
     branches: [main]
-    paths: ['tools/OpenSSH-Server-PN-Manager/**', '.github/workflows/manager.yml']
+    paths: ['tools/OpenSSH-Server-PN-Manager/**', '.github/workflows/manager.yml', '.github/scripts/**']
     tags: ['manager-v*']
   pull_request:
-    paths: ['tools/OpenSSH-Server-PN-Manager/**', '.github/workflows/manager.yml']
+    paths: ['tools/OpenSSH-Server-PN-Manager/**', '.github/workflows/manager.yml', '.github/scripts/**']
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -27,110 +21,125 @@ defaults:
 
 jobs:
   test:
-    runs-on: windows-latest
+    permissions:
+      contents: read
+    runs-on: windows-2022
     timeout-minutes: 20
-    env:
-      TOOL: tools/OpenSSH-Server-PN-Manager
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Build script regression tests
-        run: '& "./$env:TOOL/build.Tests.ps1"'
-
-      - name: Build
-        # The call operator: PowerShell does not expand $env:TOOL in a bare command name.
+      - name: Require a supported signing method for release tags
+        if: github.ref_type == 'tag'
+        env:
+          SIGNING_METHOD: ${{ vars.SIGNING_METHOD }}
         run: |
-          & "./$env:TOOL/build.ps1" -OutDir "$env:RUNNER_TEMP/build"
-
-      # The committed executable is what gets published (its SHA-256 is documented in the README). build.ps1
-      # compiles deterministically with Roslyn, so the same source and compiler give the same bytes. A difference
-      # is reported, not failed: it is expected when the source changed and bin/ was not rebuilt yet, or when the
-      # runner's compiler differs from the one the executable was built with.
-      - name: Reproducibility (fresh build against the committed executable)
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          # The compiler build.ps1 picks: Roslyn csc of the newest Visual Studio (it refuses to build without one).
-          $vs = if (Test-Path $vswhere) { & $vswhere -products * -latest -property installationPath } else { $null }
-          $vsVersion = if ($vs) { & $vswhere -products * -latest -property catalog_productDisplayVersion } else { $null }
-          $csc = if ($vs) { Join-Path $vs 'MSBuild\Current\Bin\Roslyn\csc.exe' } else { $null }
-          $compiler = if ($csc -and (Test-Path $csc)) { "Roslyn csc $((& $csc -version) -join ' ') from Visual Studio $vsVersion" } else { 'no Roslyn compiler found' }
-          Write-Host "Compiler: $compiler"
-          $rows = @(); $different = @()
-          foreach ($name in 'OpenSSHServerPNManager.exe', 'OpenSSHServerPNManager.exe.config') {
-            $fresh = (Get-FileHash "$env:RUNNER_TEMP/build/$name" -Algorithm SHA256).Hash
-            $committed = (Get-FileHash "$env:TOOL/bin/$name" -Algorithm SHA256).Hash
-            Write-Host "$name`n  fresh build  $fresh`n  committed    $committed"
-            $rows += "| $name | ``$fresh`` | ``$committed`` | $(if ($fresh -eq $committed) { 'same' } else { 'DIFFERENT' }) |"
-            if ($fresh -ne $committed) { $different += $name }
+          if ($env:SIGNING_METHOD -notin 'trusted-signing', 'pfx') {
+            throw 'Release tags require SIGNING_METHOD=trusted-signing or pfx and the corresponding signing credentials. Branch builds remain unsigned.'
           }
-          if ($different.Count -eq 0) {
-            Write-Host "::notice title=Reproducible build::The fresh build is byte for byte the committed bin/OpenSSHServerPNManager.exe and .exe.config ($compiler)."
-          } else {
-            Write-Host "::warning title=Build not reproduced::$($different -join ' and ') of the fresh build differ from bin/ ($compiler). Expected when the source changed without a rebuild of bin/, or with another compiler version."
+          if ($env:GITHUB_REF_NAME.StartsWith('manager-v')) {
+            $version = (Select-String -Path tools/OpenSSH-Server-PN-Manager/Program.cs -Pattern 'AppVersion = "([^"]+)"').Matches[0].Groups[1].Value
+            if ($env:GITHUB_REF_NAME -ne "manager-v$version") { throw 'The manager tag does not match the source version.' }
           }
-          @('### Reproducibility', '', "Compiler: $compiler", '', '| File | Fresh build | Committed | |', '|---|---|---|---|') + $rows + '' | Add-Content -Path $env:GITHUB_STEP_SUMMARY
 
-      - name: Unit tests (fresh build and committed executable)
+      - name: Build twice, enforce reproducibility and test fresh bytes
+        run: ./.github/scripts/Test-ManagerBuild.ps1 -OutDir "$env:RUNNER_TEMP/manager"
+
+      - name: Sign manager (Azure Artifact Signing)
+        if: vars.SIGNING_METHOD == 'trusted-signing' && github.ref_type == 'tag'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files: ${{ runner.temp }}\manager\OpenSSHServerPNManager.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: OpenSSH Server PN Manager
+          description-url: https://github.com/${{ github.repository }}
+          cache-dependencies: false
+
+      - name: Sign manager (certificate file)
+        if: vars.SIGNING_METHOD == 'pfx' && github.ref_type == 'tag'
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ vars.SIGNING_TIMESTAMP_URL }}
+          SIGNING_TRUSTED_ROOT_BASE64: ${{ vars.SIGNING_TRUSTED_ROOT_BASE64 }}
+        run: ./.github/scripts/Invoke-Signtool.ps1 -Path "$env:RUNNER_TEMP/manager/OpenSSHServerPNManager.exe" -Description 'OpenSSH Server PN Manager'
+
+      - name: Verify and test the signed release executable
+        if: github.ref_type == 'tag'
+        env:
+          SIGNING_CERTIFICATE_THUMBPRINT: ${{ vars.SIGNING_CERTIFICATE_THUMBPRINT }}
         run: |
-          $failed = $false
-          foreach ($exe in "$env:RUNNER_TEMP/build/OpenSSHServerPNManager.exe", "$env:TOOL/bin/OpenSSHServerPNManager.exe") {
-            if (-not (Test-Path $exe)) { Write-Host "::error::$exe is missing"; $failed = $true; continue }
-            $report = Join-Path $env:RUNNER_TEMP ("unittest-" + [guid]::NewGuid().ToString('N') + ".txt")
-            # A GUI-subsystem program: wait for it and read the report it writes.
-            $p = Start-Process -FilePath (Resolve-Path $exe) -ArgumentList '--unittest', $report -Wait -PassThru
-            Write-Host "== $exe"; Get-Content $report
-            if ($p.ExitCode -ne 0) { Write-Host "::error::unit tests failed for $exe"; $failed = $true }
+          ./.github/scripts/Test-Authenticode.ps1 -Path "$env:RUNNER_TEMP/manager/OpenSSHServerPNManager.exe"
+          ./.github/scripts/Test-ManagerBuild.ps1 -OutDir "$env:RUNNER_TEMP/manager" -TestOnly
+
+      - name: Upload manager test evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: manager-test-evidence
+          path: |
+            ${{ runner.temp }}/manager/unittest.txt
+            ${{ runner.temp }}/manager/ui/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Hash the final tested artifact
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'manager'
+          $sums = 'OpenSSHServerPNManager.exe', 'OpenSSHServerPNManager.exe.config', 'build-info.json' | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash (Join-Path $dir $_) -Algorithm SHA256).Hash.ToLowerInvariant(), $_
           }
-          if ($failed) { exit 1 }
+          [IO.File]::WriteAllText((Join-Path $dir 'SHA256SUMS.txt'), ($sums -join "`n") + "`n")
 
-      - name: Committed executable matches the source version
-        run: |
-          $want = (Select-String -Path "$env:TOOL/Program.cs" -Pattern 'AppVersion = "([^"]+)"').Matches[0].Groups[1].Value
-          $have = (Get-Item "$env:TOOL/bin/OpenSSHServerPNManager.exe").VersionInfo.ProductVersion
-          Write-Host "source $want, bin/OpenSSHServerPNManager.exe $have"
-          if ($have -ne $want) { Write-Host "::error::bin/OpenSSHServerPNManager.exe is version $have but the source is $want; rebuild it with build.ps1 and commit it"; exit 1 }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: manager-tested
+          path: ${{ runner.temp }}/manager/
+          if-no-files-found: error
+          retention-days: 30
 
   release:
     if: startsWith(github.ref, 'refs/tags/manager-v')
     needs: test
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 15
     permissions:
-      contents: write       # create the release
-      id-token: write       # Sigstore signing certificate for the attestation
-      attestations: write   # store the attestation
-    env:
-      TAG: ${{ github.ref_name }}
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          persist-credentials: false
+          name: manager-tested
+          path: dist
 
-      - name: Checksums
-        run: |
-          $bin = 'tools/OpenSSH-Server-PN-Manager/bin'
-          $sums = "$bin/OpenSSHServerPNManager.exe", "$bin/OpenSSHServerPNManager.exe.config" | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), (Split-Path $_ -Leaf) }
-          # LF line endings: sha256sum -c of older coreutils reads a CR as part of the file name.
-          [IO.File]::WriteAllText("$PWD/SHA256SUMS.txt", ($sums -join "`n") + "`n")
-          Get-Content SHA256SUMS.txt
+      - name: Check final artifact hashes
+        shell: bash
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS.txt
 
-      # Provenance for the published files: they come from this repository at this commit, through this workflow.
-      # Verify with: gh attestation verify OpenSSHServerPNManager.exe --repo <owner>/<repo>
-      - name: Attest provenance
+      - name: Attest the tested files
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            tools/OpenSSH-Server-PN-Manager/bin/OpenSSHServerPNManager.exe
-            tools/OpenSSH-Server-PN-Manager/bin/OpenSSHServerPNManager.exe.config
-            SHA256SUMS.txt
+            dist/OpenSSHServerPNManager.exe
+            dist/OpenSSHServerPNManager.exe.config
+            dist/build-info.json
+            dist/SHA256SUMS.txt
 
-      - name: Publish the committed executable
+      - name: Create reviewable draft from the tested artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
-          $bin = 'tools/OpenSSH-Server-PN-Manager/bin'
-          $files = "$bin/OpenSSHServerPNManager.exe", "$bin/OpenSSHServerPNManager.exe.config"
-          $version = $env:TAG.Substring('manager-v'.Length)
-          gh release create $env:TAG @files SHA256SUMS.txt --latest=false --title "OpenSSH Server PN Manager $version" --notes "See docs/CHANGELOG.md for the changes and the test results. Verify the download against SHA256SUMS.txt, and its origin with: gh attestation verify OpenSSHServerPNManager.exe --repo $env:GITHUB_REPOSITORY"
+          gh release create $env:TAG dist/OpenSSHServerPNManager.exe dist/OpenSSHServerPNManager.exe.config dist/build-info.json dist/SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --draft --verify-tag --latest=false --title "OpenSSH Server PN Manager $($env:TAG.Substring('manager-v'.Length))" --notes 'Built reproducibly from pinned inputs, Authenticode signed, and tested before publication. Compare SHA256SUMS.txt; build-info.json records the unsigned deterministic build inputs and hashes.'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

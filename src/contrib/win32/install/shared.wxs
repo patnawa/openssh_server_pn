@@ -46,7 +46,7 @@
                     <util:EventManifest ResourceFile="[#ssh_agent.exe]" />
                 </File>
             </Component>
-            <Component>
+            <Component Id="SshAgentComponent">
                 <!-- Define the File/@Id to reference in util:EventManifest/@ResourceFile above. -->
                 <File Id="ssh_agent.exe" Name="ssh-agent.exe" KeyPath="yes" />
                 <!-- ErrorControl="normal", as for sshd (server.wxs): a start failure must not send Windows back to the
@@ -74,6 +74,17 @@
                     Start="install"
                     Stop="both"
                     Remove="uninstall" />
+            </Component>
+            <!-- One tested AnyCPU manager serves both ordinary client use and elevated server administration. -->
+            <Component>
+                <File Id="OpenSSHServerPNManager.exe" Name="OpenSSHServerPNManager.exe" KeyPath="yes" />
+            </Component>
+            <Component>
+                <File Name="OpenSSHServerPNManager.exe.config" KeyPath="yes" />
+            </Component>
+            <Component Id="ClientManagerShortcut">
+                <Shortcut Id="ClientManagerShortcut" Directory="ProgramMenuFolder" Name="OpenSSH Client PN" Description="Manage your SSH connections, host trust and keys" Target="[INSTALLFOLDER]OpenSSHServerPNManager.exe" Arguments="--client" WorkingDirectory="INSTALLFOLDER" />
+                <RegistryValue Root="HKMU" Key="SOFTWARE\OpenSSH" Name="ClientManagerShortcut" Type="integer" Value="1" KeyPath="yes" />
             </Component>
             <!-- Permanent registry component - will persist through uninstall -->
             <Component Id="AgentInstallFlagComponent" Guid="*" Permanent="yes">

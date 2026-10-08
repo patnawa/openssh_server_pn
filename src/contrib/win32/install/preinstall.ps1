@@ -13,20 +13,20 @@
 # installed package has been removed (install, upgrade), or at the start of an uninstall, before the
 # services are stopped and the files are removed (this includes the nested uninstall of this package
 # during a later upgrade).
-# 1. Stops the sshd and ssh-agent services, whoever registered them (this package, an older
-#    package, the ZIP install, or the in-box Windows capability).
+# 1. Stops services only for the actual Server/Shared install or removal actions supplied after
+#    MSI CostFinalize, whoever registered them (this package, an older package, ZIP or in-box).
 # 2. Ends leftover OpenSSH processes that would keep files locked: server processes running from
 #    this package's folder, the in-box folder or the folder of the registered sshd service, and
 #    client tools running from this package's folder. Other OpenSSH builds (Cygwin, MSYS2, Git)
 #    are left alone. The process tree that hosts this installation (an administrator running
-#    msiexec inside an SSH session) is kept. When only a feature is removed (REMOVE=Server or
-#    REMOVE=Client), only that feature's service and processes are touched.
-# 3. On install, upgrade and repair (not on uninstall or feature removal): removes the in-box
+#    msiexec inside an SSH session) is kept. Client-only changes preserve server services and
+#    processes; retained features have action none and are left alone.
+# 3. On Server install, upgrade and repair (not uninstall or feature removal): removes the in-box
 #    "OpenSSH Server" Windows capability (KEEP_INBOX_OPENSSH=1 skips this) and re-applies the
 #    sshd.exe process mitigation that the removal deletes. When Windows finishes that removal
 #    only at the next restart, a one-time startup task re-applies the mitigation after that
 #    restart and deletes itself.
-# 4. On uninstall: deletes that startup task if it has not run yet.
+# 4. On Server removal: deletes that startup task if it has not run yet.
 #
 # Phase "sessions" (immediate, before InstallValidate, only with ACTIVE_SESSIONS=abort): exits 1,
 # which stops the installation before anything has changed, when step 2 above would end an SSH
@@ -62,7 +62,10 @@ param(
     [string]$FirewallProfiles = '',
     [string]$ProductType = '',
     [string]$SshdPort = '',
-    [string]$Previous = ''
+    [string]$Previous = '',
+    [string]$ServerAction = 'none',
+    [string]$ClientAction = 'none',
+    [string]$SharedAction = 'none'
 )
 $ErrorActionPreference = 'Continue'
 function Log([string]$m) { Write-Output ("preinstall: " + $m) }
@@ -76,14 +79,12 @@ trap {
 }
 
 $uninstall = ($Remove -eq 'ALL')
-# REMOVE=Server, REMOVE=Client: only that feature's files go away, so only its services and
-# processes are touched, and the in-box server is left alone.
+# Resolved actions come from MSI after CostFinalize. REMOVE alone cannot distinguish a full
+# install from ADDLOCAL=Client, or a client-only uninstall from removal of the server.
 $featureRemoval = ($Remove -ne '' -and -not $uninstall)
-$removedFeatures = @($Remove -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-$touchServer = (-not $featureRemoval) -or ($removedFeatures -contains 'Server')
-$touchClient = (-not $featureRemoval) -or ($removedFeatures -contains 'Client')
-# ssh-agent, scp and ssh-keygen belong to both features (component group Shared).
-$touchShared = (-not $featureRemoval) -or ($touchServer -and $touchClient)
+$touchServer = @('install', 'remove') -contains $ServerAction
+$touchClient = @('install', 'remove') -contains $ClientAction
+$touchShared = @('install', 'remove') -contains $SharedAction
 # 32-bit PowerShell reaches the native System32 through Sysnative. The x86 package starts the
 # 32-bit PowerShell (WixQuietExec), also on 64-bit Windows; the x64 and ARM64 packages start the
 # native one (WixQuietExec64).
@@ -444,12 +445,8 @@ function Write-ConfigText([string]$path, [string]$text, [string]$backup) {
         [IO.File]::WriteAllText($tmp, $text, $enc)
         [IO.File]::Replace($tmp, $path, $backup)
         return 'replaced'
-    } catch {
+    } finally {
         if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
-        if (-not (Test-Path -LiteralPath $backup)) { [IO.File]::WriteAllBytes($backup, $bytes); Copy-Dacl $path $backup }
-        if (-not (Test-Path -LiteralPath $path)) { [IO.File]::WriteAllBytes($path, $bytes); Copy-Dacl $backup $path }
-        [IO.File]::WriteAllText($path, $text, $enc)
-        return 'in place'
     }
 }
 
@@ -593,7 +590,11 @@ if ($Phase -eq 'port') {
     if (Test-SshdListening $port) { Log ("sshd restarted and listens on port " + $port); exit 0 }
     if ($backup -eq '') { Log ("warning: sshd does not listen on port " + $port + " after a restart. Check the OpenSSH/Operational event log."); exit 0 }
     # Back to the previous configuration, so the server stays reachable as before.
-    [IO.File]::WriteAllBytes($cfg, [IO.File]::ReadAllBytes($backup))
+    $restore = $cfg + '.restore-' + [Guid]::NewGuid().ToString('N')
+    try {
+        [IO.File]::WriteAllBytes($restore, [IO.File]::ReadAllBytes($backup))
+        [IO.File]::Replace($restore, $cfg, $null)
+    } finally { if (Test-Path -LiteralPath $restore) { Remove-Item -LiteralPath $restore -Force -ErrorAction SilentlyContinue } }
     try { Restart-Service -Name sshd -Force -ErrorAction Stop } catch { }
     $ports = @(Get-SshdConfigPorts ([IO.File]::ReadAllText($cfg)))
     $fwNote = ''
@@ -710,7 +711,7 @@ if ($killed.Count -gt 0) {
 # second competing service. Removing the capability clears the unused files and stops Windows
 # servicing of the capability (updates to it) from pointing the sshd service back at the in-box
 # binary. Best effort.
-if (-not $uninstall -and -not $featureRemoval -and (Test-Path -LiteralPath $inboxSshd)) {
+if ($ServerAction -eq 'install' -and (Test-Path -LiteralPath $inboxSshd)) {
     $state = ''
     $info = & $dism /Online /Get-CapabilityInfo /CapabilityName:OpenSSH.Server~~~~0.0.1.0 2>&1 | Out-String
     foreach ($line in ($info -split "`r?`n")) { if ($line -match '^\s*State\s*:\s*(.+?)\s*$') { $state = $matches[1] } }
@@ -753,7 +754,7 @@ if (-not $uninstall -and -not $featureRemoval -and (Test-Path -LiteralPath $inbo
 }
 
 # 4. uninstall: nothing left behind
-if ($uninstall) { Remove-MitigationTask }
+if ($ServerAction -eq 'remove') { Remove-MitigationTask }
 
 Log "done"
 exit 0

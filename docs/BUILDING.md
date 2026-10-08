@@ -161,6 +161,31 @@ bytes. Checked on 2026-09-26: two clean builds of `ssh-keygen.exe` (x64, MSVC 14
 are built by vcpkg with their own flags and are not covered; a release therefore reproduces
 executable by executable, not yet as a whole package.
 
+## Build the manager with pinned inputs
+
+From the repository root:
+
+```powershell
+& ./tools/OpenSSH-Server-PN-Manager/build.ps1 -OutDir "$env:TEMP/manager-build"
+& ./.github/scripts/Test-ManagerBuild.ps1 -OutDir "$env:TEMP/manager-tested"
+```
+
+The default restores `Microsoft.Net.Compilers.Toolset` **4.14.0** and
+`Microsoft.NETFramework.ReferenceAssemblies.net45` **1.0.3** using SHA-256 hashes in
+`build-toolchain.json`. Archives are cached in `%LOCALAPPDATA%\OpenSSHServerPNBuild`, reverified
+on each use and extracted afresh. First use needs NuGet network access. Build-time Roslyn requires
+.NET Framework 4.7.2 or newer; the executable targets the pinned **4.5 API surface** and runtime.
+The pinned compiler reports `4.14.0-3.25262.10 (8edf7bcd)`; this differs from the workstation's
+previous Visual Studio servicing compiler `4.14.0-3.26424.7`.
+The installed Visual Studio compiler and this machine's runtime assemblies do not determine output.
+
+`build-info.json` records toolchain identities and unsigned hashes. `Test-ManagerBuild.ps1` builds in
+two clean output folders, requires equal EXE/config/metadata hashes, and runs the resulting unit and
+off-screen UI tests. UI reports and PNG evidence are written to the output's `ui/` folder.
+`-Csc` and `-ReferenceDir` are local overrides and set `pinnedToolchain=false`; release CI uses neither.
+Pass the tested output to WiX with `/p:ManagerBinDir=<absolute folder>`. The `bin/` default is a local
+convenience; CI explicitly supplies the downloaded `manager-tested` artifact and verifies the CAB.
+
 ## 5. Package the MSI
 
 `contrib\win32\install\openssh.wixproj` binds its payload from `bin\<Platform>\Release`. Copy
@@ -168,18 +193,20 @@ executable by executable, not yet as a whole package.
 to `bin\x86\Release` because MSBuild and WiX disagree on the folder name.
 
 ```powershell
-$repo = 'C:\src\openssh_server_pn\src'; $wix = 'C:\src\openssh_server_pn\tools\wix314\'; $ver = '10.5.1.0'
+$repo = 'C:\src\openssh_server_pn\src'; $wix = 'C:\src\openssh_server_pn\tools\wix314\'; $ver = '10.5.6.0'
 $msbuild = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
+$manager = Join-Path $env:TEMP 'manager-tested'
+& "$repo/../.github/scripts/Test-ManagerBuild.ps1" -OutDir $manager
 
 Copy-Item "$repo\contrib\win32\openssh\vcpkg_installed\x64-custom\x64-custom\bin\libcrypto.*" "$repo\bin\x64\Release"
-& $msbuild "$repo\contrib\win32\install\openssh.wixproj" /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:ProductVersion=$ver /p:WixToolPath=$wix
+& $msbuild "$repo\contrib\win32\install\openssh.wixproj" /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:ProductVersion=$ver /p:WixToolPath=$wix "/p:ManagerBinDir=$manager"
 
 Copy-Item "$repo\contrib\win32\openssh\vcpkg_installed\x86-custom\x86-custom\bin\libcrypto.*" "$repo\bin\Win32\Release"
 robocopy "$repo\bin\Win32\Release" "$repo\bin\x86\Release" /MIR
-& $msbuild "$repo\contrib\win32\install\openssh.wixproj" /t:Rebuild /p:Configuration=Release /p:Platform=x86 /p:ProductVersion=$ver /p:WixToolPath=$wix
+& $msbuild "$repo\contrib\win32\install\openssh.wixproj" /t:Rebuild /p:Configuration=Release /p:Platform=x86 /p:ProductVersion=$ver /p:WixToolPath=$wix "/p:ManagerBinDir=$manager"
 
 Copy-Item "$repo\contrib\win32\openssh\vcpkg_installed\arm64-custom\arm64-custom\bin\libcrypto.*" "$repo\bin\ARM64\Release"
-& $msbuild "$repo\contrib\win32\install\openssh.wixproj" /t:Rebuild /p:Configuration=Release /p:Platform=ARM64 /p:ProductVersion=$ver /p:WixToolPath=$wix
+& $msbuild "$repo\contrib\win32\install\openssh.wixproj" /t:Rebuild /p:Configuration=Release /p:Platform=ARM64 /p:ProductVersion=$ver /p:WixToolPath=$wix "/p:ManagerBinDir=$manager"
 ```
 
 The MSI is written to `contrib\win32\install\bin\<Platform>\Release\openssh.msi`; rename it to
@@ -205,8 +232,7 @@ follow the WiX firewall action (`WixSchedFirewallExceptionsInstall_A64` in the A
 OpenSSHSshdPort runs after StartServices; OpenSSHCheckSessions (immediate) runs before
 InstallValidate. After a build, run `contrib\win32\install\tests\preinstall.Tests.ps1` and
 `contrib\win32\install\tests\package.Tests.ps1 -Msi <msi>`; neither needs elevation. That script is the pre-install step described in
-[INSTALL.md](INSTALL.md) section 3: it stops the services, ends processes that hold files, and
-removes the in-box server. It runs through `powershell.exe` and is written for Windows PowerShell
+[INSTALL.md](INSTALL.md) section 3: it resolves actual feature/component actions after CostFinalize, stops only affected services/processes, and removes the in-box server only for an actual Server installation. A client-only install, repair or uninstall cannot infer server permission from an empty REMOVE property. It runs through `powershell.exe` and is written for Windows PowerShell
 2.0; test any change on the oldest Windows you support. Every `powershell.exe` command line needs
 `-InputFormat None`: `WixQuietExec` gives the process a standard input that stays open, and
 PowerShell 2.0 (Windows 7, Windows Server 2008 R2) waits for its end, so without the switch the
@@ -258,8 +284,9 @@ Source changes to the upstream packaging, for WiX 3.14 and for server deployment
   The upgrade codes are unchanged, so earlier builds and the official packages are still
   recognised and replaced.
 
-The MSIs are unsigned. Sign `openssh.msi` and the executables with `signtool` if your
-environment requires it.
+Local packages from these commands are unsigned. Stable release tags require the signing configuration
+and complete payload checks described in [RELEASING.md](RELEASING.md). No signing identity is
+available for this work yet; local build success is not signed-release verification.
 
 ## 6. Refreshing the vendored libraries
 
@@ -304,6 +331,12 @@ carries the change. Versions used for the 2026-09-25 build:
 | libcbor | 0.14.0 | 0.14.0 | 2026-07-18 | unchanged |
 | zlib | 1.3.2 | 1.3.2 | 2026-02-17 | unchanged |
 | vcpkg baseline | `a345bbdc` (2024-12-04) | `10541e31` (2026-09-25) | | Registry snapshot for helper ports (`vcpkg-cmake`, `vcpkg-cmake-config`). |
+
+The checked-in [upstream-patches.json](../tools/release/upstream-patches.json) records upstream refs,
+source archive hashes, nine applied overlay patches, rationale and removal conditions. Run
+`./tools/release/Test-UpstreamInventory.ps1` after any dependency or patch change; it is a CI gate.
+The inventory identifies the external history bundle still needed to verify full Windows-port
+ancestry. It does not claim that the squashed checkout contains that missing history.
 
 ## 7. Verify an installed server
 
