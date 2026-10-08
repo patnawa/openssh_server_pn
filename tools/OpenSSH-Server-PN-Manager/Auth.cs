@@ -691,11 +691,11 @@ namespace OpenSSHServerPNManager
             try { files = Ssh.ResolveEffectiveKeysFiles(value, me, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)); }
             catch (Exception ex) { return "The authorized key files for " + me + " could not be checked: " + ex.Message; }
             int n = 0;
-            try { n = files.Sum(file => Keys.Read(file).Count(k => k.Type != "?")); }
+            try { n = Keys.UsableCount(files); }
             catch (Exception ex) { return "The authorized key files for " + me + " could not be read: " + ex.Message; }
             if (n > 0) return null;
             return "With these settings " + me + " (you) can log in over SSH only with a public key" + (eff.BothRequired ? " plus the Windows password" : "") +
-                   ", but no key is authorized for this account" + (files.Count > 0 ? " in\n" + string.Join("\n", files) : " (AuthorizedKeysFile none)") + ".\n\nCreate a key on the Key generator tab (tick \"Allow this key to log in\") and test it first.";
+                   ", but no usable key is authorized for this account" + (files.Count > 0 ? " in\n" + string.Join("\n", files) : " (AuthorizedKeysFile none)") + " (DSA keys, cert-authority lines and lines ssh-keygen cannot read do not count).\n\nCreate a key on the Key generator tab (tick \"Allow this key to log in\") and test it first.";
         }
     }
 

@@ -152,13 +152,15 @@ namespace OpenSSHServerPNManager
             var tree = All(form).OfType<TreeView>().Single(); var tabs = All(form).OfType<ThemedTabControl>().Single();
             if (!tree.Visible || tree.Nodes.Count != 5 || tree.Nodes.Cast<TreeNode>().Sum(n => n.Nodes.Count) != form.TabCount) throw new Exception("Missing grouped pages: " + LayoutDiagnostics(form));
             if (tree.AccessibilityObject.Name != "Task navigation") throw new Exception("Navigation has no accessible name");
-            foreach (var key in new[] { System.Windows.Forms.Keys.D1, System.Windows.Forms.Keys.D9 })
+            // Ctrl+1 to Ctrl+9 follow the pages as the navigation lists them, the only order shown.
+            var leaves = tree.Nodes.Cast<TreeNode>().SelectMany(g => g.Nodes.Cast<TreeNode>()).ToList();
+            for (var key = System.Windows.Forms.Keys.D1; key <= System.Windows.Forms.Keys.D9; key++)
             {
                 var message = new Message();
                 var handled = typeof(MainForm).GetMethod("ProcessCmdKey", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form,
                     new object[] { message, System.Windows.Forms.Keys.Control | key });
                 form.WaitForIdleForTest();
-                if (!(bool)handled || tabs.SelectedIndex != key - System.Windows.Forms.Keys.D1 || tree.SelectedNode.Tag != tabs.SelectedTab)
+                if (!(bool)handled || tabs.SelectedTab != leaves[key - System.Windows.Forms.Keys.D1].Tag || tree.SelectedNode.Tag != tabs.SelectedTab)
                     throw new Exception("Keyboard and navigation disagree for " + key + ": handled=" + handled + ", tab=" + tabs.SelectedIndex + ", node=" + tree.SelectedNode.Text + ", busy=" + typeof(MainForm).GetField("_busyDepth", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form));
             }
             if (tabs.SelectedTab.Top > Ui.Px(3)) throw new Exception("Hidden tab headers still consume vertical space");

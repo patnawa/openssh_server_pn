@@ -460,6 +460,34 @@ namespace OpenSSHServerPNManager
             var name = Path.GetFileName((profileDir ?? "").TrimEnd('\\'));
             return Acl.SidOfAccount(name) ?? Acl.SidOfAccount(Environment.MachineName + "\\" + name);
         }
+
+        /// <summary>
+        /// The keys in these authorized_keys files that sshd can log someone in with: not a cert-authority line (it needs
+        /// a certificate), not DSA (this build has none), and key material ssh-keygen reads (a SHA256 fingerprint), so a
+        /// truncated, mislabelled or made-up line does not count. fingerprint: for tests; ssh-keygen otherwise.
+        /// </summary>
+        public static int UsableCount(IEnumerable<string> files, Func<string, string> fingerprint = null)
+        {
+            if (fingerprint == null) fingerprint = Fingerprint;
+            int n = 0;
+            foreach (var file in files)
+            {
+                if (!File.Exists(file)) continue;
+                foreach (var raw in File.ReadAllLines(file))
+                {
+                    var line = raw.Trim();
+                    if (line.Length == 0 || line.StartsWith("#")) continue;
+                    var m = KeyLine(line);
+                    if (!m.Success || m.Groups[1].Value.StartsWith("ssh-dss", StringComparison.Ordinal)) continue;
+                    // Options are separated by commas outside double quotes; sshd compares their names without case.
+                    var options = Regex.Matches(line.Substring(0, m.Index), @"(?:""(?:\\.|[^""\\])*""|[^,""])+").Cast<Match>();
+                    if (options.Any(o => o.Value.Trim().Equals("cert-authority", StringComparison.OrdinalIgnoreCase))) continue;
+                    var fp = fingerprint(line);
+                    if (fp != null && fp.StartsWith("SHA256:", StringComparison.Ordinal)) n++;
+                }
+            }
+            return n;
+        }
     }
 
     internal sealed class HostKey { public string File; public string Type; public string Fingerprint; public string Bits; }

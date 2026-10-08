@@ -247,10 +247,10 @@ namespace OpenSSHServerPNManager
                         else if (tab == _pgLogs) RunUi(LoadLogs);
                         else if (tab == _pgHardening) RunUi(RunChecks);
                         else if (tab == _pgKeys) RunUi(LoadKeys);
-                        else if (tab == _pgFirewall) RunUi(LoadFirewall);
+                        else if (tab == _pgFirewall) { if (ReloadDiscards(FirewallEdited(), "firewall")) RunUi(() => LoadFirewallRule(true)); }
                         else if (tab == _pgPartners) RunUi(LoadPartners);
                         else if (tab == _pgClient) RunUi(LoadClient);
-                        else if (tab == _pgAlerts) RunUi(LoadAlerts);
+                        else if (tab == _pgAlerts) { if (ReloadDiscards(AlertsEdited(), "alert")) RunUi(LoadAlerts); }
                         else return base.ProcessCmdKey(ref msg, keyData);
                         return true;
                     case System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.F:
@@ -264,11 +264,20 @@ namespace OpenSSHServerPNManager
                 var digit = keyData & ~System.Windows.Forms.Keys.Control;
                 if ((keyData & System.Windows.Forms.Keys.Control) != 0 && (keyData & (System.Windows.Forms.Keys.Alt | System.Windows.Forms.Keys.Shift)) == 0 && digit >= System.Windows.Forms.Keys.D1 && digit <= System.Windows.Forms.Keys.D9)
                 {
+                    // In the order of the navigation list, the only order shown (the tab headers are hidden).
                     int i = digit - System.Windows.Forms.Keys.D1;
-                    if (i < _tabs.TabCount) { _tabs.SelectedIndex = i; SyncNavigation(); _tabs.SelectedTab.SelectNextControl(null, true, true, true, false); return true; }
+                    if (i < _compactNavigation.Items.Count) { _tabs.SelectedTab = ((NavigationChoice)_compactNavigation.Items[i]).Page; SyncNavigation(); _tabs.SelectedTab.SelectNextControl(null, true, true, true, false); return true; }
                 }
             }
             return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        /// <summary>F5 on a tab with changes not saved: true to reload and lose them (asked, default No; never in the unattended modes).</summary>
+        private bool ReloadDiscards(bool edited, string what)
+        {
+            if (!edited) return true;
+            if (Program.Unattended) { Status("Not reloaded: the " + what + " changes are not saved"); return false; }
+            return MessageBox.Show(this, "Discard the " + what + " changes not saved yet and reload?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
         }
 
         // ---------------- test hooks (used by --screenshot) ----------------
@@ -633,12 +642,20 @@ namespace OpenSSHServerPNManager
             // Rebuilt only when the keys changed, so a selected row stays selected.
             var rows = d.HostKeys.Select(k => new[] { k.File, k.Type, k.Bits ?? "", k.Fingerprint ?? "" }).ToList();
             var shown = _lvHostKeys.Items.Cast<ListViewItem>().Select(i => i.SubItems.Cast<ListViewItem.ListViewSubItem>().Select(s => s.Text).ToArray()).ToList();
-            if (rows.Count != shown.Count || rows.Where((r, i) => !r.SequenceEqual(shown[i])).Any())
+            if (!SameRows(rows, shown))
             {
+                var selected = new HashSet<string>(_lvHostKeys.SelectedItems.Cast<ListViewItem>().Select(i => i.Text));
                 _lvHostKeys.BeginUpdate(); _lvHostKeys.Items.Clear();
-                foreach (var r in rows) _lvHostKeys.Items.Add(new ListViewItem(r));
+                foreach (var r in rows) _lvHostKeys.Items.Add(new ListViewItem(r) { Selected = selected.Contains(r[0]) });
                 _lvHostKeys.EndUpdate();
             }
+        }
+
+        /// <summary>The same rows in any order: a list sorted by a column shows them in another order than they are read.</summary>
+        internal static bool SameRows(IList<string[]> a, IList<string[]> b)
+        {
+            Func<IList<string[]>, List<string>> keys = rows => rows.Select(r => string.Join("\u0001", r)).OrderBy(k => k, StringComparer.Ordinal).ToList();
+            return a.Count == b.Count && keys(a).SequenceEqual(keys(b));
         }
 
         private bool _refreshRunning; private DateTime _refreshStarted; private long _refreshGeneration;
@@ -679,7 +696,7 @@ namespace OpenSSHServerPNManager
         {
             await SafeAsync(async () =>
             {
-                if (action == "stop" && MessageBox.Show(this, "Stop the SSH server? New connections are refused until it starts again.\n\nConnected sessions stay connected; end them on the Sessions tab if needed.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+                if (action == "stop" && MessageBox.Show(this, "Stop the SSH server? New connections are refused until it starts again.\n\nConnected sessions stay connected; end them on the Sessions tab if needed.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
                 if (action == "restart" && !Program.Unattended) { await RestartApplyingSaved(true); return; }
                 _expectedStateChange = DateTime.UtcNow;
                 await BgAsync((action == "stop" ? "Stopping" : action == "start" ? "Starting" : "Restarting") + " sshd...", () =>
@@ -808,12 +825,14 @@ namespace OpenSSHServerPNManager
 
         private ListView _lvConnections;
 
-        private sealed class SessionsData { public int Port; public List<SessionInfo> List; public List<string[]> Connections; public string Error; }
+        /// <summary>Sshd and Peers: for the notification area icon, which the timer keeps up to date while this tab is shown.</summary>
+        private sealed class SessionsData { public int Port; public List<SessionInfo> List; public List<string[]> Connections; public string Error; public ServiceState Sshd; public int Peers; }
 
         private SessionsData CollectSessions(SshdConfig cfg)
         {
             var state = ServerState.Read(); int port = state.Ports.FirstOrDefault();
-            return new SessionsData { Port = port, List = Sessions.List(port), Connections = state.Verified ? Sessions.Connections(state.Ports) : new List<string[]>(), Error = state.Verified ? null : state.Error };
+            return new SessionsData { Port = port, List = Sessions.List(port), Connections = state.Verified ? Sessions.Connections(state.Ports) : new List<string[]>(), Error = state.Verified ? null : state.Error,
+                                      Sshd = Services.Status("sshd"), Peers = state.Ports.SelectMany(Net.Sessions).Distinct().Count() };
         }
 
         private async Task RefreshSessions()
@@ -826,7 +845,10 @@ namespace OpenSSHServerPNManager
         private void ShowSessions(SessionsData data)
         {
             var list = data.List;
+            // Rows are found again by PID (0: a row without a process, never an anchor): the selection, the row at the top of
+            // the list and the focused row stay where they were.
             var selected = new HashSet<int>(_lvSessions.SelectedItems.Cast<ListViewItem>().Select(i => (int)i.Tag));
+            int topPid = _lvSessions.TopItem == null ? 0 : (int)_lvSessions.TopItem.Tag, focusedPid = _lvSessions.FocusedItem == null ? 0 : (int)_lvSessions.FocusedItem.Tag;
             _lvSessions.BeginUpdate(); _lvSessions.Items.Clear();
             foreach (var s in list)
             {
@@ -836,10 +858,14 @@ namespace OpenSSHServerPNManager
                 var dur = s.Start == DateTime.MinValue ? "" : ((int)ts.TotalHours).ToString("00") + ":" + ts.Minutes.ToString("00") + ":" + ts.Seconds.ToString("00");
                 var it = new ListViewItem(new[] { s.Pid == 0 ? "" : s.Pid.ToString(), s.User, s.Start == DateTime.MinValue ? "" : s.Start.ToString("yyyy-MM-dd HH:mm:ss"), dur, s.Pid == 0 ? "" : (system ? "privileged monitor (pre-login or supervisor)" : "user session"), s.Activity }) { Tag = s.Pid };
                 if (system) it.ForeColor = Theme.Faint;
-                if (selected.Contains(s.Pid)) it.Selected = true;
+                if (s.Pid != 0 && selected.Contains(s.Pid)) it.Selected = true;
                 _lvSessions.Items.Add(it);
             }
             _lvSessions.EndUpdate();
+            var top = _lvSessions.Items.Cast<ListViewItem>().FirstOrDefault(i => topPid != 0 && (int)i.Tag == topPid);
+            if (top != null) _lvSessions.TopItem = top;
+            var focused = _lvSessions.Items.Cast<ListViewItem>().FirstOrDefault(i => focusedPid != 0 && (int)i.Tag == focusedPid);
+            if (focused != null) focused.Focused = true;
             var conns = data.Connections;
             _lvConnections.BeginUpdate(); _lvConnections.Items.Clear();
             foreach (var c in conns) _lvConnections.Items.Add(new ListViewItem(c));
@@ -848,6 +874,7 @@ namespace OpenSSHServerPNManager
             _lblSessionSummary.Text = users + " user session(s)" + (sftp > 0 ? " (" + sftp + " SFTP)" : "") + ", " + list.Count(x => x.Pid != 0) + " sshd-session process(es), " +
                 (data.Error == null ? conns.Count + " established connection(s) across the server endpoints" : "connection inspection unavailable: " + data.Error);
             _lblSessionSummary.ForeColor = data.Error == null ? Theme.Text : Orange;
+            if (data.Sshd != null) TrayState(data.Sshd, data.Peers);
         }
 
         private async Task DisconnectSessions(bool all)
@@ -856,9 +883,9 @@ namespace OpenSSHServerPNManager
             targets = targets.Where(i => (int)i.Tag != 0).ToList();
             if (targets.Count == 0) { Status("Select a session first"); return; }
             var who = string.Join("\n", targets.Select(i => "PID " + i.SubItems[0].Text + "  " + i.SubItems[1].Text + "  " + i.SubItems[4].Text));
-            if (MessageBox.Show(this, "Disconnect " + targets.Count + " session(s)?\n\n" + who, Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-            int ok = 0;
-            foreach (var t in targets) { try { Sessions.Disconnect((int)t.Tag); ok++; } catch (Exception ex) { Log.Error("Disconnect PID " + t.Tag, ex, false); } }
+            if (MessageBox.Show(this, "Disconnect " + targets.Count + " session(s)?\n\n" + who, Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            var pids = targets.Select(t => (int)t.Tag).ToList();
+            int ok = await BgAsync("Disconnecting...", () => pids.Count(pid => { try { Sessions.Disconnect(pid); return true; } catch (Exception ex) { Log.Error("Disconnect PID " + pid, ex, false); return false; } }));
             await Task.Delay(500); await RefreshSessions();
             Status(ok + " of " + targets.Count + " session(s) disconnected");
         }
@@ -1009,7 +1036,9 @@ namespace OpenSSHServerPNManager
             {
                 bool keep = keepEdits && FieldEdited(f);
                 var v = FileValue(f);
-                _shown[f.Key] = v;
+                // sshd reads these values without regard to case: "verbose" is shown, and unchanged, as the choice VERBOSE.
+                int choice = f.Choices == null ? -1 : Array.FindIndex(f.Choices, x => x.Length > 0 && x.Equals(v, StringComparison.OrdinalIgnoreCase));
+                _shown[f.Key] = choice > 0 ? f.Choices[choice] : v;
                 var c = _fields[f.Key];
                 if (keep) { SetHint(f, eff); continue; }
                 if (c is ComboBox)
@@ -2010,7 +2039,9 @@ namespace OpenSSHServerPNManager
         {
             string err = null;
             var typed = _auAccount.Text.Trim();
-            var name = Accounts.Canonical(typed.Length == 0 ? KeyGen.LoginName() : typed, false, out err);
+            var input = typed.Length == 0 ? KeyGen.LoginName() : typed;
+            // Name lookups can wait for a domain controller: never on the window's thread.
+            var name = await BgAsync("Looking up the account...", () => Accounts.Canonical(input, false, out err));
             if (name == null) throw new ConfigException(err);
             int port = _cfg.EffectivePort;
             if (live)
@@ -2031,15 +2062,15 @@ namespace OpenSSHServerPNManager
             if (m.PublicKey)
             {
                 string value; d.TryGetValue("authorizedkeysfile", out value);
-                var home = Accounts.ProfileDir(Acl.SidOfAccount(name));
-                var file = Ssh.ResolveKeysFile(value, name, home);
-                if (file == null) sb.Append(home == null ? " The account has not logged on yet, so it has no profile and no authorized_keys file." : " No authorized_keys file is configured.");
-                else
+                string home = null, file = null; int n = 0;
+                await BgAsync("Reading the authorized keys...", () =>
                 {
-                    int n = 0;
-                    try { n = Keys.Read(file).Count(k => k.Type != "?"); } catch { }
-                    sb.Append(" Keys authorized: " + n + " in " + file + ".");
-                }
+                    home = Accounts.ProfileDir(Acl.SidOfAccount(name));
+                    file = Ssh.ResolveKeysFile(value, name, home);
+                    if (file != null) { try { n = Keys.Read(file).Count(k => k.Type != "?"); } catch { } }
+                });
+                if (file == null) sb.Append(home == null ? " The account has not logged on yet, so it has no profile and no authorized_keys file." : " No authorized_keys file is configured.");
+                else sb.Append(" Keys authorized: " + n + " in " + file + ".");
             }
             var limits = new[] { "allowusers", "allowgroups", "denyusers", "denygroups" }.Where(k => d.ContainsKey(k) && d[k].Length > 0).Select(k => k + " " + d[k]).ToList();
             if (limits.Count > 0) sb.Append(" sshd_config also limits who may log in: " + string.Join("; ", limits) + ".");
@@ -2333,7 +2364,8 @@ namespace OpenSSHServerPNManager
         {
             string err = null;
             var typed = _sfAccount.Text.Trim();
-            var name = Accounts.Canonical(typed.Length == 0 ? KeyGen.LoginName() : typed, false, out err);
+            var input = typed.Length == 0 ? KeyGen.LoginName() : typed;
+            var name = await BgAsync("Looking up the account...", () => Accounts.Canonical(input, false, out err));
             if (name == null) throw new ConfigException(err);
             int port = _cfg.EffectivePort;
             var tmp = WriteCandidate(SftpCandidate());
@@ -2357,9 +2389,10 @@ namespace OpenSSHServerPNManager
                 var sb = new StringBuilder(name + (only ? " is an SFTP-only account" + readOnlyNote : " can use SFTP, and also a shell and commands") + pending + ".");
                 if (chroot.Length > 0 && !chroot.Equals("none", StringComparison.OrdinalIgnoreCase))
                 {
-                    var path = SftpConfig.ExpandFolder(chroot, name, Accounts.ProfileDir(Acl.SidOfAccount(name)));
+                    string path = null; bool exists = false;
+                    await BgAsync("Looking for the folder...", () => { path = SftpConfig.ExpandFolder(chroot, name, Accounts.ProfileDir(Acl.SidOfAccount(name))); exists = path != null && Directory.Exists(path); });
                     if (path == null) sb.Append(" Its folder is " + chroot + ", with a profile folder it does not have yet.");
-                    else if (Directory.Exists(path)) sb.Append(" It sees " + path + " as / and cannot leave it.");
+                    else if (exists) sb.Append(" It sees " + path + " as / and cannot leave it.");
                     else { sb.Append(" Its folder " + path + " does not exist, so its SFTP logins fail: Apply creates it."); color = Red; }
                 }
                 else if (only) sb.Append(" It is not confined to a folder: it reaches the disks as its Windows permissions allow.");
@@ -2808,11 +2841,11 @@ namespace OpenSSHServerPNManager
                 health = AgentHealth.Load();
             });
             _alOn.Checked = installed;
-            _alHost.Text = s.SmtpHost; _alPort.Value = Math.Max(1, Math.Min(65535, s.SmtpPort)); _alTls.Checked = s.SmtpTls; _alUser.Text = s.SmtpUser; _alPassword.Text = s.SmtpPassword;
+            _alHost.Text = s.SmtpHost; SetClamped(_alPort, s.SmtpPort); _alTls.Checked = s.SmtpTls; _alUser.Text = s.SmtpUser; _alPassword.Text = s.SmtpPassword;
             _alFrom.Text = s.From; _alAdmins.Text = s.AdminTo; _alHook.Text = s.Webhook; _alTeams.Checked = s.WebhookTeams; _alText.Checked = !s.WebhookTeams;
-            _alSshd.Checked = s.OnSshdStopped; _alFailures.Checked = s.OnFailedLogins; _alBurst.Value = Math.Max(10, s.BurstThreshold); _alUploads.Checked = s.OnUploads;
-            _alDisk.Checked = s.OnDiskLow; _alDiskPct.Value = s.DiskLowPercent; _alReport.Checked = s.MonthlyReport;
-            _alBlock.Checked = s.AutoBlock; _alThreshold.Value = s.BlockThreshold; _alWindow.Value = s.BlockWindowMinutes; _alAllow.Text = s.AllowList;
+            _alSshd.Checked = s.OnSshdStopped; _alFailures.Checked = s.OnFailedLogins; SetClamped(_alBurst, s.BurstThreshold); _alUploads.Checked = s.OnUploads;
+            _alDisk.Checked = s.OnDiskLow; SetClamped(_alDiskPct, s.DiskLowPercent); _alReport.Checked = s.MonthlyReport;
+            _alBlock.Checked = s.AutoBlock; SetClamped(_alThreshold, s.BlockThreshold); SetClamped(_alWindow, s.BlockWindowMinutes); _alAllow.Text = s.AllowList;
             _alState.Text = installed ? "On: the tasks " + Agent.WatchTask + " and " + Agent.DailyTask + " run the manager as SYSTEM."
                                       : "Off: nothing runs while this window is closed. Saving with the box ticked sets up the scheduled tasks.";
             _alState.ForeColor = installed ? Theme.Muted : Orange;
@@ -2821,6 +2854,9 @@ namespace OpenSSHServerPNManager
             _alShown = AlertInputs();
             UpdatePending();
         }
+
+        /// <summary>A stored value (a hand-edited file or registry value) within the range of its field: out of range, Value throws.</summary>
+        private static void SetClamped(NumericUpDown n, decimal v) { n.Value = Math.Max(n.Minimum, Math.Min(n.Maximum, v)); }
 
         /// <summary>The settings as they are on the tab (partner recipients from the file: they are set on the Partners tab).</summary>
         private AlertSettings AlertsFromTab()
@@ -2836,6 +2872,8 @@ namespace OpenSSHServerPNManager
 
         private async Task SaveAlerts()
         {
+            // The fields of a tab that could not be read hold no settings: saving them would overwrite the file.
+            if (!_alLoaded) throw new ConfigException("The alert settings could not be read, so nothing was saved. Press F5 and save again.");
             var s = AlertsFromTab();
             var problem = s.Problem();
             if (problem != null) throw new ConfigException(problem);
@@ -3048,12 +3086,13 @@ namespace OpenSSHServerPNManager
         }
         private async Task LoadUserKeys() { if (_cmbUsers.SelectedItem != null) await FillKeyList(_lvUserKeys, CurrentUserKeysPath()); }
         private string CurrentUserKeysPath() { return Keys.UserKeysPath((string)_cmbUsers.SelectedItem); }
-        private SecurityIdentifier CurrentUserSid()
+        private SecurityIdentifier CurrentUserSid() { return ProfileSid((string)_cmbUsers.SelectedItem); }
+        private static SecurityIdentifier ProfileSid(string profile)
         {
             // The profile folder name is not always the account name (renamed accounts, "name.DOMAIN" folders);
             // the ProfileList registry key maps the folder to the SID that sshd will impersonate.
-            var sid = Keys.SidOfProfile((string)_cmbUsers.SelectedItem);
-            if (sid == null) throw new Exception("Cannot determine the account that owns " + _cmbUsers.SelectedItem + ". The authorized_keys file would not be readable by that user, so nothing was written.");
+            var sid = Keys.SidOfProfile(profile);
+            if (sid == null) throw new Exception("Cannot determine the account that owns " + profile + ". The authorized_keys file would not be readable by that user, so nothing was written.");
             return sid;
         }
         private async Task FillKeyList(ListView lv, string path)
@@ -3078,8 +3117,9 @@ namespace OpenSSHServerPNManager
         private async Task AddKeyLines(bool admin, IEnumerable<string> newLines)
         {
             var path = admin ? Ssh.AdminKeysPath : CurrentUserKeysPath();
-            var owner = admin ? null : CurrentUserSid();
-            var r = Keys.AddLines(path, newLines, owner); // keeps comments; skips key material already present
+            var profile = admin ? null : (string)_cmbUsers.SelectedItem; var lines = newLines.ToList();
+            // keeps comments; skips key material already present
+            var r = await BgAsync("Adding the keys...", () => Keys.AddLines(path, lines, admin ? null : ProfileSid(profile)));
             if (admin) await FillKeyList(_lvAdminKeys, path); else await LoadUserKeys();
             Status(r[0] + " key(s) added to " + path + (r[1] > 0 ? ", " + r[1] + " already present" : ""));
         }
@@ -3088,9 +3128,10 @@ namespace OpenSSHServerPNManager
             var lv = admin ? _lvAdminKeys : _lvUserKeys;
             if (lv.SelectedItems.Count == 0) { Status("Select a key first"); return; }
             var line = (string)lv.SelectedItems[0].Tag;
-            if (MessageBox.Show(this, "Remove this key?\n\n" + line, Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            if (MessageBox.Show(this, "Remove this key?\n\n" + line, Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
             var path = admin ? Ssh.AdminKeysPath : CurrentUserKeysPath();
-            int removed = Keys.RemoveKey(path, line, admin ? null : CurrentUserSid());
+            var profile = admin ? null : (string)_cmbUsers.SelectedItem;
+            int removed = await BgAsync("Removing the key...", () => Keys.RemoveKey(path, line, admin ? null : ProfileSid(profile)));
             if (admin) await FillKeyList(_lvAdminKeys, path); else await LoadUserKeys();
             Status(removed > 0 ? "Key removed" : "Key not found in " + path);
         }
@@ -3489,8 +3530,13 @@ namespace OpenSSHServerPNManager
             var bar = Flow();
             bar.Controls.Add(Btn("Apply", async (s, e) => await SafeAsync(ApplyFirewall), 110));
             _tips.SetToolTip(bar.Controls[0], "Ctrl+S");
-            bar.Controls.Add(Btn("Use sshd port", (s, e) => Safe(() => { _fwPort.Value = _cfg.EffectivePort; }), 120));
-            bar.Controls.Add(Btn("Remove rule", async (s, e) => await SafeAsync(async () => { if (MessageBox.Show(this, "Remove the inbound firewall rule for sshd? Remote clients will no longer reach the server.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) { await BgAsync("Removing the firewall rule...", Firewall.Remove); await LoadFirewall(); } }), 120));
+            bar.Controls.Add(Btn("Use sshd port", (s, e) => Safe(() =>
+            {
+                var ports = ExpectedPorts(_cfg ?? new SshdConfig());
+                _fwPort.Value = ports[0];
+                if (ports.Count > 1) Status("sshd_config gives the ports " + string.Join(", ", ports) + ": the field shows the first; Apply asks before the rule stops allowing one of them");
+            }), 120));
+            bar.Controls.Add(Btn("Remove rule", async (s, e) => await SafeAsync(async () => { if (MessageBox.Show(this, "Remove the inbound firewall rule for sshd? Remote clients will no longer reach the server.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes) { await BgAsync("Removing the firewall rule...", Firewall.Remove); await LoadFirewallRule(true); } }), 120));
             bar.Controls.Add(Btn("Windows Firewall console", (s, e) => Proc.OpenExternal("wf.msc"), 190));
             flow.Controls.Add(bar);
             flow.Controls.Add(new Label { AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(4, 12, 4, 4), MaximumSize = new Size(Ui.Px(800), 0), Text = "The rule is scoped to sshd.exe. Domain-joined Windows Servers use the Domain profile; laptops on untrusted networks use Public. Restrict remote addresses in the Windows Firewall console if the server must only be reachable from specific networks." });
@@ -3516,29 +3562,56 @@ namespace OpenSSHServerPNManager
                 }
             }
             int profiles = (_fwDomain.Checked ? 1 : 0) | (_fwPrivate.Checked ? 2 : 0) | (_fwPublic.Checked ? 4 : 0);
-            // Taking sshd's own port away from the rule, or switching the rule off, cuts off remote clients: ask first.
-            int sshdPort = _cfg == null ? 22 : _cfg.EffectivePort;
-            if (!Program.Unattended && (!_fwEnabled.Checked || !Firewall.Covers(ports, sshdPort)) &&
-                MessageBox.Show(this, (!_fwEnabled.Checked ? "The rule will be switched off" : "The rule will not allow port " + sshdPort + ", the port sshd listens on") + ": other computers can then no longer connect over SSH.\n\nApply anyway?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            // Taking a port sshd uses away from the rule, or switching the rule off, cuts off remote clients: ask first. The
+            // ports are sshd's (sshd -T, with Include files and ListenAddress ports, and the running listeners), else the file's.
+            var state = await BgAsync("Resolving the server endpoints...", ServerState.Read);
+            var uncovered = FirewallUncovered(state.Verified ? state.Ports : ExpectedPorts(_cfg ?? new SshdConfig()).ToArray(), ports);
+            if (!Program.Unattended && (!_fwEnabled.Checked || uncovered.Count > 0) &&
+                MessageBox.Show(this, (!_fwEnabled.Checked ? "The rule will be switched off: other computers can then no longer connect over SSH." : "The rule will not allow port " + string.Join(", ", uncovered) + ", which sshd uses: other computers can then no longer connect there over SSH.") + "\n\nApply anyway?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
             bool enabled = _fwEnabled.Checked;
             await BgAsync("Updating the firewall rule...", () => Firewall.Apply(enabled, profiles, ports));
-            await LoadFirewall(); Status("Firewall rule updated");
+            await LoadFirewallRule(true); Status("Firewall rule updated");
         }
 
-        private async Task LoadFirewall()
+        /// <summary>The ports sshd uses that a LocalPorts value would not allow.</summary>
+        internal static List<int> FirewallUncovered(IEnumerable<int> sshdPorts, string ports) { return sshdPorts.Distinct().Where(p => !Firewall.Covers(ports, p)).ToList(); }
+
+        /// <summary>After the rule was changed by another tab, the wizard or a recovery: changes on this tab not applied yet stay.</summary>
+        private Task LoadFirewall() { return LoadFirewallRule(false); }
+
+        /// <summary>
+        /// Shows the rule. Unless discard, a box or the port changed on the tab and not applied yet keeps its value over the
+        /// rule's, and the rest shows the rule; the ports a multi-port Apply keeps are the rule's as read now either way.
+        /// </summary>
+        private async Task LoadFirewallRule(bool discard)
         {
             var fw = await BgAsync("Reading the firewall rule...", Firewall.Get);
+            string[] was = null, typed = null;
+            if (!discard && FirewallEdited()) { was = _fwShown.Split('|'); typed = FirewallInputs().Split('|'); }
             _fwLoadedPorts = fw == null ? null : fw.Ports;
-            if (fw == null) { _fwState.Text = "No inbound rule for sshd found. Choose profiles and click Apply to create one."; _fwState.ForeColor = Red; _fwEnabled.Checked = true; _fwDomain.Checked = _fwPrivate.Checked = _fwPublic.Checked = true; _fwPort.Value = _cfg == null ? 22 : _cfg.EffectivePort; CaptureFirewall(); return; }
-            _fwState.Text = "Rule \"" + fw.Name + "\": " + (fw.Enabled ? "enabled" : "disabled") + ", profiles " + fw.ProfilesText + ", port " + fw.Ports + ", program " + fw.Program;
-            _fwState.ForeColor = fw.Enabled ? Green : Red;
-            _fwEnabled.Checked = fw.Enabled;
-            bool all = (fw.Profiles & 0x7fffffff) == 0x7fffffff;
-            _fwDomain.Checked = all || (fw.Profiles & 1) != 0; _fwPrivate.Checked = all || (fw.Profiles & 2) != 0; _fwPublic.Checked = all || (fw.Profiles & 4) != 0;
-            // A multi-port rule shows sshd's port in the field; Apply keeps the whole list (see the Apply button).
-            int p; int sshdPort = _cfg == null ? 22 : _cfg.EffectivePort;
-            _fwPort.Value = int.TryParse(fw.Ports, out p) && p >= 1 && p <= 65535 ? p : (sshdPort >= 1 && sshdPort <= 65535 ? sshdPort : 22);
+            // A multi-port rule (or none) shows sshd's port in the field; Apply keeps the whole list (see the Apply button).
+            int p, sshdPort = _cfg == null ? 22 : ExpectedPorts(_cfg)[0];
+            if (fw == null)
+            {
+                _fwState.Text = "No inbound rule for sshd found. Choose profiles and click Apply to create one."; _fwState.ForeColor = Red;
+                _fwEnabled.Checked = true; _fwDomain.Checked = _fwPrivate.Checked = _fwPublic.Checked = true; _fwPort.Value = sshdPort;
+            }
+            else
+            {
+                _fwState.Text = "Rule \"" + fw.Name + "\": " + (fw.Enabled ? "enabled" : "disabled") + ", profiles " + fw.ProfilesText + ", port " + fw.Ports + ", program " + fw.Program;
+                _fwState.ForeColor = fw.Enabled ? Green : Red;
+                _fwEnabled.Checked = fw.Enabled;
+                bool all = (fw.Profiles & 0x7fffffff) == 0x7fffffff;
+                _fwDomain.Checked = all || (fw.Profiles & 1) != 0; _fwPrivate.Checked = all || (fw.Profiles & 2) != 0; _fwPublic.Checked = all || (fw.Profiles & 4) != 0;
+                _fwPort.Value = int.TryParse(fw.Ports, out p) && p >= 1 && p <= 65535 ? p : sshdPort;
+            }
             CaptureFirewall();
+            if (typed == null) return;
+            var boxes = new[] { _fwEnabled, _fwDomain, _fwPrivate, _fwPublic };
+            for (int i = 0; i < boxes.Length; i++) if (typed[i] != was[i]) boxes[i].Checked = bool.Parse(typed[i]);
+            if (typed[4] != was[4]) _fwPort.Value = decimal.Parse(typed[4]);
+            UpdatePending();
+            Status("The firewall rule changed; the changes on the Firewall tab not applied yet are kept");
         }
 
         // ---------------- Logs ----------------
@@ -3698,49 +3771,81 @@ namespace OpenSSHServerPNManager
             return null;
         }
 
-        /// <summary>Fixes the selected warnings: settings in one save (shown first) and one restart; other fixes one by one, each asked.</summary>
+        /// <summary>
+        /// The checks whose fix leaves sshd_config as it is: sshd takes the value from an included file (the fixes edit
+        /// sshd_config only), so saving and restarting would change nothing.
+        /// </summary>
+        internal static List<string> IneffectiveFixes(SshdConfig cfg, IEnumerable<string> checks)
+        {
+            return checks.Where(name => { var c = cfg.Copy(); ConfigFix(name)(c); return c.Text == cfg.Text; }).ToList();
+        }
+
+        /// <summary>
+        /// Fixes the selected warnings: settings in one save (shown first) and one restart; other fixes one by one, each
+        /// asked. Checks fixed on another tab open that tab at the end (the first one; the others are named).
+        /// </summary>
         private async Task FixSelectedChecks()
         {
             var selected = _lvChecks.SelectedItems.Cast<ListViewItem>().Select(i => i.Tag as CheckResult).Where(c => c != null && c.Status == "WARN").ToList();
             if (selected.Count == 0) { Status("Select one or more checks with WARN first"); return; }
-            var cfgFixes = selected.Where(c => ConfigFix(c.Name) != null).ToList();
+            var cfgFixes = selected.Where(c => ConfigFix(c.Name) != null).Select(c => c.Name).ToList();
+            var elsewhere = new List<Tuple<TabPage, string, string>>(); bool acted = false;
+            Action<TabPage, string, string> later = (page, tab, hint) => { if (!elsewhere.Any(t => t.Item1 == page)) elsewhere.Add(Tuple.Create(page, tab, hint)); };
             foreach (var c in selected.Where(x => ConfigFix(x.Name) == null))
             {
-                if (c.Name == "Password authentication") { _tabs.SelectedTab = _pgAuth; Status("Login methods are changed on the Authentication tab"); return; }
-                if (c.Name == "SFTP" || c.Name == "SFTP-only accounts") { _tabs.SelectedTab = _pgSftp; Status("SFTP and SFTP-only accounts are set on the SFTP tab; Apply creates missing folders"); return; }
-                if (c.Name == "Login restriction") { _tabs.SelectedTab = _pgSettings; _fields["AllowGroups"].Focus(); Status("Enter the groups allowed to log in (AllowGroups), for example administrators \"openssh users\""); return; }
-                if (c.Name == "Firewall rule") { _tabs.SelectedTab = _pgFirewall; Status("Tick \"Inbound rule enabled\" and click Apply"); return; }
+                if (c.Name == "Password authentication") { later(_pgAuth, "Authentication", "Login methods are changed on the Authentication tab"); continue; }
+                if (c.Name == "SFTP" || c.Name == "SFTP-only accounts") { later(_pgSftp, "SFTP", "SFTP and SFTP-only accounts are set on the SFTP tab; Apply creates missing folders"); continue; }
+                if (c.Name == "Login restriction") { later(_pgSettings, "Settings", "Enter the groups allowed to log in (AllowGroups), for example administrators \"openssh users\""); continue; }
+                if (c.Name == "Firewall rule") { later(_pgFirewall, "Firewall", "Tick \"Inbound rule enabled\" and click Apply"); continue; }
                 if (c.Name == "sshd service")
                 {
                     if (MessageBox.Show(this, "Set the sshd service to start automatically and start it now?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) continue;
                     _expectedStateChange = DateTime.UtcNow;
                     await BgAsync("Starting sshd...", () => { Services.SetStartMode("sshd", "auto"); Services.Start("sshd"); });
-                    continue;
+                    acted = true; continue;
                 }
-                if (c.Name == "Host keys") { await GenerateHostKeys(); continue; }
+                if (c.Name == "Host keys") { await GenerateHostKeys(); acted = true; continue; }
                 if (c.Name == "administrators_authorized_keys ACL")
                 {
                     await BgAsync("Fixing permissions...", () => { Acl.Restrict(Ssh.AdminKeysPath, null); Acl.EnsureOwner(Ssh.AdminKeysPath, null); });
-                    await LoadKeys(); continue;
+                    await LoadKeys(); acted = true; continue;
                 }
                 if (c.Name == "Public network exposure")
                 {
                     var fw = await BgAsync("Reading the firewall rule...", Firewall.Get); if (fw == null) continue;
                     int profiles = fw.Profiles & 3; if ((fw.Profiles & 0x7fffffff) == 0x7fffffff) profiles = 3; if (profiles == 0) profiles = 3;
                     if (MessageBox.Show(this, "Limit the sshd firewall rule to the " + FirewallRule.ProfileText(profiles) + " profile(s)? Computers on a public network (a café, a hotel) can then no longer connect.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) continue;
-                    await BgAsync("Updating the firewall profiles...", () => Firewall.Apply(fw.Enabled, profiles, fw.Ports)); await LoadFirewall(); continue;
+                    await BgAsync("Updating the firewall profiles...", () => Firewall.Apply(fw.Enabled, profiles, fw.Ports)); await LoadFirewall(); acted = true; continue;
                 }
                 MessageBox.Show(this, c.Name + ": " + c.Detail + "\n\nThis cannot be fixed from here. Repair the package (msiexec /fa <package>.msi) or correct the permissions by hand.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
+            var ineffective = IneffectiveFixes(_cfg, cfgFixes);
+            cfgFixes = cfgFixes.Except(ineffective).ToList();
             if (cfgFixes.Count > 0)
             {
                 var cand = _cfg.Copy();
-                foreach (var c in cfgFixes) ConfigFix(c.Name)(cand);
-                var b = await SaveConfig(cand, "Fix: " + string.Join(", ", cfgFixes.Select(c => c.Name)) + ".", "Save and restart");
+                foreach (var name in cfgFixes) ConfigFix(name)(cand);
+                var b = await SaveConfig(cand, "Fix: " + string.Join(", ", cfgFixes) + ".", "Save and restart");
                 await UseConfig(cand);
                 await RestartWithRollback(b);
+                acted = true;
             }
-            await RunChecks();
+            if (ineffective.Count > 0)
+            {
+                var inc = _cfg.Includes();
+                var text = string.Join(", ", ineffective) + ": not changed. sshd takes " + (ineffective.Count > 1 ? "these values" : "this value") + " from an included file" + (inc.Count > 0 ? " (Include " + string.Join("; ", inc) + ")" : "") +
+                           ", and the fix would leave sshd_config as it is, so nothing was saved or restarted.\n\nEdit that file, or set the value on the Settings tab: it is written before the first Include, and sshd takes the first value it reads.";
+                Log.Info("Hardening fix without effect on sshd_config: " + string.Join(", ", ineffective));
+                if (!Program.Unattended) MessageBox.Show(this, text, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            if (acted) await RunChecks();
+            if (elsewhere.Count > 0)
+            {
+                _tabs.SelectedTab = elsewhere[0].Item1;
+                if (elsewhere[0].Item1 == _pgSettings) _fields["AllowGroups"].Focus();
+                Status(elsewhere[0].Item3 + (elsewhere.Count > 1 ? ". Also on the " + string.Join(" and ", elsewhere.Skip(1).Select(t => t.Item2)) + " tab" + (elsewhere.Count > 2 ? "s" : "") : ""));
+            }
+            else if (ineffective.Count > 0 && cfgFixes.Count == 0 && !acted) Status("Not changed: sshd takes " + string.Join(", ", ineffective) + " from an included file");
         }
 
         private async Task ApplyRecommended()
@@ -3886,16 +3991,15 @@ namespace OpenSSHServerPNManager
                 await RunWizard();
         }
 
-        /// <summary>Keys authorized for the account running this program, in the file sshd reads for it.</summary>
+        /// <summary>
+        /// Usable keys authorized for the account running this program, in every file sshd reads for it (Keys.UsableCount).
+        /// Throws when that cannot be worked out, or when sshd reads no file (AuthorizedKeysFile none): no file is guessed.
+        /// </summary>
         private static int MyKeyCount()
         {
-            try
-            {
-                var file = Ssh.AuthorizedKeysFileFor(KeyGen.LoginName(), Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
-                if (file == null) file = Elevation.IsAdministrator() ? Ssh.AdminKeysPath : Keys.UserKeysPath(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
-                return Keys.Read(file).Count(k => k.Type != "?");
-            }
-            catch { return 0; }
+            var files = Ssh.AuthorizedKeysFilesFor(KeyGen.LoginName(), Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+            if (files.Count == 0) throw new ConfigException("sshd reads no authorized_keys file (AuthorizedKeysFile none).");
+            return Keys.UsableCount(files);
         }
 
         private bool _wizardRunning;
@@ -3906,21 +4010,24 @@ namespace OpenSSHServerPNManager
             _wizardRunning = true;
             try
             {
-                var fw = await BgAsync("Reading the current settings...", () => Firewall.Get());
+                FirewallRule fw = null; ServerStateSnapshot state = null;
+                await BgAsync("Reading the current settings...", () => { fw = Firewall.Get(); state = ServerState.Read(); });
                 string err; var allow = _cfg.GetCombinedArgs("AllowGroups", out err);
                 WizardPlan plan;
                 using (var w = new SetupWizard(_cfg.EffectivePort, fw, allow == null || allow.Count == 0 ? null : SshdArgs.FormatTyped(allow), async () => await BgAsync("Reading your keys...", () => MyKeyCount()), QuickAddMyKey, CreateMyKey))
                 {
+                    w.UseServerState(state);
+                    w.ChangesConfig = p => { try { return WizardCandidate(p).Text != _cfg.Text; } catch { return true; } };
                     if (w.ShowDialog(this) != DialogResult.OK) return;
                     plan = w.Plan;
                 }
-                await ApplyWizard(plan, fw);
+                await ApplyWizard(plan, fw, state);
             }
             finally { _wizardRunning = false; }
         }
 
-        /// <summary>Applies the wizard's plan: one save of sshd_config (with the preview and your-access check), the firewall rule, one restart with the keep-or-restore question.</summary>
-        private async Task ApplyWizard(WizardPlan plan, FirewallRule fw)
+        /// <summary>sshd_config as the wizard's plan writes it.</summary>
+        private SshdConfig WizardCandidate(WizardPlan plan)
         {
             var cand = _cfg.Copy();
             if (plan.Port != _cfg.EffectivePort) cand.SetFirst("Port", plan.Port.ToString());
@@ -3947,31 +4054,73 @@ namespace OpenSSHServerPNManager
                 if ((cand.Get("PerSourcePenalties") ?? "").Equals("no", StringComparison.OrdinalIgnoreCase)) cand.Set("PerSourcePenalties", "");
             }
             if (plan.AllowGroups != null) { string e; cand.Set("AllowGroups", plan.AllowGroups.Length == 0 ? "" : SshdArgs.Join(SshdArgs.ParseTyped(plan.AllowGroups, out e))); }
+            return cand;
+        }
+
+        /// <summary>
+        /// Applies the wizard's plan: one save of sshd_config (with the preview and your-access check), the firewall rule, one
+        /// restart with the keep-or-restore question. shown: what sshd reported when the wizard opened (its summary).
+        /// </summary>
+        private async Task ApplyWizard(WizardPlan plan, FirewallRule fw, ServerStateSnapshot shown)
+        {
+            var cand = WizardCandidate(plan);
+            bool portChanged = plan.Port != _cfg.EffectivePort;
             var fwProfiles = fw == null ? 0 : ((fw.Profiles & 0x7fffffff) == 0x7fffffff ? 7 : fw.Profiles & 7);
-            var changes = plan.Describe(_cfg.EffectivePort, fwProfiles, fw != null);
+            var rulePorts = fw == null ? null : fw.Ports;
             string backup = null;
             bool configurationChanged = cand.Text != _cfg.Text;
+            var changes = plan.Summary(_cfg.EffectivePort, fwProfiles, fw != null, fw != null && fw.Enabled, rulePorts, shown, configurationChanged);
             if (configurationChanged)
             {
+                if (plan.Login != WizardLogin.Keep)
+                {
+                    // Key-only login with no key sshd can use locks you out of new SSH logins: asked as on the Authentication tab.
+                    var lockout = await BgAsync("Checking that you can still log in with the new settings...", () =>
+                    {
+                        var tmp = WriteCandidate(cand);
+                        try { return AuthConfig.LockoutWarning(tmp, cand.EffectivePort); } finally { try { File.Delete(tmp); } catch { } }
+                    });
+                    if (lockout != null && !Program.Unattended &&
+                        MessageBox.Show(this, "Warning: " + lockout + "\n\nApply the setup wizard's settings anyway?", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                        throw new OperationCanceledException();
+                }
                 backup = await SaveConfig(cand, "Setup wizard: " + string.Join(" ", changes), "Apply");
                 await UseConfig(cand);
             }
-            Action undo = null; Func<Task> apply = null, keep = null;
-            if (fw == null || fwProfiles != plan.Profiles || !Firewall.Covers(fw.Ports, plan.Port) || fw.Enabled != plan.FirewallEnabled)
+            // The rule must allow every port sshd uses, as sshd -T resolves them (Include files, ListenAddress ports) with
+            // the running listeners, read after the save: the port field shows only the Port line of sshd_config.
+            var state = await BgAsync("Resolving the server endpoints...", ServerState.Read);
+            var adds = WizardPlan.FirewallAdds(rulePorts, plan.Port, portChanged, state.Verified ? state.Ports : null);
+            Action undo = null; Func<Task> apply = null, keep = null; string fwNote = null;
+            if (fw == null || fwProfiles != plan.Profiles || fw.Enabled != plan.FirewallEnabled || adds.Count > 0)
             {
-                // A new port is added to the rule; a rule that had one port drops the old one only when the new settings
-                // are kept, so the server stays reachable while you decide, and the rule comes back with the old file.
+                // Ports are only added while you decide, so the server stays reachable, and the rule comes back with the old
+                // file. A rule the wizard creates, or one that had one port, keeps the ports sshd then uses once the new
+                // settings are kept; without verified ports, nothing is taken away.
                 var before = fw;
-                var pending = fw == null ? plan.Port.ToString() : (Firewall.Covers(fw.Ports, plan.Port) ? fw.Ports : fw.Ports + "," + plan.Port);
+                var added = string.Join(",", adds);
+                var pending = fw == null ? added : adds.Count == 0 ? fw.Ports : fw.Ports + "," + added;
                 apply = async () => { await BgAsync("Applying the firewall plan...", () => Firewall.Apply(plan.FirewallEnabled, plan.Profiles, pending)); await LoadFirewall(); };
                 undo = () => { if (before == null) Firewall.Remove(); else Firewall.Apply(before.Enabled, before.Profiles, before.Ports); };
-                if (fw != null && Firewall.IsSinglePort(fw.Ports) && pending != plan.Port.ToString())
-                    keep = async () => { await BgAsync("Keeping the firewall plan...", () => Firewall.Apply(plan.FirewallEnabled, plan.Profiles, plan.Port.ToString())); await LoadFirewall(); };
+                if (WizardPlan.FirewallNarrows(fw != null, rulePorts, configurationChanged, state.Verified, adds.Count))
+                    keep = async () =>
+                    {
+                        // Never throws: a keep that fails leaves the recovery armed, which would then restore the settings just kept.
+                        try
+                        {
+                            var running = await BgAsync("Verifying the running listeners...", ServerState.Read);
+                            if (!running.Verified) { fwNote = "; the firewall rule keeps ports " + pending + " because the running listeners could not be verified"; Log.Info("Firewall rule left at " + pending + ": " + running.Error); return; }
+                            await BgAsync("Keeping the firewall plan...", () => Firewall.Apply(plan.FirewallEnabled, plan.Profiles, running.FirewallPorts));
+                            await LoadFirewall();
+                            Log.Info("Firewall rule kept ports " + running.FirewallPorts);
+                        }
+                        catch (Exception ex) { fwNote = "; the firewall rule keeps ports " + pending + ": " + ex.Message; Log.Error("Keeping the firewall plan", ex, false); }
+                    };
             }
             if (configurationChanged) await RestartWithRollback(backup, undo, apply, keep);
-            else { if (apply != null) await apply(); if (keep != null) await keep(); }
+            else if (apply != null) await apply();
             await RefreshDashboard();
-            Status("Setup wizard applied");
+            Status("Setup wizard applied" + fwNote);
         }
 
         // ---------------- About ----------------
@@ -4057,11 +4206,13 @@ namespace OpenSSHServerPNManager
             pref("Minimize to the notification area", Prefs.MinimizeToTray, v => Prefs.MinimizeToTray = v);
             var failRow = Flow(); failRow.Dock = DockStyle.None; failRow.Padding = new Padding(0);
             failRow.Controls.Add(Lbl("Notify after"));
-            var failN = new NumericUpDown { Minimum = 0, Maximum = 10000, Value = Prefs.FailedLoginThreshold, Width = Ui.Px(70), Margin = new Padding(4, 6, 4, 4), AccessibleName = "Failed logins before a notification (0 = never)" };
+            var failN = new NumericUpDown { Minimum = 0, Maximum = 10000, Width = Ui.Px(70), Margin = new Padding(4, 6, 4, 4), AccessibleName = "Failed logins before a notification (0 = never)" };
+            SetClamped(failN, Prefs.FailedLoginThreshold);
             failN.ValueChanged += (s, e) => Prefs.FailedLoginThreshold = (int)failN.Value;
             failRow.Controls.Add(failN);
             failRow.Controls.Add(Lbl("failed logins within"));
-            var failM = new NumericUpDown { Minimum = 1, Maximum = 1440, Value = Prefs.FailedLoginMinutes, Width = Ui.Px(70), Margin = new Padding(4, 6, 4, 4), AccessibleName = "Minutes for counting failed logins" };
+            var failM = new NumericUpDown { Minimum = 1, Maximum = 1440, Width = Ui.Px(70), Margin = new Padding(4, 6, 4, 4), AccessibleName = "Minutes for counting failed logins" };
+            SetClamped(failM, Prefs.FailedLoginMinutes);
             failM.ValueChanged += (s, e) => Prefs.FailedLoginMinutes = (int)failM.Value;
             failRow.Controls.Add(failM);
             failRow.Controls.Add(Lbl("minute(s) (0 = never)"));
