@@ -398,14 +398,15 @@ function Get-ServiceStates {
 }
 
 # The record is one line: v1|<name>=<1 running, 0 not>,<start type to keep>|... A start type is
-# kept only for a service whose binary is in $dir, the install folder.
-function ConvertTo-ServiceRecord($states, [string]$dir) {
+# kept for a package's service, whatever its folder or architecture (an upgrade from x86, an
+# INSTALLFOLDER not passed again), never for the in-box one in $inbox: its types are Windows' defaults.
+function ConvertTo-ServiceRecord($states, [string]$inbox) {
     $text = 'v1'
     foreach ($name in @('sshd', 'ssh-agent')) {
         $s = $states[$name]
         if (-not $s) { continue }
         $keep = ''
-        if ([string]::Equals([string]$s.Dir, $dir, [StringComparison]::OrdinalIgnoreCase)) { $keep = Get-KeptStart $s.Start $s.Delayed }
+        if ([string]$s.Dir -ne '' -and -not [string]::Equals([string]$s.Dir, $inbox, [StringComparison]::OrdinalIgnoreCase)) { $keep = Get-KeptStart $s.Start $s.Delayed }
         $run = '0'
         if ($s.Running) { $run = '1' }
         $text += '|' + $name + '=' + $run + ',' + $keep
@@ -641,7 +642,7 @@ if ($Phase -eq 'fwsave') {
     # Every value comes from this installation: a record left by an interrupted one is replaced.
     Remove-Record $portValue
     try {
-        $services = ConvertTo-ServiceRecord (Get-ServiceStates) $folder
+        $services = ConvertTo-ServiceRecord (Get-ServiceStates) $inboxFolder
         if (-not (Save-Record $services $serviceValue)) { throw ('reg.exe exit ' + $LASTEXITCODE) }
         Log ("saved the services (<name>=<running>,<start type to keep>): " + $services)
     } catch { Remove-Record $serviceValue; Log ("warning: could not save the state of the services: " + $_.Exception.Message) }

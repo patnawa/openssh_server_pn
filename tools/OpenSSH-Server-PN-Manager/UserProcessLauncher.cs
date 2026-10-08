@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
+using Microsoft.Win32;
 
 namespace OpenSSHServerPNManager
 {
@@ -65,12 +66,36 @@ namespace OpenSSHServerPNManager
         /// </summary>
         public static void Open(string executable, string arguments, bool connection = false)
         {
-            var program = executable;
-            if (connection)
+            // cmd.exe keeps the console open; where policy blocks it, the program starts directly, as before.
+            var console = connection && !CommandPromptDisabled() ? ConsoleCommandLine(executable, arguments) : null;
+            if (console != null)
             {
-                var console = ConsoleCommandLine(executable, arguments);
-                if (console != null) { executable = Path.Combine(Environment.SystemDirectory, "cmd.exe"); arguments = console; }
+                try { Start(Path.Combine(Environment.SystemDirectory, "cmd.exe"), console, true, executable); return; }
+                catch (Win32Exception ex) { Log.Info("cmd.exe could not start (" + ex.Message + "); starting " + executable + " directly"); }
             }
+            Start(executable, arguments, connection, executable);
+        }
+
+        /// <summary>The "Prevent access to the command prompt" policy (DisableCMD): cmd.exe would only say so and close.</summary>
+        private static bool CommandPromptDisabled()
+        {
+            foreach (var hive in new[] { Registry.CurrentUser, Registry.LocalMachine })
+            {
+                try
+                {
+                    using (var k = hive.OpenSubKey(@"Software\Policies\Microsoft\Windows\System"))
+                    {
+                        var v = k == null ? null : k.GetValue("DisableCMD");
+                        if (v is int && (int)v != 0) return true;
+                    }
+                }
+                catch (Exception) { }
+            }
+            return false;
+        }
+
+        private static void Start(string executable, string arguments, bool connection, string program)
+        {
             if (!Elevation.IsAdministrator())
             {
                 var start = new ProcessStartInfo(executable, arguments ?? "") { UseShellExecute = true };

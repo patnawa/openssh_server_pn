@@ -175,7 +175,13 @@ namespace OpenSSHServerPNManager
             if (clientOnly)
             {
                 var administration = new ToolStripButton("Manage this server…");
-                administration.Click += (s, e) => Elevation.Relaunch("--server");
+                administration.Click += (s, e) =>
+                {
+                    // A token reduced from the desktop's own administrator token has nothing that "runas" could elevate.
+                    if (Elevation.IsReducedAdministrator())
+                        MessageBox.Show(this, "This Client workspace runs with standard-user rights made from your administrator account, so it cannot start server administration itself.\n\nOpen \"OpenSSH Server PN Manager\" from the Start menu instead.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    else Elevation.Relaunch("--server");
+                };
                 _status.Items.Add(administration);
             }
             KeyPreview = true;
@@ -731,8 +737,10 @@ namespace OpenSSHServerPNManager
                 await PlainRestart();
                 return;
             }
-            if (ask && MessageBox.Show(this, "Restart the SSH server? sshd_config was saved after sshd started, so sshd starts with settings it has not run yet.\n\nAfter the restart you are asked to keep them. Without an answer, or with Restore, " +
-                    (rollback.FromRecord ? "the settings sshd runs now come back." : "the newest backup (" + Path.GetFileName(rollback.Backup) + ") comes back: the manager has no record of the exact settings sshd runs now.") + sessions,
+            if (ask && MessageBox.Show(this, "Restart the SSH server? sshd_config was saved after sshd started, so sshd starts with settings it has not run yet.\n\n" +
+                    (Prefs.ConfirmAfterRestart
+                        ? "After the restart you are asked to keep them. Without an answer, or with Restore, the settings sshd runs now come back."
+                        : "They are kept at once: the question after a restart is switched off under About. If sshd does not start with them, the settings it runs now come back.") + sessions,
                     Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             // A port saved earlier without a restart takes effect now.
             var firewallBack = await OpenFirewallForPort(false);
@@ -1276,14 +1284,25 @@ namespace OpenSSHServerPNManager
             {
                 Apply = async () => { await BgAsync("Updating the firewall ports...", () => Firewall.Apply(before.Enabled, before.Profiles, pending)); await LoadFirewall(); Log.Info("Firewall ports expanded to " + pending); },
                 Undo = () => { Firewall.Apply(before.Enabled, before.Profiles, before.Ports); Log.Info("Firewall rule: ports back to " + before.Ports); },
+                // Narrowing is optional (the rule allows the old and new ports already) and runs after the user kept the settings:
+                // like the wizard's, it never throws, since a failure here would restore the settings just kept.
                 Keep = async () =>
                 {
                     if (!single) return;
-                    var running = await BgAsync("Verifying the running listeners...", ServerState.Read);
-                    if (!running.Verified) throw new ConfigException("The running listeners could not be verified, so the firewall rule could not be narrowed to them: " + running.Error);
-                    await BgAsync("Keeping the firewall ports...", () => Firewall.Apply(before.Enabled, before.Profiles, running.FirewallPorts)); await LoadFirewall();
-                    Status("New settings kept; the firewall allows all configured and running SSH ports: " + running.FirewallPorts);
-                    Log.Info("Firewall rule kept ports " + running.FirewallPorts);
+                    try
+                    {
+                        var running = await BgAsync("Verifying the running listeners...", ServerState.Read);
+                        if (!running.Verified) throw new ConfigException("the running listeners could not be verified: " + running.Error);
+                        await BgAsync("Keeping the firewall ports...", () => Firewall.Apply(before.Enabled, before.Profiles, running.FirewallPorts)); await LoadFirewall();
+                        Status("New settings kept; the firewall allows all configured and running SSH ports: " + running.FirewallPorts);
+                        Log.Info("Firewall rule kept ports " + running.FirewallPorts);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        Log.Error("Narrowing the firewall rule after Keep", ex, false);
+                        Status("New settings kept. The firewall rule still allows ports " + pending + " (it could not be narrowed: " + ex.Message + "); remove the old port on the Firewall tab if it is no longer used.");
+                    }
                 },
             };
         }
@@ -2062,15 +2081,17 @@ namespace OpenSSHServerPNManager
             if (m.PublicKey)
             {
                 string value; d.TryGetValue("authorizedkeysfile", out value);
-                string home = null, file = null; int n = 0;
+                string home = null; List<string> files = null; int n = 0;
+                var policy = Keys.KeyPolicy.From(d);
                 await BgAsync("Reading the authorized keys...", () =>
                 {
                     home = Accounts.ProfileDir(Acl.SidOfAccount(name));
-                    file = Ssh.ResolveKeysFile(value, name, home);
-                    if (file != null) { try { n = Keys.Read(file).Count(k => k.Type != "?"); } catch { } }
+                    files = Ssh.ResolveEffectiveKeysFiles(value, name, home);
+                    // Counted as the lock-out check counts: every file sshd reads, keys it can use.
+                    try { n = Keys.UsableCount(files, null, policy); } catch { }
                 });
-                if (file == null) sb.Append(home == null ? " The account has not logged on yet, so it has no profile and no authorized_keys file." : " No authorized_keys file is configured.");
-                else sb.Append(" Keys authorized: " + n + " in " + file + ".");
+                if (files.Count == 0) sb.Append(home == null ? " The account has not logged on yet, so it has no profile and no authorized_keys file." : " No authorized_keys file is configured.");
+                else sb.Append(" Usable keys authorized: " + n + " in " + string.Join(", ", files) + ".");
             }
             var limits = new[] { "allowusers", "allowgroups", "denyusers", "denygroups" }.Where(k => d.ContainsKey(k) && d[k].Length > 0).Select(k => k + " " + d[k]).ToList();
             if (limits.Count > 0) sb.Append(" sshd_config also limits who may log in: " + string.Join("; ", limits) + ".");
@@ -2520,13 +2541,15 @@ namespace OpenSSHServerPNManager
             if (st.Problems.Count > 0) lines.Add("Note: " + string.Join("; ", st.Problems) + ".");
             _ptState.Text = string.Join("\n", lines);
             _ptState.ForeColor = st.HostError != null || !st.Complete || st.Problems.Count > 0 || lines.Count > 1 ? Orange : Theme.Muted;
-            _ptSetup.Visible = st.HostError == null && (!st.Complete || st.RootFixable); // the setup also corrects the partners' folder
+            // The setup also corrects the partners' folder, or moves the partners to another one when it cannot be corrected.
+            _ptSetup.Visible = st.HostError == null && (!st.Complete || st.RootProblem != null);
             UpdatePartnerButtons();
         }
 
         private void UpdatePartnerButtons()
         {
-            var p = SelectedPartner(); bool ready = _ptSetupState.Complete && _ptSetupState.HostError == null;
+            // A root another account controls is reported on the tab; Create refuses it too, so New partner waits for the setup to fix it.
+            var p = SelectedPartner(); bool ready = _ptSetupState.Complete && _ptSetupState.HostError == null && _ptSetupState.RootProblem == null;
             _ptButtons[0].Enabled = ready;
             for (int i = 1; i <= 7; i++) _ptButtons[i].Enabled = p != null;
             _ptButtons[3].Text = p != null && p.Disabled ? "Enable" : "Disable";
@@ -3585,8 +3608,17 @@ namespace OpenSSHServerPNManager
         /// </summary>
         private async Task LoadFirewallRule(bool discard)
         {
-            // A failed query is an error, not "no rule": Apply would create a second rule or rewrite the ports.
-            var fw = await BgAsync("Reading the firewall rule...", () => Firewall.Find());
+            // A failed query is an error, not "no rule" (Apply would create a second rule or rewrite the ports). It is shown on
+            // the tab and never thrown: reloads run after saves and restores, whose outcome must still be reported.
+            FirewallRule fw;
+            try { fw = await BgAsync("Reading the firewall rule...", () => Firewall.Find()); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Log.Error("Reading the firewall rule", ex, false);
+                _fwState.Text = "The firewall rule could not be read: " + ex.Message + " Nothing on this tab was changed; press F5 to read it again."; _fwState.ForeColor = Red;
+                return;
+            }
             string[] was = null, typed = null;
             if (!discard && FirewallEdited()) { was = _fwShown.Split('|'); typed = FirewallInputs().Split('|'); }
             _fwLoadedPorts = fw == null ? null : fw.Ports;
@@ -3705,11 +3737,14 @@ namespace OpenSSHServerPNManager
             if (_events.Count == 0) await LoadLogs();
             var sources = EventLogs.FailedByAddress(_events);
             var state = await BgAsync("Verifying server endpoints...", ServerState.Read);
-            if (!state.Verified) throw new ConfigException("Blocking is unavailable until all SSH endpoints can be inspected. " + state.Error);
             HashSet<string> peers = null; string error = null;
-            if (!await BgAsync("Checking logged-in peers...", () => Sessions.TryLoggedInAddresses(state.Ports, out peers, out error)))
-                throw new ConfigException("Blocking is unavailable because logged-in peers could not be verified. " + error);
-            using (var d = new FailedLoginsDialog(sources, _cmbPeriod.Text.ToLowerInvariant(), state.FirewallPorts, peers.ToList()))
+            // The dialog is also where blocks are lifted: it opens even when blocking itself cannot be checked (its Block verifies
+            // again and refuses then), with the reason in the status line.
+            if (!state.Verified) error = "Blocking is unavailable until all SSH endpoints can be inspected. " + state.Error;
+            else if (!await BgAsync("Checking logged-in peers...", () => Sessions.TryLoggedInAddresses(state.Ports, out peers, out error)))
+            { error = "Blocking is unavailable because logged-in peers could not be verified. " + error; peers = null; }
+            if (error != null) { Status(error); Log.Info(error); }
+            using (var d = new FailedLoginsDialog(sources, _cmbPeriod.Text.ToLowerInvariant(), state.FirewallPorts ?? "", (peers ?? new HashSet<string>()).ToList()))
                 d.ShowDialog(this);
         }
 
@@ -4000,12 +4035,15 @@ namespace OpenSSHServerPNManager
         /// Usable keys authorized for the account running this program, in every file sshd reads for it (Keys.UsableCount).
         /// Throws when that cannot be worked out, or when sshd reads no file (AuthorizedKeysFile none): no file is guessed.
         /// </summary>
-        private static int MyKeyCount()
+        private static int MyKeyCount(Keys.KeyPolicy policy)
         {
             var files = Ssh.AuthorizedKeysFilesFor(KeyGen.LoginName(), Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
             if (files.Count == 0) throw new ConfigException("sshd reads no authorized_keys file (AuthorizedKeysFile none).");
-            return Keys.UsableCount(files);
+            return Keys.UsableCount(files, null, policy);
         }
+
+        /// <summary>The wizard counts keys as sshd would take them after its Recommended settings (RequiredRSASize 2048).</summary>
+        private Keys.KeyPolicy WizardKeyPolicy() { return Keys.KeyPolicy.From(_effective, 2048); }
 
         private bool _wizardRunning;
         private async Task RunWizard()
@@ -4019,7 +4057,7 @@ namespace OpenSSHServerPNManager
                 await BgAsync("Reading the current settings...", () => { fw = Firewall.Find(); state = ServerState.Read(); });
                 string err; var allow = _cfg.GetCombinedArgs("AllowGroups", out err);
                 WizardPlan plan;
-                using (var w = new SetupWizard(_cfg.EffectivePort, fw, allow == null || allow.Count == 0 ? null : SshdArgs.FormatTyped(allow), async () => await BgAsync("Reading your keys...", () => MyKeyCount()), QuickAddMyKey, CreateMyKey))
+                using (var w = new SetupWizard(_cfg.EffectivePort, fw, allow == null || allow.Count == 0 ? null : SshdArgs.FormatTyped(allow), async () => { var policy = WizardKeyPolicy(); return await BgAsync("Reading your keys...", () => MyKeyCount(policy)); }, QuickAddMyKey, CreateMyKey))
                 {
                     w.UseServerState(state);
                     w.ChangesConfig = p => { try { return WizardCandidate(p).Text != _cfg.Text; } catch { return true; } };
@@ -4039,8 +4077,10 @@ namespace OpenSSHServerPNManager
             if (plan.Login != WizardLogin.Keep)
             {
                 var st = AuthConfig.Read(cand);
+                // Kerberos stays as sshd has it now, which may come from an included file the main file's default would override.
+                string gssapi; bool kerberos = _effective.TryGetValue("gssapiauthentication", out gssapi) ? gssapi.Equals("yes", StringComparison.OrdinalIgnoreCase) : st.Global.Kerberos;
                 if (plan.Login == WizardLogin.EveryoneKeyOnly)
-                    AuthConfig.Apply(cand, new AuthMethods { Password = false, PublicKey = true, Kerberos = st.Global.Kerberos }, st.RulesProblem == null ? st.Rules : null);
+                    AuthConfig.Apply(cand, new AuthMethods { Password = false, PublicKey = true, Kerberos = kerberos }, st.RulesProblem == null ? st.Rules : null);
                 else
                 {
                     if (st.RulesProblem != null) throw new ConfigException("The rules section of sshd_config was changed by hand (" + st.RulesProblem + "), so the wizard cannot add the rule for administrators. Correct it on the sshd_config (text) tab, or add the rule on the Authentication tab.");
@@ -4048,7 +4088,8 @@ namespace OpenSSHServerPNManager
                     var admins = Accounts.Canonical(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null).Translate(typeof(NTAccount)).Value, true, out e) ?? "administrators";
                     var rules = st.Rules.Where(r => !(r.IsGroup && r.Name == admins)).ToList();
                     rules.Insert(0, new AuthRule { IsGroup = true, Name = admins, Methods = new AuthMethods { Password = false, PublicKey = true } });
-                    AuthConfig.Apply(cand, st.Global, rules);
+                    // Other accounts as they are: the rules only, never the main file's defaults written above an Include.
+                    AuthConfig.Apply(cand, null, rules);
                 }
             }
             if (plan.Recommended)
@@ -4077,7 +4118,8 @@ namespace OpenSSHServerPNManager
             var changes = plan.Summary(_cfg.EffectivePort, fwProfiles, fw != null, fw != null && fw.Enabled, rulePorts, shown, configurationChanged);
             if (configurationChanged)
             {
-                if (plan.Login != WizardLogin.Keep)
+                // Recommended raises RequiredRSASize too, which can make the only key of a key-only server unusable.
+                if (plan.Login != WizardLogin.Keep || plan.Recommended)
                 {
                     // Key-only login with no key sshd can use locks you out of new SSH logins: asked as on the Authentication tab.
                     var lockout = await BgAsync("Checking that you can still log in with the new settings...", () =>

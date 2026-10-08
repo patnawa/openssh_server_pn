@@ -180,10 +180,13 @@ namespace OpenSSHServerPNManager
             catch (Exception) { return ""; }
         }
 
+        /// <summary>The record a Prepare replaced, so that a save that then fails can put it back (Unprepare).</summary>
+        internal sealed class PreparedSave { internal Dictionary<string, string> Previous; internal string Id; internal bool Continued; }
+
         /// <summary>A save-only change has a durable recovery seed, but no task is armed until a restart is requested.</summary>
-        public void Prepare(string backupPath, byte[] appliedBytes, ConfigurationDependencies dependencies)
+        public PreparedSave Prepare(string backupPath, byte[] appliedBytes, ConfigurationDependencies dependencies)
         {
-            ConfigurationTransaction.Locked(_live, () =>
+            return ConfigurationTransaction.Locked(_live, () =>
             {
                 var existing = Read();
                 RequireNotPending(existing);
@@ -191,15 +194,34 @@ namespace OpenSSHServerPNManager
                 dependencies = dependencies ?? ConfigurationDependencies.Capture(new string[0]);
                 ConfigurationDependencies kept;
                 var values = ContinuedRecord(existing, backupPath, appliedHash, out kept);
-                if (values != null) ConfigurationDependencies.Union(kept, dependencies).Store(values);
+                bool continued = values != null;
+                if (continued) ConfigurationDependencies.Union(kept, dependencies).Store(values);
                 else
                 {
                     values = NewRecord(backupPath, appliedHash);
-                    // Only a file the running sshd loaded can be its rollback target in a later save.
-                    values["server"] = ServerIdentity(true);
+                    // Only a file the running sshd loaded can be its rollback target in a later save. Without a previous
+                    // file there is none: a rollback of such a chain would delete sshd_config.
+                    values["server"] = backupPath == null ? "" : ServerIdentity(true);
                     dependencies.Store(values);
                 }
-                Write(values); return true;
+                Write(values);
+                return new PreparedSave { Previous = existing, Id = values["id"], Continued = continued };
+            });
+        }
+
+        /// <summary>
+        /// The save Prepare was for did not replace the file: a continued record names bytes that were never written, and
+        /// would break the chain to the file sshd ran. Its predecessor (previous.config is unchanged then) comes back.
+        /// </summary>
+        public void Unprepare(PreparedSave prepared)
+        {
+            if (prepared == null || !prepared.Continued) return;
+            ConfigurationTransaction.Locked(_live, () =>
+            {
+                var r = Read();
+                string id, status;
+                if (r.TryGetValue("id", out id) && id == prepared.Id && r.TryGetValue("status", out status) && status == "prepared") Write(prepared.Previous);
+                return true;
             });
         }
 
@@ -523,7 +545,9 @@ namespace OpenSSHServerPNManager
             if (record != null && record.TryGetValue("status", out value) && value == "prepared" && record.TryGetValue("applied", out value) && value == liveHash &&
                 record.TryGetValue("server", out value) && value.Length > 0 && value == identity && record.TryGetValue("backup.path", out backup) && backup.Length > 0)
                 return new RestartRollback { Backup = backup, FromRecord = true };
-            if (changedSinceStart && newestBackup != null) return new RestartRollback { Backup = newestBackup };
+            // Without such a record nothing says which file sshd runs: the newest backup is the file before the last save, often
+            // older than what sshd runs (after Save and restart, then Keep), and restoring it would lose the current file. A plain
+            // restart, as before automatic rollback existed.
             return null;
         }
 
@@ -532,6 +556,9 @@ namespace OpenSSHServerPNManager
             var dir = DirectoryFor(live);
             IDictionary<string, string> record = null;
             if (Directory.Exists(dir)) { try { record = new ConfigurationRecoveryTransaction(dir, live, null).ReadRecord(); } catch (ConfigException) { } }
+            // An Include that changed since the save-only record means its target cannot come back as it ran, and arming
+            // from the record would be refused on every restart: use the newest backup instead, as a new save would.
+            if (record != null) { try { ConfigurationDependencies.Read(record).RequireUnchanged(); } catch (Exception) { record = null; } }
             return RestartRollbackFor(record, SshdConfig.FileHash(live), RunningServerIdentity(), Services.ChangedSinceStart(Services.Status("sshd"), live), SshdConfig.ListBackups(live).FirstOrDefault());
         }
 

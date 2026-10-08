@@ -85,6 +85,11 @@ namespace OpenSSHServerPNManager
                     var problem = SshClient.ConnectProblem(new ClientHost { Pattern = name });
                     if (problem == null || !problem.Contains("plain name") || SshClient.Connectable(new ClientHost { Pattern = name })) throw new Exception("sftp would connect to another host for " + name);
                 }
+                // ssh takes an IPv6 address as one name (and ssh -G previews it); '@' still splits it.
+                foreach (var name in new[] { "2001:db8::10", "fe80::1%3", "[fe80::1]" })
+                    if (SshClient.ConnectProblem(new ClientHost { Pattern = name }, false) != null) throw new Exception("ssh refused " + name);
+                if (SshClient.ConnectProblem(new ClientHost { Pattern = "alice@server" }, false) == null) throw new Exception("ssh accepted alice@server");
+                if (SshClient.ConnectProblem(new ClientHost { Pattern = "-oProxyCommand=x" }, false) == null) throw new Exception("ssh accepted a leading -");
                 if (SshClient.ConnectProblem(new ClientHost { Pattern = "web-1.example" }) != null) throw new Exception("a plain name was refused");
                 return null;
             });
@@ -99,6 +104,10 @@ namespace OpenSSHServerPNManager
                 try { snapshot.Write(SshClient.WithHost(snapshot.Lines, hosts[0], "web", new Dictionary<string, string> { { "User", "\u0e2a\u0e21" } }), ".bak", false); throw new Exception("Thai text was written into an ANSI file"); }
                 catch (ConfigException ex) { if (!ex.Message.Contains("UTF-8")) throw new Exception("unclear refusal: " + ex.Message); }
                 if (!File.ReadAllBytes(path).SequenceEqual(original) || File.Exists(path + ".bak")) throw new Exception("a refused edit changed the file");
+                // Latin-1 can hold ü, but as one byte that ssh, reading UTF-8, would turn into another name.
+                try { snapshot.Write(SshClient.WithHost(snapshot.Lines, hosts[0], "web", new Dictionary<string, string> { { "User", "jürgen" } }), ".bak", false); throw new Exception("a Latin-1 character was written as one byte"); }
+                catch (ConfigException ex) { if (!ex.Message.Contains("UTF-8")) throw new Exception("unclear refusal: " + ex.Message); }
+                if (!File.ReadAllBytes(path).SequenceEqual(original)) throw new Exception("a refused edit changed the file");
                 snapshot.Write(SshClient.WithHost(snapshot.Lines, hosts[0], "web", new Dictionary<string, string> { { "HostName", "web2.example" } }), ".bak", false);
                 if (!File.ReadAllBytes(path).SequenceEqual(Bytes("# ", thai, "\r\nHost web\r\n    HostName web2.example\r\n"))) throw new Exception("the edit changed the bytes of other lines");
                 return null;

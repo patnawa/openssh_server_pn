@@ -322,22 +322,28 @@ namespace OpenSSHServerPNManager
             snapshot.Write(lines, ".bak", true);
         }
 
-        public static bool Connectable(ClientHost host) { return ConnectProblem(host) == null; }
+        public static bool Connectable(ClientHost host, bool sftp = true) { return ConnectProblem(host, sftp) == null; }
 
-        /// <summary>Why Connect, SFTP and Effective settings cannot open a Host block by its name; null when they can.</summary>
-        public static string ConnectProblem(ClientHost host)
+        /// <summary>
+        /// Why Connect (ssh), SFTP or Effective settings (ssh -G) cannot open a Host block by its name; null when they can. ssh
+        /// takes an IPv6 address as one name; sftp does not.
+        /// </summary>
+        public static string ConnectProblem(ClientHost host, bool sftp = true)
         {
-            // sftp reads "fe80::1" as host fe80 and remote path ":1", "a@b" as user a at b, and drops [ ]: another host.
-            if (host != null && !host.IsMatch && host.Pattern.IndexOfAny(new[] { ':', '@', '[', ']' }) >= 0)
-                return "\"" + host.Pattern + "\" cannot be opened by its name: sftp reads ':' as the start of a remote path, '@' as a user name and drops [ ], so it would connect to another host. Give the host a plain name (for example web1) and put the address in Host name.";
-            if (host == null || host.IsMatch || !Regex.IsMatch(host.Pattern, @"^[A-Za-z0-9._%+][A-Za-z0-9._%+\-]*$")) return "Choose a host with a single plain name (no wildcards, spaces or leading -).";
+            // ssh and sftp read "a@b" as user a at b, so the block named a@b would not be the one used.
+            if (host != null && !host.IsMatch && host.Pattern.IndexOf('@') >= 0)
+                return "\"" + host.Pattern + "\" cannot be opened by its name: ssh reads '@' as the end of a user name, so it would connect to another host. Give the host a plain name (for example web1), with the user in User.";
+            // sftp reads "fe80::1" as host fe80 and remote path ":1", and drops [ ]: another host.
+            if (sftp && host != null && !host.IsMatch && host.Pattern.IndexOfAny(new[] { ':', '[', ']' }) >= 0)
+                return "\"" + host.Pattern + "\" cannot be opened by its name with SFTP: sftp reads ':' as the start of a remote path and drops [ ], so it would connect to another host. Give the host a plain name (for example web1) and put the address in Host name.";
+            if (host == null || host.IsMatch || !Regex.IsMatch(host.Pattern, @"^[A-Za-z0-9._%+:\[][A-Za-z0-9._%+\-:\[\]]*$")) return "Choose a host with a single plain name (no wildcards, spaces or leading -).";
             return null;
         }
 
         public static string EffectivePreview(string host)
         {
             if (Elevation.IsAdministrator()) throw new ConfigException("Open the standard-user Client workspace to preview this connection. SSH configuration can execute local commands, so it is never evaluated with administrator rights.");
-            if (!Connectable(new ClientHost { Pattern = host })) throw new ConfigException("Choose a host with one plain name to preview.");
+            if (!Connectable(new ClientHost { Pattern = host }, false)) throw new ConfigException("Choose a host with one plain name to preview.");
             var result = Proc.Run(Ssh.Exe("ssh.exe"), "-G -- " + host, 20000);
             if (!result.Ok) throw new ConfigException("Could not resolve this connection:\n" + result.Output);
             return FormatEffectivePreview(result.StdOut);

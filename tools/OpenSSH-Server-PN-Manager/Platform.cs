@@ -30,6 +30,49 @@ namespace OpenSSHServerPNManager
             catch { return false; }
         }
 
+        [DllImport("advapi32.dll", SetLastError = true)] private static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr info, int length, out int returned);
+
+        /// <summary>
+        /// A standard-user token made from an administrator's own full token: the client workspace on a desktop without UAC
+        /// filtering (the built-in Administrator, or UAC off). It has no linked administrator token, so "runas" cannot
+        /// elevate it: UAC off starts the program with this same token, UAC on asks for another administrator's password.
+        /// </summary>
+        public static bool IsReducedAdministrator()
+        {
+            try
+            {
+                using (var id = WindowsIdentity.GetCurrent())
+                {
+                    if (new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator)) return false;
+                    if (TokenInformation(id.Token, 18 /*TokenElevationType*/, b => Marshal.ReadInt32(b)) != 1 /*TokenElevationTypeDefault*/) return false;
+                    var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+                    return TokenInformation(id.Token, 2 /*TokenGroups*/, b =>
+                    {
+                        int count = Marshal.ReadInt32(b), entry = 2 * IntPtr.Size;
+                        for (int i = 0; i < count; i++)
+                        {
+                            var at = IntPtr.Add(b, IntPtr.Size + i * entry);
+                            // Administrators kept only to deny access: the token was reduced from an administrator's.
+                            if ((Marshal.ReadInt32(at, IntPtr.Size) & 0x10 /*SE_GROUP_USE_FOR_DENY_ONLY*/) != 0 && new SecurityIdentifier(Marshal.ReadIntPtr(at)) == admins) return 1;
+                        }
+                        return 0;
+                    }) == 1;
+                }
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Reads one token information class through a temporary buffer; -1 when it cannot be read.</summary>
+        private static int TokenInformation(IntPtr token, int infoClass, Func<IntPtr, int> read)
+        {
+            int size;
+            GetTokenInformation(token, infoClass, IntPtr.Zero, 0, out size);
+            if (size <= 0) return -1;
+            var buffer = Marshal.AllocHGlobal(size);
+            try { return GetTokenInformation(token, infoClass, buffer, size, out size) ? read(buffer) : -1; }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+
         private const string RelaunchMarker = "--elevation-requested";
 
         /// <summary>

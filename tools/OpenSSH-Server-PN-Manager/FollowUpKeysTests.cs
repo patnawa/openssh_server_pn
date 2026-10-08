@@ -70,23 +70,31 @@ namespace OpenSSHServerPNManager
             return sb.ToString();
         }
 
-        /// <summary>Checks an RFC 4716 export: lines ssh-keygen -i reads as this key, and a header that joins to the comment, quoted.</summary>
+        /// <summary>
+        /// Checks an RFC 4716 export: one Comment line of at most 72 bytes (PuTTY does not join continuation lines) holding the
+        /// start of the comment, quoted, with no " END " in it; every line within 72 bytes; key material ssh-keygen -i reads.
+        /// </summary>
         private static void CheckRfc4716(string text, string comment, string key)
         {
             var lines = text.TrimEnd('\n').Split('\n');
-            var header = new StringBuilder();
-            for (int i = 1; i < lines.Length && !lines[i].StartsWith("----", StringComparison.Ordinal); i++)
+            foreach (var l in lines)
             {
-                if (Encoding.UTF8.GetByteCount(lines[i]) > 72) throw new Exception("line over 72 bytes: " + lines[i]);
-                if (lines[i].Length > 0 && (char.IsHighSurrogate(lines[i].Last()) || char.IsLowSurrogate(lines[i][0]))) throw new Exception("a character split: " + lines[i]);
-                bool continuation = i > 1 && lines[i - 1].EndsWith("\\", StringComparison.Ordinal);
-                if (continuation && (lines[i].Contains(": ") || lines[i].StartsWith("----", StringComparison.Ordinal))) throw new Exception("ssh-keygen -i takes this continuation line for a header: " + lines[i]);
-                if (i == 1 || continuation) header.Append(lines[i].EndsWith("\\", StringComparison.Ordinal) ? lines[i].Substring(0, lines[i].Length - 1) : lines[i]);
+                if (Encoding.UTF8.GetByteCount(l) > 72) throw new Exception("line over 72 bytes: " + l);
+                if (l.EndsWith("\\", StringComparison.Ordinal)) throw new Exception("a continuation line: " + l);
+                if (l.Length > 0 && (char.IsHighSurrogate(l.Last()) || char.IsLowSurrogate(l[0]))) throw new Exception("a character split: " + l);
             }
-            var value = header.ToString();
-            var kept = new string(comment.Where(c => c != '"' && c != '\\').ToArray());
+            var value = lines[1];
+            if (KeyGen.Rfc4716Comment(comment).Length == 0)
+            {
+                // Nothing of it fits before a marker: no header rather than one that changes how the key is read.
+                if (text.Contains("Comment")) throw new Exception("a header for a comment that cannot be kept: " + value);
+                if (KeygenImport(text) != key) throw new Exception("key material for [" + comment + "]");
+                return;
+            }
             if (!value.StartsWith("Comment: \"", StringComparison.Ordinal) || !value.EndsWith("\"", StringComparison.Ordinal) || value.Substring(10, value.Length - 11).IndexOf('"') >= 0) throw new Exception("not one quoted value: " + value);
-            if (value.Substring(10, value.Length - 11) != kept) throw new Exception("comment: " + value);
+            var shown = value.Substring(10, value.Length - 11);
+            var kept = new string(comment.Where(c => c != '"' && c != '\\').ToArray()).Trim();
+            if (shown.Length == 0 || !kept.StartsWith(shown, StringComparison.Ordinal) || shown.Contains(" END ")) throw new Exception("comment: " + value);
             if (KeygenImport(text) != key) throw new Exception("key material for [" + comment + "]: " + (KeygenImport(text) ?? "read as a private key"));
         }
 
@@ -143,22 +151,23 @@ namespace OpenSSHServerPNManager
                 }
                 return null;
             });
-            test("authorized_keys: a folder reached through a junction is refused, wherever the junction is", () =>
+            test("authorized_keys: a key file's own folder reached through a junction is refused; a link above it is an administrator's", () =>
             {
                 var dir = NewDir(tmpDir, "junction");
                 var real = Path.Combine(dir, "real"); var sub = Path.Combine(real, "sub"); Directory.CreateDirectory(sub);
                 var link = Path.Combine(dir, "link");
                 var r = Proc.Run("cmd.exe", "/c mklink /J " + Proc.Quote(link) + " " + Proc.Quote(real), 30000);
                 if (!r.Ok || !Directory.Exists(link)) throw new Exception("mklink /J: " + r.Output);
-                foreach (var target in new[] { real, sub })
-                {
-                    var file = Path.Combine(target, "authorized_keys");
-                    File.WriteAllText(file, "ssh-ed25519 " + Ed + " victim\n");
-                    var via = Path.Combine(link, target == real ? "authorized_keys" : @"sub\authorized_keys");
-                    try { Keys.AddLines(via, new[] { "ssh-ed25519 " + Ed2 + " attacker" }, me); throw new Exception("written through the junction: " + via); }
-                    catch (ConfigException) { }
-                    if (File.ReadAllText(file) != "ssh-ed25519 " + Ed + " victim\n" || Directory.GetFiles(target).Length != 1) throw new Exception("the folder behind the junction changed: " + target);
-                }
+                // The account's own .ssh replaced by a junction: refused, nothing changes behind it.
+                var file = Path.Combine(real, "authorized_keys");
+                File.WriteAllText(file, "ssh-ed25519 " + Ed + " victim\n");
+                var via = Path.Combine(link, "authorized_keys");
+                try { Keys.AddLines(via, new[] { "ssh-ed25519 " + Ed2 + " attacker" }, me); throw new Exception("written through the junction: " + via); }
+                catch (ConfigException) { }
+                if (File.ReadAllText(file) != "ssh-ed25519 " + Ed + " victim\n" || Directory.GetFiles(real).Length != 1) throw new Exception("the folder behind the junction changed");
+                // A junction further up (C:\Users moved to D:\Users): the real folder below it is written.
+                File.WriteAllText(Path.Combine(sub, "authorized_keys"), "ssh-ed25519 " + Ed + " a\n");
+                if (Keys.AddLines(Path.Combine(link, @"sub\authorized_keys"), new[] { "ssh-ed25519 " + Ed2 + " b" }, me)[0] != 1) throw new Exception("a folder below an administrator's link was refused");
                 // The folder itself, by its own path, is written as before.
                 if (Keys.AddLines(Path.Combine(real, "authorized_keys"), new[] { "ssh-ed25519 " + Ed2 + " b" }, me)[0] != 1) throw new Exception("the real folder was refused");
                 return null;
@@ -307,7 +316,7 @@ namespace OpenSSHServerPNManager
                 }
                 return null;
             });
-            test("key files: an RFC 4716 export has the key's comment, in lines ssh-keygen -i reads", () =>
+            test("key files: an RFC 4716 export has the key's comment on one line that PuTTY and ssh-keygen -i read", () =>
             {
                 var plain = KeyGen.Rfc4716("ssh-ed25519 " + EdKey + " acme-partner-key", "acme-partner-key");
                 var lines = plain.TrimEnd('\n').Split('\n');

@@ -77,10 +77,19 @@ namespace OpenSSHServerPNManager
                         if (SshdConfig.FileHash(backup) != originalHash) throw new ConfigChangedException("The configuration changed while its backup was being created. Reload before saving.");
                     }
                     // Persist the previous bytes and the validated Include graph before replacing the live root.
-                    ConfigurationRecovery.OpenForPath(candidate.Path).Prepare(backup, bytes, dependencies);
-                    dependencies.RequireUnchanged();
-                    if (SshdConfig.FileHash(candidate.Path) != originalHash) throw new ConfigChangedException("The configuration changed before its atomic replacement. No changes were saved.");
-                    AtomicBytes(candidate.Path, bytes);
+                    var recovery = ConfigurationRecovery.OpenForPath(candidate.Path);
+                    var prepared = recovery.Prepare(backup, bytes, dependencies);
+                    try
+                    {
+                        dependencies.RequireUnchanged();
+                        if (SshdConfig.FileHash(candidate.Path) != originalHash) throw new ConfigChangedException("The configuration changed before its atomic replacement. No changes were saved.");
+                        AtomicBytes(candidate.Path, bytes);
+                    }
+                    catch
+                    {
+                        try { recovery.Unprepare(prepared); } catch (Exception ex) { Log.Error("Restoring the recovery record of a save that failed", ex, false); }
+                        throw;
+                    }
                     candidate.LoadedHash = SshdConfig.FileHash(candidate.Path);
                     candidate.LoadedDependencies = candidateDependencies;
                     Log.Info("Saved " + candidate.Path + (backup == null ? "" : " (backup " + backup + ")"));

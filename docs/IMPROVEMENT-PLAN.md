@@ -5,7 +5,9 @@ The October 2026 audit began at `1d60e71107cd8808bab4642ade9dd5ab9ea038ea`
 10.5.6.0 / Manager 2.3.0 testing previews. The 10.5.7.0 / Manager 2.3.1 follow-up
 repairs their installer test failures, passed full hosted acceptance and was published
 as regular unsigned releases on 8 October 2026, with Manager marked Latest.
-See [the findings and design analysis](AUDIT-2026-10-08.md).
+See [the findings and design analysis](AUDIT-2026-10-08.md). A same-day follow-up review of
+those sources and its corrections (Manager 2.3.2, not released yet) are recorded in
+[AUDIT-2026-10-08-FOLLOWUP.md](AUDIT-2026-10-08-FOLLOWUP.md).
 
 The owner requested the full implementation and later authorized unsigned regular
 releases after hosted acceptance. Local manual VM/reboot runs remain deferred and
@@ -29,7 +31,8 @@ local or hosted scope; they do not imply that remaining manual acceptance or sig
 - [x] Log clear/wrap detection reports missing history and recovers checkpoints.
 - [x] Persistent notifications retry each configured destination; transport work runs
   outside the shared state lock. Duplicate delivery is possible; after 12 failures,
-  automatic retries stop and the queued item requires explicit retry.
+  automatic retries stop and the queued item requires explicit retry (kept 30 days, at most
+  200 per destination, from Manager 2.3.2).
 - [x] Durable recovery records configuration and firewall state before restart, uses
   protected immutable runners and independent task scheduling, and preserves unresolved
   conflicts. Fault-injection and separate-process fixture tests pass.

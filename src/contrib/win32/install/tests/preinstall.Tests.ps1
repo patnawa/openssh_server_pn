@@ -293,10 +293,13 @@ $states = @{
     'sshd' = @{ Running = $false; Start = 4; Delayed = $null; Dir = $pf };
     'ssh-agent' = @{ Running = $true; Start = 2; Delayed = 1; Dir = 'c:\program files\openssh' }
 }
-Same 'ConvertTo-ServiceRecord: Disabled and Automatic (Delayed Start) of this package''s services' 'v1|sshd=0,disabled|ssh-agent=1,delayed-auto' (ConvertTo-ServiceRecord $states $pf)
-$inbox = @{ 'sshd' = @{ Running = $true; Start = 3; Delayed = $null; Dir = 'C:\Windows\System32\OpenSSH' }; 'ssh-agent' = @{ Running = $false; Start = 4; Delayed = $null; Dir = 'C:\Windows\System32\OpenSSH' } }
-Same 'ConvertTo-ServiceRecord: in-box registrations keep no start type (Windows'' defaults)' 'v1|sshd=1,|ssh-agent=0,' (ConvertTo-ServiceRecord $inbox $pf)
-Same 'ConvertTo-ServiceRecord: no service registered' 'v1' (ConvertTo-ServiceRecord @{} $pf)
+$inboxDir = 'C:\Windows\System32\OpenSSH'
+Same 'ConvertTo-ServiceRecord: Disabled and Automatic (Delayed Start) of this package''s services' 'v1|sshd=0,disabled|ssh-agent=1,delayed-auto' (ConvertTo-ServiceRecord $states $inboxDir)
+$x86 = @{ 'sshd' = @{ Running = $false; Start = 4; Delayed = $null; Dir = 'C:\Program Files (x86)\OpenSSH' } }
+Same 'ConvertTo-ServiceRecord: a package''s service in another folder (x86 -> x64, INSTALLFOLDER not passed again) keeps Disabled' 'v1|sshd=0,disabled' (ConvertTo-ServiceRecord $x86 $inboxDir)
+$inbox = @{ 'sshd' = @{ Running = $true; Start = 3; Delayed = $null; Dir = $inboxDir }; 'ssh-agent' = @{ Running = $false; Start = 4; Delayed = $null; Dir = 'c:\windows\system32\openssh' } }
+Same 'ConvertTo-ServiceRecord: in-box registrations keep no start type (Windows'' defaults)' 'v1|sshd=1,|ssh-agent=0,' (ConvertTo-ServiceRecord $inbox $inboxDir)
+Same 'ConvertTo-ServiceRecord: no service registered' 'v1' (ConvertTo-ServiceRecord @{} $inboxDir)
 $back = ConvertFrom-ServiceRecord 'v1|sshd=0,disabled|ssh-agent=1,delayed-auto'
 Check 'ConvertFrom-ServiceRecord: round trip' ($back.Count -eq 2 -and -not $back['sshd'].Running -and $back['sshd'].Start -eq 'disabled' -and $back['ssh-agent'].Running -and $back['ssh-agent'].Start -eq 'delayed-auto')
 $bad = ConvertFrom-ServiceRecord "v1|sshd=1,demand|Spooler=1,|ssh-agent=2,|sshd-x=1,|ssh-agent=1,disabled';calc;'"

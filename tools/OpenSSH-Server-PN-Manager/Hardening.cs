@@ -176,7 +176,9 @@ namespace OpenSSHServerPNManager
             {
                 var pub = SecurityAudit.PublicNetworks();
                 bool exposed = fw != null && fw.Enabled && (fw.Profiles & 4) != 0 && pub.Count > 0;
-                add("Public network exposure", !exposed, pub.Count == 0 ? "no connected network is public" : "the sshd rule does not apply to the public network " + string.Join(", ", pub),
+                // An unread rule says nothing about exposure: without it, a public network is not judged "OK".
+                if (fwError != null && pub.Count > 0) l.Add(new CheckResult { Name = "Public network exposure", Status = "INFO", Detail = "not checked: the firewall rule could not be read (" + fwError + ")" });
+                else add("Public network exposure", !exposed, pub.Count == 0 ? "no connected network is public" : "the sshd rule does not apply to the public network " + string.Join(", ", pub),
                     "SSH is reachable on the public network " + string.Join(", ", pub) + "; untick Public on the Firewall tab unless the server must be reachable there");
             }
             catch (Exception ex) { l.Add(new CheckResult { Name = "Public network exposure", Status = "INFO", Detail = "not checked: " + ex.Message }); }

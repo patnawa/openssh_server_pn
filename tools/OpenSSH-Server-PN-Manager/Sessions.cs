@@ -93,12 +93,14 @@ namespace OpenSSHServerPNManager
         /// every connection and still owns it there, while the session runs in a SYSTEM sshd-session.exe (the monitor) whose
         /// child sshd-session.exe is the account's. The monitor logs the login with the client's address and port, so a
         /// session's peer is that login's connection while it is still established. Logins found are kept in known (by process
-        /// id and start time): the circular OpenSSH log overwrites them during a long session. Returns why a session's address
-        /// is unknown, or null.
+        /// id and start time): the circular OpenSSH log overwrites them during a long session. A session whose login is unknown
+        /// (log overwritten, sshd logging to a file, a session older than this version) could be any established peer that no
+        /// known login explains, so all of those count as logged in; the result says so. Returns that note, or null.
         /// </summary>
         internal static string MatchLoggedIn(IList<TcpConnection> established, IEnumerable<ProcessEntry> userSessions, Func<int, DateTime?> startUtc,
                                              IList<SessionLogin> logins, IDictionary<string, SessionLogin> known, HashSet<string> addresses)
         {
+            var unknown = new List<int>(); var explained = new HashSet<TcpConnection>();
             foreach (var u in userSessions)
             {
                 SessionLogin login = null;
@@ -112,13 +114,20 @@ namespace OpenSSHServerPNManager
                     login = logins.Where(l => l.Pid == pid && l.TimeUtc >= start.Value.AddSeconds(-2)).OrderByDescending(l => l.TimeUtc).FirstOrDefault();
                     if (login != null) { known[key] = login; break; }
                 }
-                if (login == null) return "the login of SSH session " + u.Pid + " is not in the OpenSSH event log any more, so its client address is unknown";
+                if (login == null) { unknown.Add(u.Pid); continue; }
                 foreach (var r in established.Where(r => r.RemotePort == login.Port && CanonicalAddress(r.RemoteAddress) == CanonicalAddress(login.Address)))
-                    addresses.Add(AddressOf(r.Peer));
+                { addresses.Add(AddressOf(r.Peer)); explained.Add(r); }
             }
-            return null;
+            if (unknown.Count == 0) return null;
+            foreach (var r in established.Where(r => !explained.Contains(r))) addresses.Add(AddressOf(r.Peer));
+            return "the client address of SSH session" + (unknown.Count == 1 ? " " : "s ") + string.Join(", ", unknown) + " is not known (its login is not in the OpenSSH event log), so every connected address counts as logged in";
         }
 
+        /// <summary>
+        /// The client addresses of logged-in sessions of the installed sshd (MatchLoggedIn). False, with the error, only when the
+        /// connections or processes cannot be inspected; true with a note in error when some sessions' addresses are unknown and
+        /// every connected address was counted instead.
+        /// </summary>
         public static bool TryLoggedInAddresses(IEnumerable<int> ports, out HashSet<string> addresses, out string error)
         {
             addresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase); error = null;
@@ -129,8 +138,15 @@ namespace OpenSSHServerPNManager
                 var wanted = new HashSet<int>(ports);
                 var established = rows.Where(r => r.State == 5 && wanted.Contains(r.LocalPort)).ToList();
                 var users = new List<ProcessEntry>();
-                foreach (var p in Snapshot(true).Where(p => p.Name.Equals("sshd-session.exe", StringComparison.OrdinalIgnoreCase)))
+                var all = Snapshot(true);
+                var byPid = new Dictionary<int, ProcessEntry>(); foreach (var p in all) byPid[p.Pid] = p;
+                // Sessions of the installed service only: the monitor of each is a child of the sshd service process. Another
+                // OpenSSH server (a test sshd, MSYS2, Cygwin) has sessions that never log to this event log.
+                int service = Services.PidOf("sshd");
+                foreach (var p in all.Where(p => p.Name.Equals("sshd-session.exe", StringComparison.OrdinalIgnoreCase)))
                 {
+                    ProcessEntry monitor;
+                    if (service > 0 && !(byPid.TryGetValue(p.ParentPid, out monitor) && monitor.ParentPid == service) && p.ParentPid != service) continue;
                     bool system;
                     if (TrySystemOwner(p.Pid, out system)) { if (!system) users.Add(p); continue; }
                     if (!Ended(p.Pid)) throw new InvalidOperationException("Cannot verify the owner of SSH session " + p.Pid + ".");
@@ -153,7 +169,7 @@ namespace OpenSSHServerPNManager
                         catch (Exception ex) { Log.Error("Keeping the client addresses of SSH sessions", ex, false); }
                     return result;
                 });
-                if (problem != null) throw new InvalidOperationException(problem);
+                error = problem;
                 return true;
             }
             catch (Exception ex) { addresses.Clear(); error = "Active SSH sessions could not be verified: " + ex.Message; return false; }

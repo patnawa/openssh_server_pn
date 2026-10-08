@@ -97,8 +97,14 @@ namespace OpenSSHServerPNManager
                 // Later, the circular log no longer has the login: the kept one still identifies the session.
                 found.Clear();
                 if (Sessions.MatchLoggedIn(tcp, users, start, new List<Sessions.SessionLogin>(), known, found) != null || !found.Contains("192.0.2.7")) throw new Exception("the kept login was not used");
-                // Without either, the address is unknown and the caller must not guess.
-                if (Sessions.MatchLoggedIn(tcp, users, start, new List<Sessions.SessionLogin>(), new Dictionary<string, Sessions.SessionLogin>(), new HashSet<string>()) == null) throw new Exception("an unknown session was accepted");
+                // Without either, the session could be any connected peer: all of them count as logged in, and the note says why.
+                var unsure = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (Sessions.MatchLoggedIn(tcp, users, start, new List<Sessions.SessionLogin>(), new Dictionary<string, Sessions.SessionLogin>(), unsure) == null) throw new Exception("an unknown session gave no note");
+                if (!unsure.Contains("192.0.2.7") || !unsure.Contains("198.51.100.9")) throw new Exception("an unknown session did not protect every connected peer: " + string.Join(", ", unsure));
+                // One known and one unknown session: the known one's peer is explained, every other connected peer is protected.
+                var two = new[] { users[0], new Sessions.ProcessEntry { Pid = 401, ParentPid = 400, Name = "sshd-session.exe" } };
+                var mixed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (Sessions.MatchLoggedIn(tcp, two, pid => pid == 400 || pid == 401 ? t0 : start(pid), logins, new Dictionary<string, Sessions.SessionLogin>(), mixed) == null || mixed.Count != 2) throw new Exception("mixed sessions: " + string.Join(", ", mixed));
                 // A session whose connection is gone protects nothing.
                 found.Clear();
                 if (Sessions.MatchLoggedIn(tcp.Skip(1).ToList(), users, start, logins, new Dictionary<string, Sessions.SessionLogin>(), found) != null || found.Count != 0) throw new Exception("a closed connection was kept");

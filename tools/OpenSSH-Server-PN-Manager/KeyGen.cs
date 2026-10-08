@@ -580,50 +580,31 @@ namespace OpenSSHServerPNManager
         }
 
         /// <summary>
-        /// A public key in the RFC 4716 (SSH2) format with the key's comment: base64 lines of 70 characters, and no line over
-        /// 72 bytes, so a long comment goes on continuation lines (ending in a backslash). The format has no escapes: quotes,
-        /// backslashes and control characters are left out of the comment.
+        /// A public key in the RFC 4716 (SSH2) format with the key's comment: base64 lines of 70 characters, no line over 72
+        /// bytes. The comment is one header line, shortened to fit: PuTTY and other readers do not join continuation lines
+        /// and would read one as key data. The format has no escapes, so quotes, backslashes and control characters are left
+        /// out; it ends before " END " (ssh-keygen -i would end the key there) and before an SSH2 private key's begin line.
         /// </summary>
         internal static string Rfc4716(string publicLine, string comment)
         {
             var b64 = Convert.ToBase64String(Convert.FromBase64String(Keys.Blob(publicLine)));
             var sb = new StringBuilder("---- BEGIN SSH2 PUBLIC KEY ----\n");
-            var c = new string((comment ?? "").Where(ch => ch != '"' && ch != '\\' && !char.IsControl(ch)).ToArray()).Trim();
-            c = c.Substring(0, Utf8Fit(c, 0, 1022)); // a header value has at most 1024 bytes, the quotes included
-            if (c.Length > 0) foreach (var l in HeaderLines("Comment: \"" + c + "\"")) sb.Append(l).Append('\n');
+            var c = Rfc4716Comment(comment);
+            if (c.Length > 0) sb.Append("Comment: \"").Append(c).Append("\"\n");
             for (int i = 0; i < b64.Length; i += 70) sb.Append(b64, i, Math.Min(70, b64.Length - i)).Append('\n');
             return sb.Append("---- END SSH2 PUBLIC KEY ----\n").ToString();
         }
 
-        /// <summary>
-        /// One RFC 4716 header as lines of at most 72 bytes. ssh-keygen -i skips continuation lines only while they look like
-        /// no header themselves: none holds ": " or starts with "----". A dash run too long for any line ends the comment.
-        /// The first line is a header to it, so it ends before any " END " (which would end the key there) and before the
-        /// begin line of an SSH2 private key (which would make it read one).
-        /// </summary>
-        private static List<string> HeaderLines(string header)
+        /// <summary>The comment as the one Comment header holds it: 61 bytes, so that the line with its tag and quotes has 72.</summary>
+        internal static string Rfc4716Comment(string comment)
         {
-            var lines = new List<string>();
-            int stop = header.Length;
+            var c = new string((comment ?? "").Where(ch => ch != '"' && ch != '\\' && !char.IsControl(ch)).ToArray()).Trim();
             foreach (var marker in new[] { " END ", "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----" })
             {
-                int at = header.IndexOf(marker, StringComparison.Ordinal);
-                if (at >= 0 && at < stop) stop = at;
+                int at = c.IndexOf(marker, StringComparison.Ordinal);
+                if (at >= 0) c = c.Substring(0, at);
             }
-            for (int start = 0; ; )
-            {
-                int end = Utf8Fit(header, start, 72);
-                if (end == header.Length && (lines.Count == 0 ? stop == header.Length : header.IndexOf(": ", start, StringComparison.Ordinal) < 0)) { lines.Add(header.Substring(start)); return lines; }
-                end = Utf8Fit(header, start, 71); // room for the backslash
-                if (lines.Count == 0 && stop < end) end = stop;
-                int colon = lines.Count == 0 ? -1 : header.IndexOf(": ", start, end - start, StringComparison.Ordinal);
-                if (colon >= 0 && colon + 1 < end) end = colon + 1;
-                while (end > start + 1 && string.CompareOrdinal(header, end, "----", 0, 4) == 0) end--;
-                if (char.IsLowSurrogate(header[end]) && end > start && char.IsHighSurrogate(header[end - 1])) end--;
-                if (end <= start || string.CompareOrdinal(header, end, "----", 0, 4) == 0) { lines.Add(header.Substring(start, end - start) + "\""); return lines; }
-                lines.Add(header.Substring(start, end - start) + "\\");
-                start = end;
-            }
+            return c.Substring(0, Utf8Fit(c, 0, 61)).TrimEnd();
         }
 
         /// <summary>The end of the longest piece of s from start with at most maxBytes in UTF-8, never splitting a surrogate pair.</summary>

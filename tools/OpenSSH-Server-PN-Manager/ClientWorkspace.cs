@@ -201,23 +201,23 @@ namespace OpenSSHServerPNManager
             _lvClientHosts.EndUpdate();
         }
 
-        private ClientHost SelectedConnection()
+        private ClientHost SelectedConnection(bool sftp)
         {
             var host = _lvClientHosts.SelectedItems.Count == 0 ? null : (ClientHost)_lvClientHosts.SelectedItems[0].Tag;
-            var problem = SshClient.ConnectProblem(host);
+            var problem = SshClient.ConnectProblem(host, sftp);
             if (problem != null) throw new ConfigException(problem);
             return host;
         }
 
         private void ConnectClientHost(bool sftp)
         {
-            var host = SelectedConnection();
+            var host = SelectedConnection(sftp);
             Proc.OpenUnelevated(Ssh.Exe(sftp ? "sftp.exe" : "ssh.exe"), "-- " + host.Pattern, true);
         }
 
         private async Task PreviewClientHost()
         {
-            var host = SelectedConnection();
+            var host = SelectedConnection(false);
             var text = await BgAsync("Resolving client connection settings...", () => SshClient.EffectivePreview(host.Pattern));
             MessageBox.Show(this, text, "Connection to " + host.Pattern, MessageBoxButtons.OK, MessageBoxIcon.Information);
         }

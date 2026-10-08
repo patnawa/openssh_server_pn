@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -84,6 +85,40 @@ namespace OpenSSHServerPNManager
                 File.WriteAllLines(bad, new[] { "ssh-rsa AAAAnotreallyakey= made up", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGVkMjU1MTlz truncated" });
                 if (Keys.Read(bad).Count(k => k.Type != "?") != 2) throw new Exception("the fixture lines are not key-shaped");
                 if (Keys.UsableCount(new[] { bad }) != 0) throw new Exception("lines ssh-keygen rejects were counted as usable keys");
+                return null;
+            });
+            test("authorized keys: usable keys are counted as sshd reads the file and as its policy allows", () =>
+            {
+                var dir = NewDir(tmpDir, "usable-policy");
+                const string blob = "AAAAC3NzaC1lZDI1NTE5AAAAIGVkMjU1MTlzZWxmdGVzdGtleTAwMDAwMDAwMDAwMDAwMDA";
+                Func<string, string> fingerprint = line => "SHA256:fixture";
+                Func<string, byte[], int> count = (name, bytes) => { var p = Path.Combine(dir, name); File.WriteAllBytes(p, bytes); return Keys.UsableCount(new[] { p }, fingerprint); };
+                var utf8 = new UTF8Encoding(false);
+                // Windows PowerShell's "echo key > file" writes UTF-16: sshd reads no key from it.
+                if (count("utf16", Encoding.Unicode.GetPreamble().Concat(Encoding.Unicode.GetBytes("ssh-ed25519 " + blob + " x\r\n")).ToArray()) != 0) throw new Exception("a UTF-16 file was counted");
+                if (count("utf8bom", new byte[] { 0xEF, 0xBB, 0xBF }.Concat(utf8.GetBytes("ssh-ed25519 " + blob + " x\n")).ToArray()) != 1) throw new Exception("a UTF-8 BOM hid the key");
+                // Ctrl-Z ends the file in sshd's text-mode read ("copy a.pub+b.pub").
+                if (count("ctrlz", utf8.GetBytes("ssh-ed25519 " + blob + " a\n\u001a\nssh-ed25519 " + blob + " after\n")) != 1) throw new Exception("a key after Ctrl-Z was counted");
+                if (count("option", utf8.GetBytes("no-agent-fowarding ssh-ed25519 " + blob + " typo\n")) != 0) throw new Exception("a line with an option sshd refuses was counted");
+                if (count("cert", utf8.GetBytes("ssh-ed25519-cert-v01@openssh.com " + blob + " certificate\n")) != 0) throw new Exception("a certificate line was counted");
+                // RSA below RequiredRSASize, and types PubkeyAcceptedAlgorithms leaves out.
+                var modulus = new byte[129]; modulus[1] = 0x80;
+                var rsa1024 = Convert.ToBase64String(new SshWriter().String("ssh-rsa").String(new byte[] { 1, 0, 1 }).String(modulus).ToArray());
+                if (Keys.RsaBits(rsa1024) != 1024) throw new Exception("RSA size read as " + Keys.RsaBits(rsa1024));
+                var rsaFile = Path.Combine(dir, "rsa"); File.WriteAllText(rsaFile, "ssh-rsa " + rsa1024 + " old\n");
+                if (Keys.UsableCount(new[] { rsaFile }, fingerprint, Keys.KeyPolicy.From(null)) != 1) throw new Exception("a 1024-bit key was refused at the default size");
+                if (Keys.UsableCount(new[] { rsaFile }, fingerprint, Keys.KeyPolicy.From(null, 2048)) != 0) throw new Exception("a 1024-bit key counted with RequiredRSASize 2048");
+                var mldsa = Path.Combine(dir, "mldsa"); File.WriteAllText(mldsa, "ssh-mldsa44-ed25519@openssh.com " + blob + " experimental\n");
+                if (Keys.UsableCount(new[] { mldsa }, fingerprint) != 0) throw new Exception("ML-DSA counted although the default list leaves it out");
+                var policy = Keys.KeyPolicy.From(new Dictionary<string, string> { { "pubkeyacceptedalgorithms", "ssh-mldsa44-ed25519@openssh.com,ssh-ed25519" } });
+                if (Keys.UsableCount(new[] { mldsa }, fingerprint, policy) != 1 || Keys.UsableCount(new[] { rsaFile }, fingerprint, policy) != 0) throw new Exception("PubkeyAcceptedAlgorithms was not followed");
+                // With the real ssh-keygen, a valid key does count (so the refusals above are not an ssh-keygen that is missing).
+                if (File.Exists(Ssh.Exe("ssh-keygen.exe")))
+                {
+                    var real = Convert.ToBase64String(new SshWriter().String("ssh-ed25519").String(Enumerable.Range(1, 32).Select(i => (byte)i).ToArray()).ToArray());
+                    var good = Path.Combine(dir, "good"); File.WriteAllText(good, "ssh-ed25519 " + real + " real\n");
+                    if (Keys.UsableCount(new[] { good }) != 1) throw new Exception("ssh-keygen did not accept a valid Ed25519 key");
+                }
                 return null;
             });
             test("setup wizard: a wrong .pub file keeps the key-only choices of the keys already authorized", () =>

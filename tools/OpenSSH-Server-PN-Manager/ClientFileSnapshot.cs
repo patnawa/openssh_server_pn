@@ -79,6 +79,11 @@ namespace OpenSSHServerPNManager
             catch (UnauthorizedAccessException) { return false; }
         }
 
+        private ConfigException NotUtf8Refusal(char c)
+        {
+            return new ConfigException(Path + " is not UTF-8 text (probably saved as ANSI by Notepad). Its bytes are kept as they are, so characters such as \"" + c + "\" cannot be added to it. Nothing was saved.\n\nOpen the file in Notepad, save it with the encoding UTF-8, then Refresh the Client tab.");
+        }
+
         private ConfigException Conflict()
         {
             return new ConfigException("The file changed after it was displayed: " + Path + ". No changes were saved. Refresh the Client tab and review the current file before trying again.");
@@ -87,11 +92,16 @@ namespace OpenSSHServerPNManager
         public void Write(IList<string> lines, string backupSuffix, bool privateFile)
         {
             byte[] data;
+            // Latin-1 would write é or ü as one byte, which ssh reads as UTF-8 and so as a different, invalid name: in such a
+            // file, only lines that were there already may hold characters beyond ASCII.
+            var kept = NotUtf8 ? new HashSet<string>(Lines, StringComparer.Ordinal) : null;
+            var added = kept == null ? null : lines.FirstOrDefault(l => !kept.Contains(l) && l.Any(c => c > 0x7f));
+            if (added != null) throw NotUtf8Refusal(added.First(c => c > 0x7f));
             try { data = _encoding.GetBytes(string.Join(_newline, lines) + (lines.Count > 0 ? _newline : "")); }
             catch (EncoderFallbackException ex)
             {
                 if (!NotUtf8) throw;
-                throw new ConfigException(Path + " is not UTF-8 text (probably saved as ANSI by Notepad). Its bytes are kept as they are, so characters such as \"" + ex.CharUnknown + "\" cannot be added to it. Nothing was saved.\n\nOpen the file in Notepad, save it with the encoding UTF-8, then Refresh the Client tab.");
+                throw NotUtf8Refusal(ex.CharUnknown);
             }
             ConfigurationTransaction.Locked(Path, () =>
             {

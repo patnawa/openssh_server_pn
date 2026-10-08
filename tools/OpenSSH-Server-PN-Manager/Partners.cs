@@ -243,8 +243,12 @@ namespace OpenSSHServerPNManager
                 bool isRoot = d == full;
                 if (isRoot) exists = true;
                 var owner = ds.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+                // A volume root cannot be renamed or deleted: DELETE there (Authenticated Users have Modify on the root of a
+                // Windows 10/11 data drive) puts nothing in a partner folder's place.
+                int mask = isRoot ? RootWriteMask : AboveRootMask;
+                if (!isRoot && string.Equals(Path.GetPathRoot(d), d, StringComparison.OrdinalIgnoreCase)) mask &= ~0x10000;
                 var who = ds.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
-                            .Where(r => r.AccessControlType == AccessControlType.Allow && (r.PropagationFlags & PropagationFlags.InheritOnly) == 0 && ((int)r.FileSystemRights & (isRoot ? RootWriteMask : AboveRootMask)) != 0)
+                            .Where(r => r.AccessControlType == AccessControlType.Allow && (r.PropagationFlags & PropagationFlags.InheritOnly) == 0 && ((int)r.FileSystemRights & mask) != 0)
                             .Select(r => (SecurityIdentifier)r.IdentityReference).Where(s => !TrustedSid(s)).Distinct().Select(NameOf).ToList();
                 var where = isRoot ? d : d + " (above it)";
                 if (owner == null || !TrustedSid(owner)) problems.Add(where + " is owned by " + (owner == null ? "an unknown account" : NameOf(owner)));
@@ -319,8 +323,8 @@ namespace OpenSSHServerPNManager
             if (!Regex.IsMatch(name, @"^[A-Za-z0-9][A-Za-z0-9._-]*$") || name.EndsWith(".")) return "Use letters, digits, - _ and . only, starting with a letter or digit (the name also names the partner's folder).";
             if (Regex.IsMatch(name, @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|\z)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
                 return "Choose another account name: Windows reserves this name for a device, so it cannot name the partner's folder or keys file.";
-            // sshd reads partner_keys\%u: name.bak is where the keys of the partner "name" are backed up.
-            if (name.EndsWith(".bak", StringComparison.OrdinalIgnoreCase)) return "Choose a name that does not end in .bak: the keys folder keeps each partner's previous keys under that name.";
+            // sshd reads partner_keys\%u, and versions before 2.3.2 kept the previous keys of the partner "name" as name.bak there.
+            if (name.EndsWith(".bak", StringComparison.OrdinalIgnoreCase)) return "Choose a name that does not end in .bak: earlier versions kept a partner's previous keys as partner_keys\\<name>.bak, and sshd would read such a file as this account's keys.";
             if (Acl.SidOfAccount(name) != null) return "An account or group called " + name + " exists already on this computer.";
             return null;
         }
@@ -411,7 +415,13 @@ namespace OpenSSHServerPNManager
                 if (link != null) throw new ConfigException("The folder " + folder + " exists already, and " + (link == folder ? "it is " : "it holds " + link + ", ") + kind + ": whoever made it decides what the partner would reach through it. Move or rename the folder first, or choose another name.");
                 if (!reuse) throw new PartnerFolderExistsException(folder, FolderDetails(folder));
             }
-            else
+            // A folder made for administrators only is no protection inside a root another account can rename or control: it
+            // could put a folder of its own in the partner's place. The Partners tab reports this; here it stops the creation.
+            bool fixable; var rootProblem = PartnerSetup.RootProblem(root, out fixable);
+            if (rootProblem != null)
+                throw new ConfigException("No partner was created: the folder of the partners' folders is not for administrators only (" + rootProblem + ")." +
+                    (fixable ? "\n\nRun \"Set up partner accounts\" again: it offers to restrict " + root + " to administrators." : "\n\nMove the partners' folders to a folder only administrators can change (\"Set up partner accounts\")."));
+            if (!Directory.Exists(folder))
             {
                 // Made before the account, for administrators only, in one step that fails when someone made the folder in
                 // the meantime: no other account can make it first once the name is known.

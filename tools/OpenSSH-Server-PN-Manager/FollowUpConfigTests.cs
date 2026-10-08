@@ -310,11 +310,11 @@ namespace OpenSSHServerPNManager
                 var record = new Dictionary<string, string> { { "status", "prepared" }, { "applied", "H" }, { "server", "100@1" }, { "backup.path", first } };
                 var r = ConfigurationRecovery.RestartRollbackFor(record, "H", "100@1", true, newest);
                 if (r == null || !r.FromRecord || r.Backup != first) throw new Exception("A save-only change of the running sshd was restarted without its rollback target");
-                r = ConfigurationRecovery.RestartRollbackFor(record, "H", "200@2", true, newest);
-                if (r == null || r.FromRecord || r.Backup != newest) throw new Exception("The record of an earlier sshd process was used");
+                // No record of the running file: the newest backup may be older than what sshd runs (Save and restart, Keep,
+                // then an edit), and restoring it would lose the current file. A plain restart, as before.
+                if (ConfigurationRecovery.RestartRollbackFor(record, "H", "200@2", true, newest) != null) throw new Exception("The record of an earlier sshd process was used, or the newest backup was guessed");
                 if (ConfigurationRecovery.RestartRollbackFor(record, "H", "200@2", false, newest) != null) throw new Exception("A restart that changes nothing was armed");
-                r = ConfigurationRecovery.RestartRollbackFor(record, "edited", "100@1", true, newest);
-                if (r == null || r.FromRecord || r.Backup != newest) throw new Exception("A file edited after the save was restarted without recovery");
+                if (ConfigurationRecovery.RestartRollbackFor(record, "edited", "100@1", true, newest) != null) throw new Exception("A file edited after the save armed the newest backup as its rollback target");
                 if (ConfigurationRecovery.RestartRollbackFor(null, "H", "", true, null) != null) throw new Exception("Recovery was armed without any previous file");
                 // A stale save-only record must not block the restart's own record.
                 var f = new Fixture(tmpDir); File.WriteAllText(f.Live, "Port 22\n"); var host = new Host { Identity = "100@1" }; var txn = f.Open(host);

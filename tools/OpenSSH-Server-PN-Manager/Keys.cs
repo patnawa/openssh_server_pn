@@ -253,31 +253,48 @@ namespace OpenSSHServerPNManager
         private const uint GenericRead = 0x80000000, ReadControl = 0x20000, WriteDac = 0x40000, DaclSecurityInformation = 0x4, ProtectedDaclSecurityInformation = 0x80000000;
 
         /// <summary>
-        /// Opens a key file's folder and checks that it is the folder its path names, with no junction or symbolic link on the
-        /// way. The handle shares no delete access, so the folder cannot be renamed and replaced by a link until it is closed.
+        /// Opens a key file's folder and checks that it is not a junction or symbolic link: where it leads must be where its
+        /// parent leads, plus its own name. Only that folder (.ssh) is the account's to replace; links above it are an
+        /// administrator's (C:\Users moved to another drive, profiles on mounted volumes), and an account cannot replace its
+        /// profile folder. The handle shares no delete access, so the folder cannot be renamed and replaced until it is closed.
         /// </summary>
         private static SafeFileHandle OpenVerifiedFolder(string dir)
         {
-            var h = CreateFile(dir, ListDirectory | ReadAttributes, ShareRead | ShareWrite, IntPtr.Zero, OpenExisting, BackupSemantics, IntPtr.Zero);
-            if (h.IsInvalid) { var e = new Win32Exception(Marshal.GetLastWin32Error()); throw new IOException("Could not open " + dir + ": " + e.Message, e); }
+            var h = OpenFolder(dir);
             try
             {
-                var final = new StringBuilder(1024);
-                int n = GetFinalPathNameByHandle(h, final, final.Capacity, 0);
-                if (n >= final.Capacity) { final = new StringBuilder(n + 1); n = GetFinalPathNameByHandle(h, final, final.Capacity, 0); }
-                if (n <= 0 || n >= final.Capacity) { var e = new Win32Exception(Marshal.GetLastWin32Error()); throw new IOException("Could not find where " + dir + " leads: " + e.Message, e); }
-                var actual = final.ToString();
-                if (actual.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) actual = @"\" + actual.Substring(7);
-                else if (actual.StartsWith(@"\\?\", StringComparison.Ordinal)) actual = actual.Substring(4);
+                var actual = FinalPath(h, dir);
                 // Short (8.3) names, as in a TEMP path, are not links.
                 var expected = new StringBuilder(1024);
                 int m = GetLongPathName(dir, expected, expected.Capacity);
-                var named = m > 0 && m < expected.Capacity ? expected.ToString() : dir;
-                if (!string.Equals(actual.TrimEnd('\\'), named.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                var named = (m > 0 && m < expected.Capacity ? expected.ToString() : dir).TrimEnd('\\');
+                var parent = Path.GetDirectoryName(named);
+                string where = named;
+                if (parent != null) using (var p = OpenFolder(parent)) where = Path.Combine(FinalPath(p, parent), Path.GetFileName(named));
+                if (!string.Equals(actual.TrimEnd('\\'), where.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
                     throw new ConfigException("Key files are not written through a junction or symbolic link:\n" + dir + "\nleads to\n" + actual);
                 return h;
             }
             catch { h.Dispose(); throw; }
+        }
+
+        private static SafeFileHandle OpenFolder(string dir)
+        {
+            var h = CreateFile(dir, ListDirectory | ReadAttributes, ShareRead | ShareWrite, IntPtr.Zero, OpenExisting, BackupSemantics, IntPtr.Zero);
+            if (h.IsInvalid) { var e = new Win32Exception(Marshal.GetLastWin32Error()); throw new IOException("Could not open " + dir + ": " + e.Message, e); }
+            return h;
+        }
+
+        /// <summary>Where an open folder really is, without the \\?\ prefix.</summary>
+        private static string FinalPath(SafeFileHandle h, string dir)
+        {
+            var final = new StringBuilder(1024);
+            int n = GetFinalPathNameByHandle(h, final, final.Capacity, 0);
+            if (n >= final.Capacity) { final = new StringBuilder(n + 1); n = GetFinalPathNameByHandle(h, final, final.Capacity, 0); }
+            if (n <= 0 || n >= final.Capacity) { var e = new Win32Exception(Marshal.GetLastWin32Error()); throw new IOException("Could not find where " + dir + " leads: " + e.Message, e); }
+            var actual = final.ToString();
+            if (actual.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return @"\" + actual.Substring(7);
+            return actual.StartsWith(@"\\?\", StringComparison.Ordinal) ? actual.Substring(4) : actual;
         }
 
         /// <summary>
@@ -351,9 +368,15 @@ namespace OpenSSHServerPNManager
             return File.Exists(path) ? Lines(File.ReadAllText(path)) : new List<string>();
         }
 
-        /// <summary>Lines as sshd reads them: ended by LF (a CR before it is dropped, one elsewhere kept), trailing blank lines left out.</summary>
+        /// <summary>
+        /// Lines as sshd reads them: ended by LF (a CR before it is dropped, one elsewhere kept), trailing blank lines left out.
+        /// sshd opens the file in text mode, where Ctrl-Z (0x1A, left by "copy a.pub+b.pub") ends it: nothing after it is read,
+        /// so nothing after it is shown, and a rewrite leaves it out (keys added later would never be read otherwise).
+        /// </summary>
         private static List<string> Lines(string text)
         {
+            int eof = text.IndexOf('\u001a');
+            if (eof >= 0) text = text.Substring(0, eof);
             var l = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None).ToList();
             while (l.Count > 0 && l[l.Count - 1].Trim().Length == 0) l.RemoveAt(l.Count - 1);
             return l;
@@ -461,32 +484,92 @@ namespace OpenSSHServerPNManager
             return Acl.SidOfAccount(name) ?? Acl.SidOfAccount(Environment.MachineName + "\\" + name);
         }
 
+        /// <summary>What sshd accepts of a key: PubkeyAcceptedAlgorithms (null: its defaults) and RequiredRSASize.</summary>
+        internal sealed class KeyPolicy
+        {
+            public HashSet<string> Accepted; public int RequiredRsaBits = 1024;
+
+            /// <summary>From sshd -T output (lower-case keywords); minimumRsaBits raises RequiredRSASize, as the wizard's Recommended does.</summary>
+            public static KeyPolicy From(IDictionary<string, string> effective, int minimumRsaBits = 0)
+            {
+                var p = new KeyPolicy(); string v; int bits;
+                if (effective != null && effective.TryGetValue("pubkeyacceptedalgorithms", out v) && !string.IsNullOrWhiteSpace(v))
+                    p.Accepted = new HashSet<string>(v.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
+                if (effective != null && effective.TryGetValue("requiredrsasize", out v) && int.TryParse(v, out bits)) p.RequiredRsaBits = bits;
+                p.RequiredRsaBits = Math.Max(p.RequiredRsaBits, minimumRsaBits);
+                return p;
+            }
+
+            public bool Accepts(string type)
+            {
+                // A key of type ssh-rsa logs in with any of the RSA signature algorithms.
+                var algorithms = type == "ssh-rsa" ? new[] { "rsa-sha2-512", "rsa-sha2-256", "ssh-rsa" } : new[] { type };
+                // sshd's default list leaves out DSA and the experimental ML-DSA composite.
+                if (Accepted == null) return !type.StartsWith("ssh-dss", StringComparison.Ordinal) && type.IndexOf("mldsa", StringComparison.OrdinalIgnoreCase) < 0;
+                return algorithms.Any(Accepted.Contains);
+            }
+        }
+
+        /// <summary>The key options sshd knows (auth-options.c); a line with any other is refused as a whole.</summary>
+        private static readonly HashSet<string> KnownOptions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "agent-forwarding", "cert-authority", "command", "environment", "expiry-time", "from", "no-agent-forwarding", "no-port-forwarding",
+            "no-pty", "no-touch-required", "no-user-rc", "no-x11-forwarding", "permitlisten", "permitopen", "port-forwarding", "principals",
+            "pty", "restrict", "tunnel", "user-rc", "verify-required", "x11-forwarding" };
+
         /// <summary>
-        /// The keys in these authorized_keys files that sshd can log someone in with: not a cert-authority line (it needs
-        /// a certificate), not DSA (this build has none), and key material ssh-keygen reads (a SHA256 fingerprint), so a
-        /// truncated, mislabelled or made-up line does not count. fingerprint: for tests; ssh-keygen otherwise.
+        /// The keys in these authorized_keys files that sshd can log someone in with, read as sshd reads the file: a UTF-16
+        /// file gives none (sshd skips only a UTF-8 BOM), and Ctrl-Z ends it. Not counted: cert-authority lines (they need a
+        /// certificate) and certificate lines, lines with an option sshd does not know, types the policy does not accept, RSA
+        /// keys below RequiredRSASize, and key material ssh-keygen cannot read (no SHA256 fingerprint). fingerprint: for tests.
         /// </summary>
-        public static int UsableCount(IEnumerable<string> files, Func<string, string> fingerprint = null)
+        public static int UsableCount(IEnumerable<string> files, Func<string, string> fingerprint = null, KeyPolicy policy = null)
         {
             if (fingerprint == null) fingerprint = Fingerprint;
+            if (policy == null) policy = new KeyPolicy();
             int n = 0;
             foreach (var file in files)
             {
                 if (!File.Exists(file)) continue;
-                foreach (var raw in File.ReadAllLines(file))
+                var bytes = File.ReadAllBytes(file);
+                if (bytes.Length >= 2 && ((bytes[0] == 0xff && bytes[1] == 0xfe) || (bytes[0] == 0xfe && bytes[1] == 0xff))) continue;
+                if (Array.IndexOf(bytes, (byte)0) >= 0) continue;
+                int bom = bytes.Length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf ? 3 : 0;
+                foreach (var raw in Lines(new UTF8Encoding(false).GetString(bytes, bom, bytes.Length - bom)))
                 {
                     var line = raw.Trim();
                     if (line.Length == 0 || line.StartsWith("#")) continue;
                     var m = KeyLine(line);
-                    if (!m.Success || m.Groups[1].Value.StartsWith("ssh-dss", StringComparison.Ordinal)) continue;
+                    if (!m.Success) continue;
+                    var type = m.Groups[1].Value;
+                    if (type.IndexOf("-cert-v01", StringComparison.Ordinal) >= 0) continue;
                     // Options are separated by commas outside double quotes; sshd compares their names without case.
-                    var options = Regex.Matches(line.Substring(0, m.Index), @"(?:""(?:\\.|[^""\\])*""|[^,""])+").Cast<Match>();
-                    if (options.Any(o => o.Value.Trim().Equals("cert-authority", StringComparison.OrdinalIgnoreCase))) continue;
+                    var options = Regex.Matches(line.Substring(0, m.Index), @"(?:""(?:\\.|[^""\\])*""|[^,""])+").Cast<Match>()
+                                       .Select(o => o.Value.Trim()).Where(o => o.Length > 0).Select(o => o.Split('=')[0].Trim()).ToList();
+                    if (options.Any(o => o.Equals("cert-authority", StringComparison.OrdinalIgnoreCase) || !KnownOptions.Contains(o))) continue;
+                    if (type.StartsWith("rsa-sha2-", StringComparison.Ordinal)) type = "ssh-rsa"; // the key of such a line is an RSA key
+                    if (!policy.Accepts(type)) continue;
+                    if (type == "ssh-rsa" && RsaBits(Material(m)) < policy.RequiredRsaBits) continue;
                     var fp = fingerprint(line);
                     if (fp != null && fp.StartsWith("SHA256:", StringComparison.Ordinal)) n++;
                 }
             }
             return n;
+        }
+
+        /// <summary>The modulus size of an RSA public key blob (base64), or 0 when it cannot be read.</summary>
+        internal static int RsaBits(string material)
+        {
+            try
+            {
+                var r = new SshReader(Convert.FromBase64String(material));
+                if (r.Text() != "ssh-rsa") return 0;
+                r.String(); var modulus = r.String();
+                int i = 0; while (i < modulus.Length && modulus[i] == 0) i++;
+                if (i == modulus.Length) return 0;
+                int bits = (modulus.Length - i - 1) * 8; for (int b = modulus[i]; b > 0; b >>= 1) bits++;
+                return bits;
+            }
+            catch (Exception) { return 0; }
         }
     }
 

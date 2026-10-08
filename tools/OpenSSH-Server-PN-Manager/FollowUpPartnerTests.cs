@@ -233,10 +233,14 @@ namespace OpenSSHServerPNManager
                     check(@"X:\Data\SFTP", @"X:\=" + drive + @"|X:\Data=O:S-1-5-21-1-2-3-1001D:PAI(A;OICI;FA;;;BA)", false),
                     check(@"X:\ProgramData\osm-authtest-1\partners", @"X:\=" + drive + @"|X:\ProgramData=" + programData + @"|X:\ProgramData\osm-authtest-1=" + adminsOnly + @"|X:\ProgramData\osm-authtest-1\partners=" + adminsOnly, null),
                     check(@"X:\", @"X:\=" + drive, false), // a drive root is never hardened
+                    // A Windows 10/11 data drive: Authenticated Users have Modify (DELETE included) on its root, which cannot be renamed.
+                    check(@"X:\SFTP", @"X:\=O:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1301bf;;;AU)(A;OICI;0x1200a9;;;BU)|X:\SFTP=" + adminsOnly, null),
                 };
                 var f = fails.Where(x => x != null).ToList();
                 if (f.Count > 0) throw new Exception(string.Join("\n", f));
-                bool any; PartnerSetup.RootProblem(tmpDir, out any); // the real folders: no exception
+                // The real folders: the temporary folder reads without the "not checked" answer an exception gives.
+                bool any; var real = PartnerSetup.RootProblem(tmpDir, out any);
+                if (real != null && real.Contains("were not checked")) throw new Exception(real);
                 return null;
             });
             test("partners: a domain controller is refused (its accounts are domain accounts)", () =>
