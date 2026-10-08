@@ -519,15 +519,22 @@ function Get-BackupPath([string]$path, [DateTime]$now) {
 
 # A new file (it must not exist) with the owner, group and permissions of the security descriptor
 # $sd (binary form), or only its permissions when the owner cannot be set (another account owns
-# the original); the bytes are written once the permissions are in place.
+# the original); the bytes are written once the permissions are in place. When a step fails, the
+# file is deleted: an empty or partly written backup must not be taken for the previous file.
 function New-SecuredFile([string]$file, [byte[]]$sd, [byte[]]$bytes) {
     (New-Object IO.FileStream($file, [IO.FileMode]::CreateNew)).Close()
-    foreach ($s in @('Owner, Group, Access', 'Access')) {
-        $fs = New-Object Security.AccessControl.FileSecurity
-        $fs.SetSecurityDescriptorBinaryForm($sd, $s)
-        try { [IO.File]::SetAccessControl($file, $fs); break } catch { if ($s -eq 'Access') { throw $_ } }
+    try {
+        foreach ($s in @('Owner, Group, Access', 'Access')) {
+            $fs = New-Object Security.AccessControl.FileSecurity
+            $fs.SetSecurityDescriptorBinaryForm($sd, $s)
+            try { [IO.File]::SetAccessControl($file, $fs); break } catch { if ($s -eq 'Access') { throw $_ } }
+        }
+        [IO.File]::WriteAllBytes($file, $bytes)
+    } catch {
+        $err = $_
+        try { [IO.File]::Delete($file) } catch { }
+        throw $err
     }
-    [IO.File]::WriteAllBytes($file, $bytes)
 }
 
 # Replaces the file as OpenSSH Server PN Manager does (ConfigurationTransaction.AtomicBytes): the
@@ -772,6 +779,9 @@ if ($Phase -eq 'port') {
         $backup = Get-BackupPath $cfg (Get-Date)
         if (-not $created) { $null = Save-Record (Split-Path -Leaf $backup) $portValue }
         try { Write-ConfigText $cfg $new $backup } catch {
+            # sshd_config is unchanged: nothing for phase portrollback to put back (the backup may be
+            # incomplete). A file this step created stays recorded, for the rollback to delete it.
+            if (-not $created) { Remove-Record $portValue }
             # The firewall step has already given the rule the new port: back to the port(s) sshd keeps using.
             $ports = @(Get-SshdConfigPorts $text) -join ','
             Log ("warning: sshd_config unchanged, sshd keeps port " + $ports + ": " + $_.Exception.Message + (Set-RulePorts $ports))

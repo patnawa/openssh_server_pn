@@ -80,9 +80,18 @@ function Invoke-Install([string[]]$Arguments, [string]$Log, [int[]]$Allowed = @(
     $code
 }
 
+function Get-ServiceStartType([string]$Name, $Service) {
+    # ServiceController.StartType reports a delayed start as Automatic; only the service's DelayedAutostart value tells.
+    $start = "$($Service.StartType)"
+    $key = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$Name" -ErrorAction SilentlyContinue
+    if ($start -eq 'Automatic' -and $key -and $key.PSObject.Properties['DelayedAutostart'] -and $key.DelayedAutostart -eq 1) { $start = 'AutomaticDelayedStart' }
+    $start
+}
+
 function Test-ServiceState([string]$Name, [string]$Status, [string]$StartType, [string]$When) {
     $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
-    Test-Check "Service $Name $Status / $StartType $When" ($svc -and "$($svc.Status)" -eq $Status -and "$($svc.StartType)" -eq $StartType) "$(if ($svc) { "$($svc.Status) / $($svc.StartType)" } else { 'missing' })" | Out-Null
+    $start = if ($svc) { Get-ServiceStartType $Name $svc } else { '' }
+    Test-Check "Service $Name $Status / $StartType $When" ($svc -and "$($svc.Status)" -eq $Status -and $start -eq $StartType) "$(if ($svc) { "$($svc.Status) / $start" } else { 'missing' })" | Out-Null
 }
 
 function Get-InstalledMsiPath {

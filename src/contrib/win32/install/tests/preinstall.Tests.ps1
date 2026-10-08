@@ -11,9 +11,10 @@
 # - pure functions: firewall and service records (de)serialisation, kept start types and what the
 #   restore and rollback steps do with them, FIREWALL_PROFILES and SSHD_PORT parsing, sshd_config
 #   Port editing, backup names, the listeners of a port in netstat output, the process-tree logic of
-#   ACTIVE_SESSIONS=abort.
+#   ACTIVE_SESSIONS=abort, the start type that .github\scripts\Test-Installer.ps1 checks.
 # - files: sshd_config is replaced by a rename in a temporary folder; the permissions of the file
-#   (protected or inherited) and a UTF-8 BOM are kept, and a previous file is put back byte for byte.
+#   (protected or inherited) and a UTF-8 BOM are kept, a previous file is put back byte for byte,
+#   and a backup that cannot be written is not left behind.
 # - read-only, on this machine: the sshd firewall rule is read through HNetCfg.FwPolicy2 and
 #   serialised; reg.exe output is parsed from an existing HKLM value. Nothing is written outside
 #   the temporary folder.
@@ -156,6 +157,12 @@ Check 'the service and port rollback phases are in the firewall script only' ($f
 $fwsave = $text.Substring($text.IndexOf("if (`$Phase -eq 'fwsave')"))
 $fwsave = $fwsave.Substring(0, $fwsave.IndexOf('exit 0'))
 Check 'fwsave records the services before it can exit' ($fwsave.Contains('(Save-Record $services $serviceValue)')) $fwsave
+# When phase port cannot write sshd_config (the file is unchanged), the record no longer names a
+# backup, which may be incomplete: phase portrollback would write it over sshd_config.
+$portFail = $text.Substring($text.IndexOf("if (`$Phase -eq 'port')"))
+$portFail = $portFail.Substring($portFail.IndexOf('try { Write-ConfigText $cfg $new $backup } catch {'))
+$portFail = $portFail.Substring(0, $portFail.IndexOf('exit 0'))
+Check 'phase port: a failed write removes the backup name from the record' ($portFail.Contains('if (-not $created) { Remove-Record $portValue }')) $portFail
 
 # ---------------------------------------------------------------- load the functions
 . $Script -Phase functions
@@ -391,6 +398,21 @@ try {
     Same 'Write-ConfigBytes: the previous bytes are back exactly' ([BitConverter]::ToString([byte[]]$prev)) ([BitConverter]::ToString([IO.File]::ReadAllBytes($cfg5)))
     Same 'Write-ConfigBytes: the permissions of the live file are kept' $before ([IO.File]::GetAccessControl($cfg5).GetSecurityDescriptorSddlForm('Access'))
     Check 'Write-ConfigBytes: no other file left' (@(Get-ChildItem -LiteralPath $tmp -Filter 'restore_config*').Count -eq 1) ((@(Get-ChildItem -LiteralPath $tmp -Filter 'restore_config*') | ForEach-Object { $_.Name }) -join ', ')
+
+    # The backup cannot be written (its permissions, those of the live file, allow this account to
+    # read only): no empty backup is left for phase portrollback to put back over sshd_config.
+    $cfg6 = Join-Path $tmp 'readonly_config'
+    [IO.File]::WriteAllText($cfg6, "#Port 22`n")
+    $fs = New-Object Security.AccessControl.FileSecurity
+    $fs.SetSecurityDescriptorSddlForm('D:P(A;;FR;;;' + $me + ')', 'Access')
+    [IO.File]::SetAccessControl($cfg6, $fs)
+    $err = ''
+    try { Write-ConfigText $cfg6 "Port 2222`n" ($cfg6 + '.bak.20260926-140509') } catch { $err = $_.Exception.Message }
+    Check 'Write-ConfigText: a backup that cannot be written is reported' ($err -ne '')
+    Same 'Write-ConfigText: the live file is unchanged' "#Port 22`n" ([IO.File]::ReadAllText($cfg6))
+    Check 'Write-ConfigText: no empty or partial backup left' (@(Get-ChildItem -LiteralPath $tmp -Filter 'readonly_config*').Count -eq 1) ((@(Get-ChildItem -LiteralPath $tmp -Filter 'readonly_config*') | ForEach-Object { $_.Name }) -join ', ')
+    # Remove-Item -Force would first set the attributes, which these permissions do not allow.
+    Get-ChildItem -LiteralPath $tmp -Filter 'readonly_config*' | ForEach-Object { [IO.File]::Delete($_.FullName) }
 } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -486,6 +508,32 @@ $saved = ConvertFrom-FirewallRecord ('v1|Rule=' + $ruleName + '|LocalPorts=2222|
 $fresh = New-TestRule $ruleName 1 '22'
 $res = Set-RuleSettings (New-TestPolicy $fresh) $ruleName $saved
 Check 'a saved record applied to a re-created rule' ($res['Rules'] -eq 1 -and $fresh.LocalPorts -eq '2222' -and $fresh.Profiles -eq 2 -and $fresh.Enabled -eq $false -and $fresh.RemoteAddresses -eq '10.0.0.0/255.0.0.0')
+
+# ---------------------------------------------------------------- CI: .github\scripts\Test-Installer.ps1
+# ServiceController.StartType reports Automatic (Delayed Start) as Automatic, so the upgrade check of
+# the kept delayed start reads the service's DelayedAutostart value; here from a registry stand-in.
+if ('System.Management.Automation.Language.Parser' -as [type]) {
+    $ci = Join-Path (Split-Path -Parent $srcRoot) '.github\scripts\Test-Installer.ps1'
+    $t = $null; $e = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($ci, [ref]$t, [ref]$e)
+    $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-ServiceStartType' }, $true)
+    Check 'Test-Installer.ps1: the service checks read the start type through Get-ServiceStartType' (($fn -ne $null) -and $ast.Extent.Text.Contains('$start = if ($svc) { Get-ServiceStartType $Name $svc }'))
+    if ($fn) {
+        & {
+            function Get-ItemProperty { $values }
+            . ([scriptblock]::Create($fn.Extent.Text))
+            $auto = New-Object PSObject -Property @{ StartType = 'Automatic' }
+            $values = New-Object PSObject -Property @{ Start = 2; DelayedAutostart = 1 }
+            Same 'Get-ServiceStartType: Automatic with DelayedAutostart 1 is a delayed start' 'AutomaticDelayedStart' (Get-ServiceStartType 'sshd' $auto)
+            $values = New-Object PSObject -Property @{ Start = 2; DelayedAutostart = 0 }
+            Same 'Get-ServiceStartType: Automatic with DelayedAutostart 0' 'Automatic' (Get-ServiceStartType 'sshd' $auto)
+            $values = New-Object PSObject -Property @{ Start = 2 }
+            Same 'Get-ServiceStartType: Automatic without DelayedAutostart' 'Automatic' (Get-ServiceStartType 'sshd' $auto)
+            $values = New-Object PSObject -Property @{ Start = 4; DelayedAutostart = 1 }
+            Same 'Get-ServiceStartType: Disabled stays Disabled' 'Disabled' (Get-ServiceStartType 'sshd' (New-Object PSObject -Property @{ StartType = 'Disabled' }))
+        }
+    }
+}
 
 # ---------------------------------------------------------------- read-only, this machine
 try {
