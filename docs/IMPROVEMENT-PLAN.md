@@ -124,8 +124,8 @@ Reproduce the manager check from the repository root:
 
 Native, installer and package commands and fixture requirements are documented in
 [VALIDATION.md](VALIDATION.md). VM drivers deliberately require an explicit
-`-DisposableMachine` argument. They have been prepared and checked locally but
-have not been run against a disposable installed system in this work.
+`-DisposableMachine` argument. The manual before/after-reboot acceptance remains
+unexecuted locally. Hosted installation results are recorded below.
 
 ## Hosted verification and publication — 8 October 2026
 
@@ -143,15 +143,33 @@ and matched their staged files byte for byte. Stable `v10.5.5.0` remains latest.
 The uploaded files are local unsigned builds; the independent hosted result does
 not provide them with hosted build provenance or a cryptographic attestation.
 
-At publication, the [full product workflow](https://github.com/patnawa/openssh_server_pn/actions/runs/37737760283)
-had passed its Version and manager jobs and was still building x64, x86 and ARM64.
-Its complete native and installed-system result is pending; the deferred checks
-below are not marked passed by the manager result.
+The [full product workflow](https://github.com/patnawa/openssh_server_pn/actions/runs/37737760283)
+has now completed with **failed installer acceptance**. Native build and unit jobs
+passed for x64, x86 and ARM64. All four installer jobs (Windows Server 2022,
+Windows Server 2025, the PowerShell 2.0 lane and Windows 11 ARM64) failed the same
+three checks:
+
+- The installed manager's `--selftest` failed **6 of 210 checks**, covering
+  login-method initialization, SFTP reload, background refresh, initial dirty
+  state and cumulative `AllowUsers` display. These failures still require repair
+  and successful reruns; their cause is not established by the passing unit/GUI suite.
+- The recovery fixture did not arm: its PowerShell child could not resolve
+  `Get-FileHash`. Recovery after process termination was therefore not tested.
+- The first-run check expected MSI action return value `1` and observed `0`.
+  Separate assertions passed for opening the wizard, using the installing user's
+  identity and consuming its request; this is not evidence of a failed wizard launch.
+
+Basic installation, SSH/SFTP, key/authentication, upgrade, repair, rollback and
+uninstall checks passed. Full integration acceptance remains incomplete, so the
+published files remain unsigned testing previews. Their assets and checksums have
+not been replaced. Signing and reboot/desktop acceptance are still outstanding.
 
 ## Deferred acceptance
 
-- [ ] Elevated manager self-test, key-test and authentication/SFTP tests.
-- [ ] Full native win32compat suite with symlink privileges, plus ARM64 runtime tests.
+- [ ] Repair and rerun installed manager self-test failures; hosted key and
+  authentication/SFTP checks passed.
+- [x] Hosted native build and unit jobs passed on x64, x86 and ARM64; the local
+  unprivileged symlink limitation remains documented above.
 - [ ] MSI client-only, full install, upgrade, repair, failed-install rollback,
   uninstall and pending-file-replacement/reboot scenarios.
 - [ ] Actual SYSTEM recovery after process termination and reboot, including
