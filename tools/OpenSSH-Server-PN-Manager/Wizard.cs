@@ -21,19 +21,34 @@ namespace OpenSSHServerPNManager
         /// <summary>AllowGroups as typed ("administrators "openssh users""), or null to leave it.</summary>
         public string AllowGroups;
 
-        /// <summary>The changes in words, for the summary page and the preview.</summary>
-        public List<string> Describe(int currentPort, int currentProfiles, bool firewallExists, bool firewallEnabled = true)
+        /// <summary>The changes in words, for the summary page and the preview. addedPorts: what FirewallAdds adds to the rule.</summary>
+        public List<string> Describe(int currentPort, int currentProfiles, bool firewallExists, bool firewallEnabled = true, IList<int> addedPorts = null)
         {
             var l = new List<string>();
+            bool adds = addedPorts != null && addedPorts.Count > 0;
             if (Port != currentPort) l.Add("sshd listens on port " + Port + " instead of " + currentPort + ".");
-            if (!firewallExists || Profiles != currentProfiles || Port != currentPort || FirewallEnabled != firewallEnabled)
-                l.Add(FirewallEnabled ? "The firewall rule is enabled and allows port " + Port + " on the " + FirewallRule.ProfileText(Profiles) + " network profile(s)."
-                    : "The firewall rule is disabled; other computers cannot connect through this rule.");
+            if (!firewallExists || Profiles != currentProfiles || Port != currentPort || FirewallEnabled != firewallEnabled || adds)
+                l.Add(!FirewallEnabled ? "The firewall rule is disabled; other computers cannot connect through this rule."
+                    : addedPorts == null ? "The firewall rule is enabled and allows port " + Port + " on the " + FirewallRule.ProfileText(Profiles) + " network profile(s)."
+                    : "The firewall rule is enabled on the " + FirewallRule.ProfileText(Profiles) + " network profile(s)" + (adds ? (firewallExists ? " and also allows port " : " and allows port ") + string.Join(", ", addedPorts) : "") + ".");
             if (Login == WizardLogin.AdministratorsKeyOnly) l.Add("Administrators log in with a public key only; other accounts as before.");
             if (Login == WizardLogin.EveryoneKeyOnly) l.Add("Every account logs in with a public key only (no Windows password over SSH).");
             if (Recommended) l.Add("Recommended settings: ClientAliveInterval 300, MaxAuthTries 4, LoginGraceTime 60, RequiredRSASize 2048, LogLevel VERBOSE, keyboard-interactive off.");
             if (AllowGroups != null) l.Add(AllowGroups.Length == 0 ? "Every account may log in (AllowGroups removed)." : "Only members of " + AllowGroups + " may log in (AllowGroups).");
             return l;
+        }
+
+        /// <summary>
+        /// The ports the wizard adds to the firewall rule (it never takes one away here): those sshd uses (sshdPorts: sshd -T,
+        /// with Include files and ListenAddress ports, and the running listeners) and a port changed in the wizard, when the
+        /// rule does not allow them yet. Without verified ports from sshd (null), the wizard's port.
+        /// </summary>
+        internal static List<int> FirewallAdds(string rulePorts, int port, bool portChanged, int[] sshdPorts)
+        {
+            var need = new List<int>();
+            if (sshdPorts != null) need.AddRange(sshdPorts);
+            if (portChanged || sshdPorts == null) need.Add(port);
+            return need.Distinct().Where(p => !Firewall.Covers(rulePorts, p)).ToList();
         }
     }
 
@@ -52,12 +67,15 @@ namespace OpenSSHServerPNManager
         private readonly CheckBox _firewallEnabled, _dom, _priv, _pub, _recommended, _restrict;
         private readonly RadioButton _keep, _adminKeys, _allKeys;
         private readonly TextBox _groups;
-        private readonly Label _keysState, _summary, _keyNote;
+        private readonly Label _keysState, _summary, _keyNote, _portNote;
         private readonly Func<Task<int>> _myKeyCount;
         private readonly Func<Task> _addKey;
         private readonly Func<IWin32Window, Task<string>> _createKey;
         private bool _working;
         private readonly int _currentPort, _currentProfiles; private readonly bool _fwExists, _fwEnabled, _hadRestriction;
+        private readonly string _rulePorts;
+        /// <summary>The ports sshd uses (UseServerState), or null when they are not known.</summary>
+        private int[] _sshdPorts;
         public WizardPlan Plan;
 
         public SetupWizard(int currentPort, FirewallRule fw, string allowGroups, Func<int> myKeyCount, Action addKey, Func<IWin32Window, string> createKey)
@@ -66,7 +84,7 @@ namespace OpenSSHServerPNManager
         public SetupWizard(int currentPort, FirewallRule fw, string allowGroups, Func<Task<int>> myKeyCount, Func<Task> addKey, Func<IWin32Window, Task<string>> createKey)
         {
             _myKeyCount = myKeyCount; _addKey = addKey; _createKey = createKey; _currentPort = currentPort; _fwExists = fw != null; _hadRestriction = !string.IsNullOrEmpty(allowGroups);
-            _fwEnabled = fw != null && fw.Enabled;
+            _fwEnabled = fw != null && fw.Enabled; _rulePorts = fw == null ? null : fw.Ports;
             _currentProfiles = fw == null ? DefaultProfiles() : ((fw.Profiles & 0x7fffffff) == 0x7fffffff ? 7 : fw.Profiles & 7);
             Text = "Set up the SSH server"; StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
             MinimizeBox = MaximizeBox = false; ShowInTaskbar = false; ClientSize = new Size(Ui.Px(720), Ui.Px(470)); Font = new Font("Segoe UI", Ui.Pt(9.5f));
@@ -88,6 +106,8 @@ namespace OpenSSHServerPNManager
             portRow.Controls.Add(_port);
             portRow.Controls.Add(new Label { Text = "22 is the standard; another port only reduces the noise of scanners, it is not a protection.", AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(10, 7, 3, 3) });
             Add(p1, portRow);
+            _portNote = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(680), 0), ForeColor = Theme.Warn, Margin = new Padding(3, 0, 3, 6), Visible = false };
+            Add(p1, _portNote);
             _firewallEnabled = new CheckBox { Text = "Enable the inbound SSH firewall rule", AutoSize = true, Checked = fw == null || fw.Enabled };
             Add(p1, _firewallEnabled);
             _dom = new CheckBox { Text = "Domain networks (the domain of a domain member)", AutoSize = true, Checked = (_currentProfiles & 1) != 0 };
@@ -103,9 +123,9 @@ namespace OpenSSHServerPNManager
             _keysState = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(680), 0), Font = new Font("Segoe UI", Ui.Pt(9.5f), FontStyle.Bold), Margin = new Padding(3, 8, 3, 8) };
             Add(p2, _keysState);
             var createKeyButton = new Button { Text = "Create a key for me...", AutoSize = true, MinimumSize = new Size(Ui.Px(200), Ui.Px(32)), Margin = new Padding(3, 3, 8, 3) };
-            createKeyButton.Click += async (s, e) => await WorkAsync(async () => { var note = await _createKey(this); if (note != null) _keyNote.Text = note; await UpdateKeys(); });
+            createKeyButton.Click += async (s, e) => await WorkAsync(() => KeyActionAsync(async () => { var note = await _createKey(this); if (note != null) _keyNote.Text = note; }));
             var addKeyButton = new Button { Text = "Add my public key (.pub file)...", AutoSize = true, MinimumSize = new Size(0, Ui.Px(32)) };
-            addKeyButton.Click += async (s, e) => await WorkAsync(async () => { await _addKey(); await UpdateKeys(); });
+            addKeyButton.Click += async (s, e) => await WorkAsync(() => KeyActionAsync(_addKey));
             var keyButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
             keyButtons.Controls.Add(createKeyButton); keyButtons.Controls.Add(addKeyButton);
             Add(p2, keyButtons);
@@ -156,12 +176,34 @@ namespace OpenSSHServerPNManager
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                _keep.Checked = true; _adminKeys.Enabled = _allKeys.Enabled = false;
-                _keysState.Text = "Key authorization could not be verified: " + ex.Message; _keysState.ForeColor = Theme.Warn;
                 Log.Error("Setup wizard", ex, false);
                 if (!Program.Unattended) MessageBox.Show(this, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             finally { _working = false; if (!IsDisposed) { Enabled = true; UseWaitCursor = false; } }
+        }
+
+        /// <summary>Adds or creates a key, then reads the authorized keys again even when that failed: a wrong .pub file leaves the keys already there usable.</summary>
+        private async Task KeyActionAsync(Func<Task> action)
+        {
+            Exception failed = null;
+            try { await action(); }
+            catch (Exception ex) { failed = ex; }
+            await UpdateKeys();
+            if (failed != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failed).Throw();
+        }
+
+        /// <summary>
+        /// What sshd reports, read by the main window: the ports sshd uses for the firewall plan, and a note on the first page
+        /// when sshd -T listens on other ports than the Port line shown there (an Include file or a ListenAddress with a port).
+        /// </summary>
+        internal void UseServerState(ServerStateSnapshot state)
+        {
+            if (state == null || !state.Verified) return;
+            _sshdPorts = state.Ports;
+            if (state.ConfiguredPorts.Length == 1 && state.ConfiguredPorts[0] == _currentPort) return;
+            _portNote.Text = "sshd uses port " + string.Join(", ", state.ConfiguredPorts) + " (sshd -T). An Include file, another Port line or a ListenAddress with a port decides that, not only the port shown here (" + _currentPort +
+                             ", from sshd_config). A port changed here is written to its Port line, which sshd may then ignore or listen on in addition: change those other lines on the sshd_config (text) tab.";
+            _portNote.Visible = true;
         }
 
         /// <summary>Windows Server: every profile; Windows 10 and 11: Domain and Private (as the installer does).</summary>
@@ -183,9 +225,20 @@ namespace OpenSSHServerPNManager
 
         private async Task UpdateKeys()
         {
-            int n = await _myKeyCount();
+            int n;
+            try { n = await _myKeyCount(); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                // Without a verified count, key-only login is not offered.
+                Log.Error("Setup wizard: reading your keys", ex, false);
+                if (IsDisposed) return;
+                _keep.Checked = true; _adminKeys.Enabled = _allKeys.Enabled = false;
+                _keysState.Text = "Key authorization could not be verified: " + ex.Message; _keysState.ForeColor = Theme.Warn;
+                return;
+            }
             if (IsDisposed) return;
-            _keysState.Text = n > 0 ? n + " key(s) are authorized for " + KeyGen.LoginName() + " (you). You can log in with a key." : "No key is authorized for " + KeyGen.LoginName() + " (you) yet.";
+            _keysState.Text = n > 0 ? n + " key(s) are authorized for " + KeyGen.LoginName() + " (you). You can log in with a key." : "No usable key is authorized for " + KeyGen.LoginName() + " (you) yet.";
             _keysState.ForeColor = n > 0 ? Theme.Good : Theme.Warn;
             _adminKeys.Enabled = _allKeys.Enabled = n > 0;
             if (n == 0) _keep.Checked = true;
@@ -202,7 +255,7 @@ namespace OpenSSHServerPNManager
             if (_page == _pages.Length - 1)
             {
                 var plan = BuildPlan();
-                var l = plan.Describe(_currentPort, _currentProfiles, _fwExists, _fwEnabled);
+                var l = plan.Describe(_currentPort, _currentProfiles, _fwExists, _fwEnabled, WizardPlan.FirewallAdds(_rulePorts, plan.Port, plan.Port != _currentPort, _sshdPorts));
                 _summary.Text = l.Count == 0 ? "Nothing to change: everything stays as it is." : string.Join("\n\n", l.Select(x => "• " + x));
             }
             AcceptButton = _next;
