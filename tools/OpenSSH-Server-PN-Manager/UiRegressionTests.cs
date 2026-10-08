@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 
@@ -37,11 +39,17 @@ namespace OpenSSHServerPNManager
                     var prefix = ((int)(scale * 100)) + "-" + palette;
                     using (var form = Window(false))
                     {
-                        check(prefix + " grouped navigation and keyboard", () => Navigation(form));
+                        report.AppendLine("INFO " + prefix + " wide: " + LayoutDiagnostics(form));
+                        check(prefix + " grouped navigation and keyboard", () =>
+                        {
+                            ConstrainedLayout(form, detail => report.AppendLine("INFO " + prefix + " " + detail));
+                            Navigation(form);
+                        });
                         check(prefix + " alert footer remains visible after scrolling", () => AlertFooter(form));
                         check(prefix + " agent health contains gaps and failures", Health);
                         Capture(form, output, prefix + "-alerts");
                         check(prefix + " compact navigation", () => Compact(form));
+                        report.AppendLine("INFO " + prefix + " compact: " + LayoutDiagnostics(form));
                         check(prefix + " all-page text layout", () =>
                         {
                             var issues = form.ClippedTextForTest(); form.WaitForIdleForTest();
@@ -78,12 +86,60 @@ namespace OpenSSHServerPNManager
 
         private static MainForm Window(bool client)
         {
+            if (!Program.Unattended) throw new InvalidOperationException("Off-screen sizing requires unattended mode.");
             var form = new MainForm(client) { StartPosition = FormStartPosition.Manual, Location = new Point(-20000, -20000), ShowInTaskbar = false };
+            var size = new Size(Ui.Px(1220), Ui.Px(760));
+            form.MinimumSize = Size.Empty; form.MaximumSize = size;
             form.Show(); form.WaitForIdleForTest();
-            form.MinimumSize = Size.Empty; form.Size = new Size(Ui.Px(1220), Ui.Px(760)); form.PerformLayout(); Application.DoEvents();
+            SizeForLayout(form, size);
             Theme.Apply(form, Theme.Make(false, false));
             form.WaitForIdleForTest(); Application.DoEvents();
             return form;
+        }
+
+        private static void SizeForLayout(MainForm form, Size size)
+        {
+            if (!Program.Unattended) throw new InvalidOperationException("Off-screen sizing requires unattended mode.");
+            if (!form.IsHandleCreated) throw new InvalidOperationException("Layout sizing requires a created fixture window.");
+            // Framework Form.SetBoundsCore always clamps to the physical desktop's maximum tracking
+            // size. Set the native fixture bounds instead, with an explicit native maximum, so a
+            // small hosted desktop still renders the full layout. Never move or activate the window.
+            form.MinimumSize = Size.Empty; form.MaximumSize = size;
+            if (!SetWindowPos(form.Handle, IntPtr.Zero, 0, 0, size.Width, size.Height, 0x0002 | 0x0004 | 0x0010))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not size the off-screen UI fixture.");
+            form.PerformLayout(); Application.DoEvents();
+            if (form.Size != size) throw new Exception("Requested layout " + size + " was constrained: " + LayoutDiagnostics(form));
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
+        private static string LayoutDiagnostics(MainForm form)
+        {
+            var tree = All(form).OfType<TreeView>().Single();
+            var combo = All(form).OfType<ComboBox>().Single(c => c.AccessibleName == "Task navigation");
+            return "scale=" + Ui.Scale + ", form=" + form.Size + ", client=" + form.ClientSize + ", maximum=" + form.MaximumSize +
+                ", desktopMaxTrack=" + SystemInformation.MaxWindowTrackSize + ", sidebarVisible=" + tree.Visible +
+                ", groups=" + tree.Nodes.Count + ", pages=" + tree.Nodes.Cast<TreeNode>().Sum(n => n.Nodes.Count) +
+                ", tabs=" + form.TabCount + ", compactVisible=" + combo.Visible + ", compactItems=" + combo.Items.Count;
+        }
+
+        private static void ConstrainedLayout(MainForm form, Action<string> report)
+        {
+            var wide = new Size(Ui.Px(1220), Ui.Px(760));
+            try
+            {
+                // Reproduce the runner's clamp without changing the desktop. Resizing back must
+                // restore the real full-width navigation, including at 150% and 200% scaling.
+                form.MaximumSize = new Size(1044, 788); form.Size = wide;
+                form.PerformLayout(); Application.DoEvents();
+                report("constrained: " + LayoutDiagnostics(form));
+                if (form.Width > 1044 || All(form).OfType<TreeView>().Single().Visible ||
+                    !All(form).OfType<ComboBox>().Single(c => c.AccessibleName == "Task navigation").Visible)
+                    throw new Exception("Constrained layout did not select compact navigation: " + LayoutDiagnostics(form));
+            }
+            finally { SizeForLayout(form, wide); }
+            report("restored: " + LayoutDiagnostics(form));
         }
 
         private static IEnumerable<Control> All(Control root)
@@ -94,7 +150,7 @@ namespace OpenSSHServerPNManager
         private static void Navigation(MainForm form)
         {
             var tree = All(form).OfType<TreeView>().Single(); var tabs = All(form).OfType<ThemedTabControl>().Single();
-            if (!tree.Visible || tree.Nodes.Count != 5 || tree.Nodes.Cast<TreeNode>().Sum(n => n.Nodes.Count) != form.TabCount) throw new Exception("Missing grouped pages");
+            if (!tree.Visible || tree.Nodes.Count != 5 || tree.Nodes.Cast<TreeNode>().Sum(n => n.Nodes.Count) != form.TabCount) throw new Exception("Missing grouped pages: " + LayoutDiagnostics(form));
             if (tree.AccessibilityObject.Name != "Task navigation") throw new Exception("Navigation has no accessible name");
             foreach (var key in new[] { System.Windows.Forms.Keys.D1, System.Windows.Forms.Keys.D9 })
             {
@@ -125,10 +181,10 @@ namespace OpenSSHServerPNManager
 
         private static void Compact(MainForm form)
         {
-            form.Size = new Size(1024, 768); form.PerformLayout(); Application.DoEvents();
+            SizeForLayout(form, new Size(1024, 768));
             var tree = All(form).OfType<TreeView>().Single();
             var combo = All(form).OfType<ComboBox>().Single(c => c.AccessibleName == "Task navigation");
-            if (tree.Visible || !combo.Visible || combo.Items.Count != form.TabCount) throw new Exception("Compact task selector unavailable");
+            if (tree.Visible || !combo.Visible || combo.Items.Count != form.TabCount) throw new Exception("Compact task selector unavailable: " + LayoutDiagnostics(form));
             combo.SelectedIndex = combo.Items.Count - 1; form.WaitForIdleForTest();
             if (All(form).OfType<ThemedTabControl>().Single().SelectedTab.Text != "About") throw new Exception("Compact selection does not open its page");
         }

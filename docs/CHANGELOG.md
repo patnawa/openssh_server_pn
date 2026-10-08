@@ -1,7 +1,9 @@
 # Changelog
 
 All builds of this project, newest first. Each entry lists the source, the library versions,
-every change to the packaging, and how the result was verified. Published as GitHub releases:
+every change to the packaging, and how the result was verified. Stable GitHub releases:
+[v10.5.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.5.0) (with Manager
+2.2.1), [manager-v2.2.1](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.1),
 [v10.5.4.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.4.0) (with OpenSSH
 Server PN Manager 2.2.0, which it installs), [manager-v2.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.0),
 [manager-v2.1.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.1.0),
@@ -48,6 +50,8 @@ See [the audit](AUDIT-2026-10-08.md) and [acceptance plan](IMPROVEMENT-PLAN.md).
 - Navigation groups related tasks and adapts to narrow windows. Alert save controls
   stay visible while scrolling. Foreground operations and dialog callbacks use
   awaited completion; cancellation and window-close behavior have explicit checks.
+  Off-screen GUI tests explicitly size their windows on small hosted desktops and
+  verify compact-to-wide navigation recovery at each scale and palette.
 - Compiler and .NET reference packages are pinned by SHA-256. CI passes the tested
   manager artifact to packaging and verifies the extracted MSI payload. Source
   changes trigger integration tests. Release signing is required by tag workflows,
@@ -68,10 +72,10 @@ static checks do not establish that those scenarios passed.
 
 | Preview file | SHA-256 |
 |---|---|
-| `OpenSSH-Win64-v10.5.6.0.msi` | `E68E2359C3E852A9CB8B28C95EF505E84C15A9DCE7A5A77C53778DF39FFD8DEF` |
-| `OpenSSH-Win32-v10.5.6.0.msi` | `B49457F50EF364823FD8BCA949E79476763E814C0505FFC48D7914F5EC99DE9C` |
-| `OpenSSH-ARM64-v10.5.6.0.msi` | `19555A67F2ED7432C5C072F12D81DB8BC00440044B07A24D2B79787EB55B7F9D` |
-| `OpenSSHServerPNManager.exe` (2.3.0) | `F113F3FA434F1BE275585B7700DD00DE2E4121068E376D45713036824BA506E8` |
+| `OpenSSH-Win64-v10.5.6.0.msi` | `431C7536E1C15DCA5CBAABA72B1788194B5FD714B46790DB3E0427A31D6E6BC5` |
+| `OpenSSH-Win32-v10.5.6.0.msi` | `581849CA68B5AE52A736FE4E2CEC1913C17D657ECDCEB4843A40A4B11912EA19` |
+| `OpenSSH-ARM64-v10.5.6.0.msi` | `F2AC4A7A3E826A4E0C6957E95E3717C200277540C0334B5363F2DDA8331A3521` |
+| `OpenSSHServerPNManager.exe` (2.3.0) | `86AE48A2D5EBF97D51391A1505E04247C4FCA3A78665E82F7E5DEA75EADA25FD` |
 
 The preview releases include `SHA256SUMS.txt`. Keep the manager's `.exe.config`
 beside its executable. Use these builds only for testing until the pending

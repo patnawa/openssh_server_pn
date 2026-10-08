@@ -43,10 +43,10 @@ See the [audit](docs/AUDIT-2026-10-08.md),
 
 | Preview file | SHA-256 |
 |---|---|
-| `OpenSSH-Win64-v10.5.6.0.msi` | `E68E2359C3E852A9CB8B28C95EF505E84C15A9DCE7A5A77C53778DF39FFD8DEF` |
-| `OpenSSH-Win32-v10.5.6.0.msi` | `B49457F50EF364823FD8BCA949E79476763E814C0505FFC48D7914F5EC99DE9C` |
-| `OpenSSH-ARM64-v10.5.6.0.msi` | `19555A67F2ED7432C5C072F12D81DB8BC00440044B07A24D2B79787EB55B7F9D` |
-| `OpenSSHServerPNManager.exe` (2.3.0) | `F113F3FA434F1BE275585B7700DD00DE2E4121068E376D45713036824BA506E8` |
+| `OpenSSH-Win64-v10.5.6.0.msi` | `431C7536E1C15DCA5CBAABA72B1788194B5FD714B46790DB3E0427A31D6E6BC5` |
+| `OpenSSH-Win32-v10.5.6.0.msi` | `581849CA68B5AE52A736FE4E2CEC1913C17D657ECDCEB4843A40A4B11912EA19` |
+| `OpenSSH-ARM64-v10.5.6.0.msi` | `F2AC4A7A3E826A4E0C6957E95E3717C200277540C0334B5363F2DDA8331A3521` |
+| `OpenSSHServerPNManager.exe` (2.3.0) | `86AE48A2D5EBF97D51391A1505E04247C4FCA3A78665E82F7E5DEA75EADA25FD` |
 
 ## Stable release: 10.5.5.0 / Manager 2.2.1 (2026-09-29)
 
@@ -285,7 +285,7 @@ The full record, including what could not be tested here, is in [docs/CHANGELOG.
 | [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Windows version and architecture matrix, evidence, limitations |
 | [docs/SFTP-PERFORMANCE.md](docs/SFTP-PERFORMANCE.md) | SFTP speed: what 10.5.3.0 changed, the fastest client settings, how to measure your server |
 | [docs/BUILDING.md](docs/BUILDING.md) | Build and package from `src/` for x64, x86 and ARM64; updating OpenSSH and the libraries |
-| [docs/RELEASING.md](docs/RELEASING.md) | How a release is made: tag, CI build and tests, draft release, SBOM, attestations, optional signing |
+| [docs/RELEASING.md](docs/RELEASING.md) | How a release is made: tag, CI build and tests, draft release, SBOM, attestations, signing and preview policy |
 | [packaging/intune/README.md](packaging/intune/README.md) | Deploying with Intune or Configuration Manager: commands, detection rule, return codes |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Every build: changes and verification |
 | [docs/COMPARISON-BITVISE.md](docs/COMPARISON-BITVISE.md) | Feature audit against Bitvise SSH Server and other commercial servers |
