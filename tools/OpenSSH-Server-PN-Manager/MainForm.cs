@@ -575,7 +575,7 @@ namespace OpenSSHServerPNManager
             actions.Controls.Add(Btn("Event Viewer", (s, e) => Proc.OpenExternal("eventvwr.exe", "/c:\"" + EventLogs.LogName + "\""), 120));
             actions.Controls.Add(Btn("Add my public key", async (s, e) => await SafeAsync(QuickAddMyKey), 150));
             actions.Controls.Add(Btn("Generate missing host keys", async (s, e) => await SafeAsync(GenerateHostKeys), 200));
-            actions.Controls.Add(Btn("Connect (ssh localhost)", (s, e) => Proc.OpenUnelevated(Ssh.Exe("ssh.exe"), "-p " + (_cfg == null ? 22 : _cfg.EffectivePort) + " localhost"), 170));
+            actions.Controls.Add(Btn("Connect (ssh localhost)", (s, e) => Proc.OpenUnelevated(Ssh.Exe("ssh.exe"), "-p " + (_cfg == null ? 22 : _cfg.EffectivePort) + " localhost", true), 170));
             actions.Controls.Add(Btn("Setup wizard...", async (s, e) => await SafeAsync(RunWizard), 130));
             _tips.SetToolTip(_btnRestart, "Stops and starts sshd, which then reads sshd_config again. Connected sessions stay connected: each runs in its own sshd-session.exe process.");
             _tips.SetToolTip(actions.Controls[3], "Runs sshd -t against the live sshd_config and reports syntax errors.");
@@ -1251,7 +1251,7 @@ namespace OpenSSHServerPNManager
             {
                 state = await BgAsync("Resolving the saved server endpoints...", ServerState.Read);
                 if (!state.Verified) notChecked = "the SSH endpoints could not be verified. " + state.Error;
-                else fw = await BgAsync("Reading the firewall rule...", () => Firewall.Get());
+                else fw = await BgAsync("Reading the firewall rule...", () => Firewall.Find());
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { notChecked = "the firewall rule could not be read. " + ex.Message; }
@@ -1467,7 +1467,7 @@ namespace OpenSSHServerPNManager
             }
             try
             {
-                var fw = Firewall.Get();
+                var fw = Firewall.Find();
                 var blocked = fw == null ? ports : ports.Where(p => !Firewall.Covers(fw.Ports, p)).ToList();
                 if (fw == null) { lines.Add("There is no inbound firewall rule for sshd: other computers cannot connect."); problems = true; }
                 else if (!fw.Enabled) { lines.Add("The firewall rule for sshd is disabled: other computers cannot connect."); problems = true; }
@@ -1761,7 +1761,7 @@ namespace OpenSSHServerPNManager
         {
             if (!File.Exists(Ssh.DefaultConfigPath)) throw new Exception("sshd_config_default not found in " + Ssh.InstallDir);
             var cand = await BgAsync("Reading the default configuration and Includes...", () => SshdConfig.Load(Ssh.DefaultConfigPath)); cand.Path = Ssh.ConfigPath; cand.LoadedHash = _cfg.LoadedHash;
-            if (!Prefs.PreviewChanges && MessageBox.Show(this, "Replace sshd_config with the shipped sshd_config_default? Your current file is backed up first.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            if (!Prefs.PreviewChanges && MessageBox.Show(this, "Replace sshd_config with the shipped sshd_config_default? Your current file is backed up first.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
             var backup = await SaveConfig(cand, "Replace sshd_config with the shipped sshd_config_default: every setting and rule made here is removed.", "Replace");
             await UseConfig(await BgAsync("Reading the configuration and Includes...", () => SshdConfig.Load()));
             Status("Defaults written; backup " + (backup == null ? "none" : Path.GetFileName(backup)) + ". Restart sshd to apply.");
@@ -2667,7 +2667,7 @@ namespace OpenSSHServerPNManager
         {
             var p = SelectedPartner(); if (p == null) return;
             bool disable = !p.Disabled; int port = _cfg.EffectivePort; int ended = 0; string unended = null;
-            if (disable && MessageBox.Show(this, "Disable " + p.Name + "? It can no longer log in, and its open sessions end now. Its folder, keys and settings stay.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            if (disable && MessageBox.Show(this, "Disable " + p.Name + "? It can no longer log in, and its open sessions end now. Its folder, keys and settings stay.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
             await BgAsync((disable ? "Disabling " : "Enabling ") + p.Name + "...", () => { Partners.SetDisabled(p.Name, disable); if (disable) ended = Partners.Disconnect(p.Name, port, out unended); });
             await LoadPartners();
             _ptResult.Text = (disable ? "Disabled " + p.Name + (ended > 0 ? "; " + ended + " open session(s) ended" : "") : "Enabled " + p.Name) + "." + (unended != null ? " Not done: " + unended + "." : "");
@@ -3069,7 +3069,7 @@ namespace OpenSSHServerPNManager
             ubar.Controls.Add(Btn("Add from file...", async (s, e) => await SafeAsync(async () => await AddKeyFromFile(false)), 130));
             ubar.Controls.Add(Btn("Paste key...", async (s, e) => await SafeAsync(async () => await AddKeyFromText(false)), 110));
             ubar.Controls.Add(Btn("Remove selected", async (s, e) => await SafeAsync(async () => await RemoveKey(false)), 140));
-            ubar.Controls.Add(Btn("Fix permissions", async (s, e) => await SafeAsync(async () => { var p = CurrentUserKeysPath(); var sid = CurrentUserSid(); await BgAsync("Fixing authorized-key permissions...", () => { if (File.Exists(p)) Acl.Restrict(p, sid); }); Status("ACL set for " + p); await LoadUserKeys(); }), 130));
+            ubar.Controls.Add(Btn("Fix permissions", async (s, e) => await SafeAsync(async () => { var p = CurrentUserKeysPath(); var sid = CurrentUserSid(); await BgAsync("Fixing authorized-key permissions...", () => { if (File.Exists(p)) Keys.RestrictKeyFile(p, sid); }); Status("ACL set for " + p); await LoadUserKeys(); }), 130));
             userRoot.Controls.Add(ubar, 0, 2);
             userBox.Controls.Add(userRoot);
             split.Panel2.Controls.Add(userBox);
@@ -3585,7 +3585,8 @@ namespace OpenSSHServerPNManager
         /// </summary>
         private async Task LoadFirewallRule(bool discard)
         {
-            var fw = await BgAsync("Reading the firewall rule...", Firewall.Get);
+            // A failed query is an error, not "no rule": Apply would create a second rule or rewrite the ports.
+            var fw = await BgAsync("Reading the firewall rule...", () => Firewall.Find());
             string[] was = null, typed = null;
             if (!discard && FirewallEdited()) { was = _fwShown.Split('|'); typed = FirewallInputs().Split('|'); }
             _fwLoadedPorts = fw == null ? null : fw.Ports;
@@ -3943,7 +3944,11 @@ namespace OpenSSHServerPNManager
                 {
                     if (e.EventRecord == null) return;
                     string msg;
-                    using (e.EventRecord) { try { msg = e.EventRecord.FormatDescription(); } catch { msg = null; } }
+                    using (e.EventRecord)
+                    {
+                        try { msg = e.EventRecord.FormatDescription(); } catch { msg = null; }
+                        if (string.IsNullOrEmpty(msg)) { try { msg = EventLogs.FallbackText(e.EventRecord.Properties.Select(v => v.Value)); } catch { msg = null; } }
+                    }
                     string user; var addr = EventLogs.FailedLoginAddress(msg, out user);
                     if (addr == null) return;
                     try { BeginInvoke((Action)(() => CountFailure(addr))); } catch (InvalidOperationException) { }
@@ -4011,7 +4016,7 @@ namespace OpenSSHServerPNManager
             try
             {
                 FirewallRule fw = null; ServerStateSnapshot state = null;
-                await BgAsync("Reading the current settings...", () => { fw = Firewall.Get(); state = ServerState.Read(); });
+                await BgAsync("Reading the current settings...", () => { fw = Firewall.Find(); state = ServerState.Read(); });
                 string err; var allow = _cfg.GetCombinedArgs("AllowGroups", out err);
                 WizardPlan plan;
                 using (var w = new SetupWizard(_cfg.EffectivePort, fw, allow == null || allow.Count == 0 ? null : SshdArgs.FormatTyped(allow), async () => await BgAsync("Reading your keys...", () => MyKeyCount()), QuickAddMyKey, CreateMyKey))

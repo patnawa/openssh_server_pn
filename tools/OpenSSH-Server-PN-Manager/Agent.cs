@@ -1020,6 +1020,17 @@ namespace OpenSSHServerPNManager
             try
             {
                 bool any = false;
+                // The recovery task goes with the package; a record left pending would refuse every save after a reinstall.
+                try
+                {
+                    var pending = ConfigurationRecovery.PendingInfo(Ssh.ConfigPath);
+                    if (pending != null && !pending.Damaged)
+                    {
+                        ConfigurationRecovery.OpenForPath(Ssh.ConfigPath).Abandon(pending.Id, "the package was uninstalled");
+                        Note("a pending configuration recovery was closed: the package is being uninstalled");
+                    }
+                }
+                catch (Exception ex) { Note("could not close the pending configuration recovery: " + ex.Message); }
                 foreach (var t in new[] { WatchTask, DailyTask, ConfigurationRecovery.TaskName }) if (SystemTasks.Exists(t)) { any = true; if (!SystemTasks.Delete(t)) throw new Exception("schtasks /Delete " + t + " failed"); }
                 DeleteTaskFolder();
                 if (any) Note("OpenSSH Server PN is being uninstalled: tasks removed");
