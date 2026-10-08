@@ -4,33 +4,87 @@ How a release is made since the packages are built by GitHub Actions: what the w
 person still does, how to set up code signing, and how anyone can verify the published files. The
 manual build in [BUILDING.md](BUILDING.md) stays the reference for building on your own machine.
 
-The current testing preview is **10.5.6.0**, with **Manager 2.3.0**. It is unsigned and is not the
-latest stable release. The stable tag workflows require Authenticode signing, a timestamp, and successful
-verification of every intended executable payload. Branch and pull-request artifacts remain unsigned.
-No signed release has been produced by this implementation work. On 2026-10-08 the repository's
-Actions variable and secret lists were empty; signing still requires an owner-supplied identity.
+The current regular releases are **product 10.5.7.0** and **Manager 2.3.1**,
+published on **8 October 2026**.
+They use the owner-authorized unsigned manual process below. The separate `v*` and
+`manager-v*` tag workflows still require Authenticode signing, a timestamp and verification
+of every executable payload. Their signing gates are unchanged. Signing remains pending;
+no signed release is claimed here.
+
+Manager assets: [EXE](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/OpenSSHServerPNManager.exe)
+and [required `.exe.config`](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/OpenSSHServerPNManager.exe.config)
+(keep them together). The published files and **Manager's Latest** designation have
+been verified.
+
+### Unsigned regular releases
+
+The owner authorized regular, unsigned publication under `release-v10.5.7.0` and
+`release-manager-v2.3.1`, with **Manager 2.3.1 marked Latest**. These namespaces do not
+trigger the signed `v*` / `manager-v*` tag workflows. Publication is manual and consumes
+the exact artifacts from a successful hosted `main` branch build, rather than rebuilding
+or replacing its tested bytes. A regular/Latest label is a release-channel decision;
+it does not add a publisher signature or a cryptographic attestation.
+
+Source: [098e124](https://github.com/patnawa/openssh_server_pn/commit/098e124).
+Hosted manager checks: **164 unit tests, 49 GUI checks, 13 installer-fixture checks**.
+Manager SHA-256: `EF1B84B5A1D5D3FE63579CEB50E614795DE77C95B1090042BE044B81B3090EA3`.
+The [manager run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773127926)
+and [product run 37773128497](https://github.com/patnawa/openssh_server_pn/actions/runs/37773128497)
+completed successfully. All 14 expected product jobs passed; tag-only signing/release
+jobs were skipped as intended for a branch build. x64/x86/ARM64 build, native unit,
+crypto and configuration gates passed. All four installation lanes (Server 2022,
+Server 2025, PowerShell 2.0 and Windows 11 ARM64) passed 212/212 installed self-tests,
+actual SYSTEM process-termination recovery, wizard launch, client-only, authentication,
+SSH/SFTP and installer lifecycle checks. The release-files gate passed. Informational
+Pester: 159 passed, 0 failures, 1 ignored.
+
+The [product release](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.7.0)
+and [Manager release](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.1)
+are published regular releases (`isDraft=false`, `isPrerelease=false`) at source `098e124`.
+All 11 product and 8 Manager assets were downloaded afresh before publication and again
+publicly afterward; all 19 hashes matched the accepted staging files. Manager is Latest,
+the product is not, and GitHub's `/releases/latest` link was verified to open Manager 2.3.1.
+
+1. Select the frozen source commit and wait for every required manager, native and
+   installation job on that commit. Keep the broader informational Pester result clearly
+   separate from the required gates. The current run satisfies this prerequisite.
+2. Download `release-files` and `manager-tested` from the matching hosted run. Verify their
+   checksums, versions, compiler input record, product SBOM and equality of the standalone
+   manager with the manager extracted from each MSI. Keep the original evidence and run URLs.
+   Record the exact product MSI hashes from the verified `release-files` artifact in
+   `SHA256SUMS.txt`, the README and changelog.
+3. Create the separate `release-*` tags at the tested source commit and prepare regular
+   release drafts containing those exact artifacts. Do not dispatch a signed-tag workflow
+   against these manual tags, and do not remove signing requirements from any workflow.
+4. Explain in the release notes that the assets were built by GitHub-hosted branch CI, are
+   unsigned, and have **no cryptographic build attestation**. The run links and `build-info.json`
+   are evidence records, not signed provenance. Include `SHA256SUMS.txt` and the product SBOM.
+5. Download the draft assets into a fresh folder and verify every uploaded hash against
+   the accepted staging files before publication. Then publish both as regular releases
+   and repeat public download/hash verification.
+   Mark the Manager release Latest; leave the product release's Latest flag off so GitHub's
+   single Latest link opens the requested manager download. Record
+   the two published URLs and verify `isPrerelease=false` for both and Manager's Latest state.
+6. Replace pending fields in the README and verification record only with observed results.
+   Signing, actual reboot recovery and manual accessibility/multiple-monitor checks remain
+   pending until separately completed; process-termination recovery is not proof of reboot
+   recovery. Keep any remaining platform limitations explicit.
 
 ### Unsigned testing previews
 
-The owner requested distribution of the locally tested audit follow-up while signing and
-disposable-VM acceptance remain pending. It is available through the separate prerelease tags
+The earlier audit follow-up was published as locally tested, unsigned prereleases:
 [`preview-v10.5.6.0-r3`](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r3)
 and [`preview-manager-v2.3.0-r3`](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r3).
-These releases are explicitly **unsigned previews for testing**, marked prerelease and not latest.
-The stable product release remains 10.5.5.0. They do not establish production readiness.
+At that time product 10.5.5.0 / Manager 2.2.1 remained the regular release. The previews
+remain prereleases; their existing tags, assets and hashes are immutable. A superseded
+notice may be prepended to their release pages to link the corrected regular releases,
+while retaining the original notes below. Do not promote, relabel or replace the r3 files.
 
-Preview tags point to the source commit for the tested local artifacts and use a namespace that
-does not trigger the stable `v*` or `manager-v*` release workflows. Stable signing gates remain
-unchanged. A push of that source to `main` separately runs branch CI. Matching downloaded
-artifact hashes can provide independent verification, but do not turn local files into hosted
-builds or supply an attestation. See the [verification record](IMPROVEMENT-PLAN.md).
-Do not dispatch a stable workflow against a preview tag.
-
-Preview assets include SHA-256 checksums, compiler build metadata, local build provenance,
-validation results, and a product SBOM. Local provenance is a build record, **not** a GitHub
-cryptographic attestation. The notes list deferred VM/reboot, signing, ARM64 execution and
-desktop acceptance. Verify uploaded asset hashes after publishing. Do not replace a published
-preview's binaries with later builds; use a new preview tag for changed bytes.
+Their local provenance is a build record, not a GitHub cryptographic attestation. A later
+matching hosted hash can corroborate those bytes but does not turn a locally produced file
+into a hosted artifact. Their outstanding checks at publication remain part of that release's
+history. New bytes require a new tag. The signed `v*` and `manager-v*` workflows remain
+separate; do not dispatch them against a preview tag.
 
 ## 1. What runs where
 
@@ -50,7 +104,7 @@ The install test on each of the four machines, in this order (every `msiexec` th
 | OpenSSH Server PN Manager | the installed copy of the already-tested artifact; `--check`, `--selftest`, `--keytest`, `--authtest` must return 0 |
 | Focused E2E | Authenticated SSH command and byte-identical SFTP round trips for empty, one-byte and 64 KiB files, including spaced paths |
 | Independent recovery | Kills the process that applied unconfirmed settings; the actual SYSTEM recovery task must restore configuration, complete firewall state and working listeners |
-| Upgrade | the rule is set to port 2222 and Private only, then a package of the same build with the third version field raised by one (`10.5.7.0` for `10.5.6.0`) is installed; the rule must keep both |
+| Upgrade | the rule is set to port 2222 and Private only, then a package of the same build with the third version field raised by one (`10.5.8.0` for `10.5.7.0`) is installed; the rule must keep both |
 | Repair | `msiexec /fa`; the rule still has port 2222 and Private |
 | Rollback | a copy of the release MSI with a custom action that fails after `StartServices` (`New-FailingMsi` in `OpenSSHCI.psm1`), installed with `ALLOWDOWNGRADE=1`: `msiexec` returns 1603, the previous package is registered again with its services and files, the rule has port 2222 and Private again (the rollback action of the saved firewall record), the record is gone |
 | Downgrade | the older package without `ALLOWDOWNGRADE` must fail with 1603 and change nothing; with `ALLOWDOWNGRADE=1 SSHD_PORT=2200`, `sshd` must answer on 2200, `sshd_config` must say `Port 2200` and the rule must have port 2200 and still Private |
@@ -78,7 +132,12 @@ changes, not against the last push, so once a pull request touches `src/` every 
 contains (a documentation change included). Bundle small follow-ups, or wait for a run to finish
 before pushing. On `main` the filter applies to the push itself.
 
-## 2. Making a release
+## 2. Making a signed tag release (`v*` / `manager-v*`)
+
+These steps describe the signed workflow path. The owner-authorized unsigned regular
+`release-*` process is documented above and does not change these gates. The
+`v10.5.7.0` and `manager-v2.3.1` names below are signed-workflow examples, not the
+published `release-*` tags.
 
 1. **Merge the changes** to `main` through pull requests; `openssh.yml` must be green on the last one.
 2. **Set the version.** `FILEVERSION` and `PRODUCTVERSION` in `src/contrib/win32/openssh/version.rc`
@@ -88,8 +147,8 @@ before pushing. On `main` the filter applies to the push itself.
 3. **Tag** the commit on `main`. The tag must be `v` plus that version, or the workflow stops:
 
    ```powershell
-   git tag -a v10.5.6.0 -m "OpenSSH Server PN 10.5.6.0"
-   git push origin v10.5.6.0
+   git tag -a v10.5.7.0 -m "OpenSSH Server PN 10.5.7.0"
+   git push origin v10.5.7.0
    ```
 
 4. **Wait for `openssh.yml`.** A tag build compiles the vcpkg dependencies from their pinned source
@@ -113,20 +172,24 @@ before pushing. On `main` the filter applies to the push itself.
    and package code), so the published hashes are those of the files in the release. Put them in the
    changelog entry and the README table, and update `packaging/winget` (section 7).
 
-A manager-only tag is `manager-v2.3.0` for source `Program.AppVersion = "2.3.0"`.
+A manager-only tag is `manager-v2.3.1` for source `Program.AppVersion = "2.3.1"`.
 `manager.yml` builds, compares, tests, signs, verifies and retests the same executable, then creates a
 **draft**, not marked latest. It never publishes the committed `bin/` executable merely because its
 version matches. Review and publish the draft explicitly after all checks.
 
-## 3. Reviewing the draft
+## 3. Reviewing a signed-workflow draft
+
+The attestation commands below apply to releases that actually publish attestations.
+Unsigned manual `release-*` assets do not have them; use the run records and checksums
+described above for that channel.
 
 ```powershell
-gh release download v10.5.6.0 --repo patnawa/openssh_server_pn --dir .\review
+gh release download v10.5.7.0 --repo patnawa/openssh_server_pn --dir .\review
 cd .\review
 Get-Content SHA256SUMS.txt
 Get-ChildItem -Exclude SHA256SUMS.txt | Get-FileHash -Algorithm SHA256   # the same values, upper case
-gh attestation verify .\OpenSSH-Win64-v10.5.6.0.msi --repo patnawa/openssh_server_pn `
-    --signer-workflow patnawa/openssh_server_pn/.github/workflows/openssh.yml --source-ref refs/tags/v10.5.6.0
+gh attestation verify .\OpenSSH-Win64-v10.5.7.0.msi --repo patnawa/openssh_server_pn `
+    --signer-workflow patnawa/openssh_server_pn/.github/workflows/openssh.yml --source-ref refs/tags/v10.5.7.0
 ```
 
 Also check:
@@ -145,7 +208,7 @@ package (services come back), Windows versions other than Server 2022, Server 20
 Windows, an upgrade started from inside an SSH session, and a Kerberos login. Record in the changelog
 what ran where. The repeatable two-phase driver in [VALIDATION.md](VALIDATION.md) covers file replacement pending reboot, task recovery after reboot, and cleanup. Hosted CI does not count as proof of those reboot scenarios.
 
-## 4. Required code signing for release tags
+## 4. Required code signing for `v*` and `manager-v*` release tags
 
 Set `SIGNING_METHOD` to `trusted-signing` or `pfx` and configure its credentials before tagging.
 An empty or unrecognised value fails release tags before native packaging. Pull requests do not use
@@ -209,23 +272,26 @@ pwsh ./tools/release/New-Sbom.ps1 -File .\dist\*.msi, .\dist\OpenSSHServerPNMana
 The release job also attests the SBOM for the three MSIs (section 6), so it can be checked against them:
 
 ```powershell
-gh attestation verify .\OpenSSH-Win64-v10.5.6.0.msi --repo patnawa/openssh_server_pn --predicate-type https://cyclonedx.org/bom
+gh attestation verify .\OpenSSH-Win64-v10.5.7.0.msi --repo patnawa/openssh_server_pn --predicate-type https://cyclonedx.org/bom
 ```
 
 ## 6. Attestations
 
-For every release file the release job creates a signed [SLSA build provenance](https://slsa.dev/provenance/v1)
+This section describes the signed-tag workflows. The unsigned manual `release-*` regular
+releases and the historical locally built `preview-*` releases do not claim these attestations.
+
+For every release file on the signed-tag workflow path, the release job creates a signed [SLSA build provenance](https://slsa.dev/provenance/v1)
 attestation (`actions/attest`): the file's SHA-256, the repository, the commit, the tag and the workflow
 run that produced it. It is signed with a short-lived Sigstore certificate issued to the workflow and
 recorded in the public Sigstore transparency log, and GitHub stores it with the repository. Anyone can
 check a download with the GitHub CLI:
 
 ```powershell
-gh attestation verify .\OpenSSH-Win64-v10.5.6.0.msi --repo patnawa/openssh_server_pn
+gh attestation verify .\OpenSSH-Win64-v10.5.7.0.msi --repo patnawa/openssh_server_pn
 # stricter: only this workflow, only this tag, only GitHub-hosted runners
-gh attestation verify .\OpenSSH-Win64-v10.5.6.0.msi --repo patnawa/openssh_server_pn `
+gh attestation verify .\OpenSSH-Win64-v10.5.7.0.msi --repo patnawa/openssh_server_pn `
     --signer-workflow patnawa/openssh_server_pn/.github/workflows/openssh.yml `
-    --source-ref refs/tags/v10.5.6.0 --deny-self-hosted-runners
+    --source-ref refs/tags/v10.5.7.0 --deny-self-hosted-runners
 ```
 
 For `OpenSSHServerPNManager.exe` the attestation covers the exact fresh, signed and tested artifact
@@ -235,9 +301,10 @@ manager 1.5.0) have no attestations; their hashes are in the changelog.
 
 ## 7. After publishing
 
-- **winget.** [`packaging/winget`](../packaging/winget) has the manifests of the current release under the
-  proposed identifier `Patnawa.OpenSSHServerPN` (the winget-pkgs reviewers may ask for another). For a new
-  version, move the folder to the new version, change the version, URLs, SHA-256 and product codes, run
+- **winget.** [`packaging/winget`](../packaging/winget) retains historical manifests for 10.5.4.0 and
+  10.5.5.0 under the proposed identifier `Patnawa.OpenSSHServerPN` (reviewers may ask for another).
+  A 10.5.7.0 manifest update remains pending. For a new version, copy a version folder, update
+  the version, URLs, SHA-256 and product codes, run
   `winget validate --manifest <folder>`, and submit it to
   [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) (for example with
   `wingetcreate submit <folder>`). Not submitted yet. 10.5.1.0 is not to be submitted: its ARM64 package

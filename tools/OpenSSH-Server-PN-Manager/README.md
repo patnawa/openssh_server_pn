@@ -1,26 +1,47 @@
 # OpenSSH Server PN Manager
 
-Version **2.3.0 is an unsigned, testing-only preview** of the October audit follow-up.
-Download [preview-manager-v2.3.0-r3](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r3),
-or the [10.5.6.0 preview packages](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r3).
-Keep `OpenSSHServerPNManager.exe.config` beside the executable and compare its hash
-with `SHA256SUMS.txt`. Stable Manager 2.2.1 / product 10.5.5.0 remains unchanged;
-the previews are not marked as latest stable.
+Version **2.3.1** is the current **unsigned regular release**, published **8 October 2026**
+and marked **Latest** on GitHub.
 
-The preview was built and tested locally: **162 unit tests and 49 automated GUI
-checks passed**. It has no GitHub-hosted build provenance or artifact attestation.
-Manager executable SHA-256:
-`86AE48A2D5EBF97D51391A1505E04247C4FCA3A78665E82F7E5DEA75EADA25FD`.
+**[Download OpenSSHServerPNManager.exe](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/OpenSSHServerPNManager.exe)**
+and the **[required OpenSSHServerPNManager.exe.config](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/OpenSSHServerPNManager.exe.config)**.
+Keep both files in the same folder. [Release notes](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.1)
+and [SHA256SUMS.txt](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/SHA256SUMS.txt).
+The same manager is included in the [10.5.7.0 packages](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.7.0).
 
-It adds a normal-user client
-workspace, grouped navigation, guarded configuration and trust-file edits, persistent
-restart recovery, incremental transfer history, notification retries and agent health.
-See the [audit](../../docs/AUDIT-2026-10-08.md),
-[verification plan](../../docs/IMPROVEMENT-PLAN.md) and [changelog](../../docs/CHANGELOG.md).
-Use a disposable test machine. Elevated installer, authentication/SFTP and actual
-SYSTEM recovery after process termination/reboot remain pending, along with signing,
-ARM64 runtime execution and manual accessibility/multiple-monitor acceptance.
-The [VM validation guide](../../docs/VALIDATION.md) describes the outstanding runs.
+The release uses the exact GitHub-hosted `manager-tested` branch artifact from source
+[098e124](https://github.com/patnawa/openssh_server_pn/commit/098e124), also embedded in the
+product MSIs. Hosted validation passed **164 unit tests, 49 automated GUI checks and
+13 installer-fixture checks**; the executable matches the reviewed local build.
+SHA-256: `EF1B84B5A1D5D3FE63579CEB50E614795DE77C95B1090042BE044B81B3090EA3`.
+It is **unsigned and has no cryptographic build attestation**. Linked Actions records,
+`build-info.json` and checksums document its build origin without supplying publisher trust.
+
+The [manager run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773127926)
+and [full product run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773128497)
+passed. All native build/unit/crypto/configuration gates and all four installation lanes
+(Server 2022, Server 2025, PowerShell 2.0 and Windows 11 ARM64) succeeded. Each installed
+manager passed **212/212 self-tests**, actual SYSTEM process-termination recovery and
+wizard launch; client-only, authentication, SSH/SFTP and installer lifecycle checks passed.
+Signing, actual reboot and GUI-click recovery, other-account UAC/client identity and
+manual accessibility/multiple-monitor acceptance remain pending.
+See the [verification record](../../docs/IMPROVEMENT-PLAN.md),
+[VM validation guide](../../docs/VALIDATION.md) and [release policy](../../docs/RELEASING.md#unsigned-regular-releases).
+
+The October audit follow-up adds a normal-user client workspace, grouped navigation,
+guarded configuration and trust-file edits, persistent restart recovery, incremental
+transfer history, notification retries and agent health. Version 2.3.1 corrects the
+unattended startup and background-refresh fixtures so the installed self-tests wait
+for the loaded UI; their original assertions are retained. See the
+[audit](../../docs/AUDIT-2026-10-08.md) and [changelog](../../docs/CHANGELOG.md).
+
+The historical [Manager 2.3.0 r3 preview](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r3)
+and [10.5.6.0 r3 preview](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r3)
+remain unchanged prereleases. Their locally built manager passed 162 unit tests and
+49 GUI checks, with SHA-256
+`86AE48A2D5EBF97D51391A1505E04247C4FCA3A78665E82F7E5DEA75EADA25FD`;
+that preview had no hosted build provenance or attestation. Manager 2.2.1 / product
+10.5.5.0 are earlier regular releases, retained in the release history.
 
 <img src="icon/app-256.png" alt="OpenSSH Server PN Manager icon: a blue tile with a white key whose head is a terminal showing a >_ prompt" width="96" align="right">
 
@@ -465,15 +486,18 @@ then tests and packages those exact bytes.
 | `Theme.cs`, `Widgets.cs`, `Prefs.cs` | Colours (light, dark, high contrast), list sorting and export, preferences and text comparison |
 | `icon\render.py` | The program icon: draws every size (16 to 256 px, small sizes by hand, pixel by pixel) and writes `icon\app.ico`, which `build.ps1` builds into the executable. Needs Python 3 with Pillow; running it again gives the same file |
 
-Download the testing preview from
-[preview-manager-v2.3.0-r3](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r3),
-also included in [preview-v10.5.6.0-r3](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r3).
-Keep the executable and its `.exe.config` in one folder and verify `SHA256SUMS.txt`.
-These locally built files are unsigned and carry no hosted build provenance or attestations.
+Download [Manager 2.3.1](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.1),
+also included in [product 10.5.7.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.7.0).
+Keep the executable and its required `.exe.config` in one folder and verify the
+release's `SHA256SUMS.txt`. These are unsigned hosted branch-build artifacts, with
+no cryptographic attestation; the release notes identify their source and Actions run.
+The published downloads and Manager's Latest designation were verified on 8 October 2026.
 
-The latest stable manager remains
-[manager-v2.2.1](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.1), also installed by the
-packages of [v10.5.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.5.0).
+Earlier [Manager 2.2.1](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.1)
+and [product 10.5.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.5.0)
+remain available as historical regular releases. The `preview-*-r3` tags and files
+remain unchanged testing prereleases.
+
 Up to [manager-v1.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.6.0) and
 [v10.5.2.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.2.0), the files are
 `OpenSSHServerManager.exe` and `OpenSSHServerManager.exe.config`; from
@@ -488,7 +512,11 @@ unit and UI suites, and uploads those tested bytes as `manager-tested`. Product 
 and standalone manager releases consume that artifact, and package extraction verifies
 the included manager hashes. A tag `manager-vX.Y.Z` requires signing, verifies and retests
 the signed executable, then creates a draft release containing it, its configuration,
-build provenance and `SHA256SUMS.txt`. The checked-in binary is not the release input.
+build provenance and `SHA256SUMS.txt`. The owner-authorized unsigned regular
+`release-manager-v*` path publishes the exact green branch artifact manually, as
+documented in [RELEASING.md](../../docs/RELEASING.md#unsigned-regular-releases); it does not
+change the signed `manager-v*` workflow's requirements. The checked-in binary is not
+the release input.
 
 ## Limitations
 

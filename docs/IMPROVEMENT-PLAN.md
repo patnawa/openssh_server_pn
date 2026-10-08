@@ -1,14 +1,16 @@
 # OpenSSH Server PN improvement plan
 
 The October 2026 audit began at `1d60e71107cd8808bab4642ade9dd5ab9ea038ea`
-(10.5.5.0 / Manager 2.2.1). The implementation is now 10.5.6.0 / Manager 2.3.0,
-available as unsigned testing previews, with stable-release acceptance pending.
+(10.5.5.0 / Manager 2.2.1). The first audit implementation was distributed as
+10.5.6.0 / Manager 2.3.0 testing previews. The 10.5.7.0 / Manager 2.3.1 follow-up
+repairs their installer test failures, passed full hosted acceptance and was published
+as regular unsigned releases on 8 October 2026, with Manager marked Latest.
 See [the findings and design analysis](AUDIT-2026-10-08.md).
 
-The owner requested the full implementation, then explicitly chose to prepare the
-automated checks and leave disposable-VM runs pending. No signing identity is
-available. Checked items below mean implemented and verified within the stated
-local scope. They do not imply that deferred acceptance or release signing passed.
+The owner requested the full implementation and later authorized unsigned regular
+releases after hosted acceptance. Local manual VM/reboot runs remain deferred and
+no signing identity is available. Checked items below refer only to their stated
+local or hosted scope; they do not imply that remaining manual acceptance or signing passed.
 
 ## Correctness and recovery
 
@@ -35,8 +37,10 @@ local scope. They do not imply that deferred acceptance or release signing passe
   is unavailable; replacement preserves configuration security.
 - [x] Client-only MSI feature selection excludes server cleanup. The shared GUI resolves
   bundled client tools in custom install directories without redirecting server operations.
-- [ ] Prove actual SYSTEM-task recovery after GUI termination and reboot in a disposable VM.
-- [ ] Prove client-only install/repair/uninstall preserves a running server and SSH session.
+- [x] Actual SYSTEM-task recovery after terminating the applying fixture process passed
+  on all four hosted installation lanes; configuration, firewall and listeners were checked.
+- [ ] Exercise termination through the actual GUI confirmation flow and recovery after a real reboot.
+- [x] Client-only install/repair/uninstall preserves a running server and SSH session in all four hosted lanes.
 
 ## Architecture and GUI
 
@@ -65,22 +69,23 @@ local scope. They do not imply that deferred acceptance or release signing passe
 - [x] Pin Roslyn 4.14.0 and .NET Framework 4.5 reference packages with verified SHA-256 hashes.
 - [x] Compare independent manager builds, test the resulting executable, package those
   bytes and reject extracted-payload differences. All three local MSIs contain the same
-  tested manager executable and configuration.
+  tested manager executable and configuration (historical r3 local package evidence).
 - [x] Manager changes trigger integration workflows; required client-only, SSH/SFTP and
   process-termination checks have prepared automated drivers.
-- [x] Release-tag workflows require signing, verify intended manager/native payloads,
-  and retest signed artifacts. Unsigned branch builds remain available.
+- [x] Signed `v*` / `manager-v*` tag workflows require signing, verify intended payloads
+  and retest signed artifacts. Owner-authorized unsigned `release-*` publication uses
+  exact hosted branch artifacts and leaves those signing gates unchanged.
 - [x] Inventory upstream revisions and local patches, rationale and removal conditions.
 - [x] Maintain key-format differential/tamper tests and add seeded native config-dump
   round trips; interoperability drivers are prepared for the installed-server fixture.
 - [x] Update versions, the tested tracked manager binary, changelog, build/release,
   security and validation documentation.
-- [x] Execute the hosted manager workflow on the preview source revision; verify
-  its downloaded executable matches the local tested bytes.
-- [ ] Complete the full hosted product workflow and its native/install acceptance.
+- [x] Execute hosted manager validation on source `098e124`; its 164 unit tests, 49 GUI
+  checks and 13 installer-fixture checks pass and its executable matches the local build.
+- [x] All 14 expected jobs in product run 37773128497 passed, including the four installation lanes and release-files gate.
 - [ ] Run the signed release workflow after a signing identity is configured.
 
-## Local evidence — 8 October 2026
+## Historical local preview evidence — 10.5.6.0 / Manager 2.3.0
 
 | Check | Result and scope |
 |---|---|
@@ -127,7 +132,7 @@ Native, installer and package commands and fixture requirements are documented i
 `-DisposableMachine` argument. The manual before/after-reboot acceptance remains
 unexecuted locally. Hosted installation results are recorded below.
 
-## Hosted verification and publication — 8 October 2026
+## Historical preview verification and publication — 8 October 2026
 
 The [manager workflow](https://github.com/patnawa/openssh_server_pn/actions/runs/37737760048)
 passed on preview source commit `2f622a582dc894f683efc296b6b8fb86fa49a6d7`: **162 unit
@@ -139,7 +144,7 @@ Both unsigned prereleases are published:
 [product 10.5.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r3)
 and [Manager 2.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r3).
 All **12 product assets and 9 manager assets** were downloaded after publication
-and matched their staged files byte for byte. Stable `v10.5.5.0` remains latest.
+and matched their staged files byte for byte. At preview publication, `v10.5.5.0` was Latest.
 The uploaded files are local unsigned builds; the independent hosted result does
 not provide them with hosted build provenance or a cryptographic attestation.
 
@@ -151,8 +156,9 @@ three checks:
 
 - The installed manager's `--selftest` failed **6 of 210 checks**, covering
   login-method initialization, SFTP reload, background refresh, initial dirty
-  state and cumulative `AllowUsers` display. These failures still require repair
-  and successful reruns; their cause is not established by the passing unit/GUI suite.
+  state and cumulative `AllowUsers` display. The passing preview unit/GUI suite did
+  not establish their cause. The fixture defects are now repaired in `098e124`;
+  the failed preview run itself remains a historical failure.
 - The recovery fixture did not arm: its PowerShell child could not resolve
   `Get-FileHash`. Recovery after process termination was therefore not tested.
 - The first-run check expected MSI action return value `1` and observed `0`.
@@ -160,24 +166,78 @@ three checks:
   identity and consuming its request; this is not evidence of a failed wizard launch.
 
 Basic installation, SSH/SFTP, key/authentication, upgrade, repair, rollback and
-uninstall checks passed. Full integration acceptance remains incomplete, so the
-published files remain unsigned testing previews. Their assets and checksums have
-not been replaced. Signing and reboot/desktop acceptance are still outstanding.
+uninstall checks passed in that preview run. Its failed full integration acceptance
+remains part of the preview record. The r3 files remain unchanged unsigned testing
+previews; their assets and checksums have not been replaced.
 
-## Deferred acceptance
+## Follow-up repairs — 10.5.7.0 / Manager 2.3.1
 
-- [ ] Repair and rerun installed manager self-test failures; hosted key and
-  authentication/SFTP checks passed.
-- [x] Hosted native build and unit jobs passed on x64, x86 and ARM64; the local
-  unprivileged symlink limitation remains documented above.
-- [ ] MSI client-only, full install, upgrade, repair, failed-install rollback,
-  uninstall and pending-file-replacement/reboot scenarios.
-- [ ] Actual SYSTEM recovery after process termination and reboot, including
-  external-edit conflicts and confirmation near the deadline.
-- [ ] Client identity across elevation, physical mixed-DPI monitors and assistive technology.
-- [ ] Signed tag pipeline and signature verification with the chosen identity.
+Commit `098e124122438ae9b123af881a3897ba6487d8b4` corrects the test harness causes
+without weakening the installed behavior assertions:
 
-Use the staged before/after-reboot driver in [VALIDATION.md](VALIDATION.md) when an
-identified disposable VM is available. No experimental MSI was installed on the
-workstation and the unrelated existing VM was not used. Only unsigned testing
-prereleases are distributed; no signed stable release is claimed.
+- The window fixture dispatches the posted `Shown` event before waiting for
+  asynchronous startup. The direct background-refresh test restores a WinForms
+  context before it starts, and each fixture restores its caller's context after
+  disposal. Scratch fixtures reject attempted default-shell registry writes.
+- The recovery test's Windows PowerShell child prioritizes its own modules over
+  inherited PowerShell 7 modules before using `Get-FileHash` and related commands.
+- The wizard test recognizes asynchronous MSI scheduling results while still
+  requiring the wizard to open as the installing user and consume its request.
+
+All six original isolated window failures now pass. Two new regressions failed
+before their fixes and passed afterward. Local results are **164 unit tests,
+49 GUI checks and 13 installer-fixture checks**, with matching independent pinned
+manager builds. The [hosted manager run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773127926)
+passed the same checks and produced the exact same executable:
+
+```text
+ef1b84b5a1d5d3fe63579ceb50e614795de77c95b1090042be044b81b3090ea3
+```
+
+The [full product run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773128497)
+completed **successfully** on `098e124`: all **14 expected jobs passed**, with tag-only
+signing/release jobs skipped as intended for a branch build. x64, x86 and ARM64 builds,
+native unit tests, crypto probes and configuration round trips passed. All four installation
+lanes — Server 2022, Server 2025, PowerShell 2.0 and Windows 11 ARM64 — passed **212/212
+installed self-tests**, actual SYSTEM recovery after terminating the applying process,
+wizard launch, client-only coexistence, authentication, SSH/SFTP, upgrade, repair, rollback
+and uninstall checks. The release-files gate passed. Informational Pester: **159 passed,
+0 failures, 1 ignored**. These results close the three preview failure categories on all
+four hosts; the original failed preview run remains historical evidence.
+
+Hosted process-termination recovery does not establish the manual GUI click flow or
+recovery after an actual reboot.
+
+The exact accepted hosted artifacts from source
+`098e124122438ae9b123af881a3897ba6487d8b4` were published on **8 October 2026** as regular unsigned
+[product 10.5.7.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.7.0)
+and [Manager 2.3.1](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.1),
+with Manager marked Latest. Both regular-release flags and GitHub's Latest destination
+were verified. All 11 product and 8 Manager assets were downloaded afresh before
+publication and publicly afterward; all 19 hashes matched the accepted staging files.
+These branch artifacts have no Authenticode signature or cryptographic attestation.
+Existing r3 preview tags and assets remain unchanged; signed `v*` / `manager-v*`
+workflow gates remain unchanged too.
+
+## Remaining acceptance and publication
+
+- [x] Repair the three preview failure causes without weakening their assertions;
+  the original six isolated window cases and two new regressions pass locally.
+- [x] Verify 164 unit tests, 49 GUI checks and 13 installer-fixture checks locally
+  and in the hosted manager run, with identical manager bytes.
+- [x] Pass 212/212 installed self-tests, actual SYSTEM process-termination recovery
+  and wizard launch in all four hosted installation lanes.
+- [x] Complete ARM64 installation and every required native, client-only,
+  authentication/SSH/SFTP, installer lifecycle and release-files gate.
+- [x] Publish and verify the two regular unsigned releases, mark Manager Latest,
+  and verify all 19 asset hashes through fresh draft and public downloads.
+- [ ] Run actual GUI-click recovery and deadline/conflict/cancel scenarios manually.
+- [ ] Run pending-file-replacement and configuration recovery across a real reboot.
+- [ ] Verify another-account UAC/client identity, physical mixed-DPI monitors,
+  keyboard-only use, high contrast and screen-reader behavior.
+- [ ] Run the signed tag pipeline after a signing identity is configured.
+
+Use the before/after-reboot driver in [VALIDATION.md](VALIDATION.md) on an identified
+disposable VM. No experimental MSI was installed on the workstation and the unrelated
+existing VM was not used. Hosted acceptance and regular publication do not close these
+manual or signing items; no signed release is claimed.

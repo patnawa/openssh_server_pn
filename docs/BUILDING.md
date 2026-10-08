@@ -196,7 +196,7 @@ convenience; CI explicitly supplies the downloaded `manager-tested` artifact and
 to `bin\x86\Release` because MSBuild and WiX disagree on the folder name.
 
 ```powershell
-$repo = 'C:\src\openssh_server_pn\src'; $wix = 'C:\src\openssh_server_pn\tools\wix314\'; $ver = '10.5.6.0'
+$repo = 'C:\src\openssh_server_pn\src'; $wix = 'C:\src\openssh_server_pn\tools\wix314\'; $ver = '10.5.7.0'
 $msbuild = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
 $manager = Join-Path $env:TEMP 'manager-tested'
 & "$repo/../.github/scripts/Test-ManagerBuild.ps1" -OutDir $manager

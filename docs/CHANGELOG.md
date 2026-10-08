@@ -1,7 +1,11 @@
 # Changelog
 
 All builds of this project, newest first. Each entry lists the source, the library versions,
-every change to the packaging, and how the result was verified. Stable GitHub releases:
+every change to the packaging, and how the result was verified. The current regular
+releases are [product 10.5.7.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.7.0)
+and [Manager 2.3.1](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.1).
+Both were published on **8 October 2026**, with **Manager 2.3.1 marked Latest**.
+Earlier regular GitHub releases:
 [v10.5.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.5.0) (with Manager
 2.2.1), [manager-v2.2.1](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.1),
 [v10.5.4.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.4.0) (with OpenSSH
@@ -37,21 +41,45 @@ apart from the Windows product version resource.
 - Thirteen fast installer-fixture checks now run before the manager build in CI,
   including the original child-process failure and captured MSI log regressions.
 
-Local validation passes **164 manager unit tests and 49 GUI checks**, the original
-six isolated installed-window cases, and the installer-fixture checks. Independent pinned
-manager builds match byte for byte. The complete hosted installer matrix must
-pass before the corrected files are published as regular releases. Signing is
-still unavailable; regular release status does not supply an Authenticode signature.
+Local validation passes **164 manager unit tests, 49 GUI checks and 13 installer-fixture
+checks**, plus all six original isolated installed-window cases. Independent pinned builds
+match byte for byte. The [hosted manager run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773127926)
+passed the same checks for source `098e124122438ae9b123af881a3897ba6487d8b4`.
+Manager SHA-256: `EF1B84B5A1D5D3FE63579CEB50E614795DE77C95B1090042BE044B81B3090EA3`.
 
-## 10.5.6.0 / Manager 2.3.0 testing preview (2026-10-08)
+The [full product run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773128497)
+passed all **14 expected jobs**, with tag-only signing/release jobs intentionally skipped
+for the branch build. x64/x86/ARM64 native build, unit, crypto and configuration gates
+passed. All four installation lanes (Server 2022, Server 2025, PowerShell 2.0 and Windows 11
+ARM64) passed **212/212 installed self-tests**, actual SYSTEM process-termination recovery,
+wizard launch, client-only coexistence, authentication, SSH/SFTP, upgrade, repair, rollback
+and uninstall. The release-files gate passed. Informational Pester: **159 passed, 0 failures,
+1 ignored**.
+
+The exact accepted hosted branch artifacts were published on **8 October 2026** under
+`release-v10.5.7.0` and `release-manager-v2.3.1` as regular unsigned releases, Manager Latest.
+All 11 product and 8 Manager assets were downloaded afresh before publication and publicly
+afterward; all 19 hashes matched the accepted staging files. Both regular-release flags and
+Manager's Latest destination were verified. They have no Authenticode signature or cryptographic attestation;
+the signed `v*` / `manager-v*` workflows remain unchanged. Actual reboot recovery,
+GUI-click recovery, other-account UAC/client identity and manual accessibility/multiple-monitor
+acceptance remain pending. The r3 preview assets are retained unchanged.
+
+| Release file | SHA-256 |
+|---|---|
+| `OpenSSH-Win64-v10.5.7.0.msi` | `03659f8895cd400b0838209ae59ff0db36f2842fafe13daf80fedd3e377678a1` |
+| `OpenSSH-Win32-v10.5.7.0.msi` | `ba7eb6b3d45d8b1e4f119f7a15b30f834aeec33d1db26df2bdeb2f1a6fab8dc7` |
+| `OpenSSH-ARM64-v10.5.7.0.msi` | `ce5022c4047d70452b0c87cea167ac99585e1f53e23714b3b7f30fbc848d8beb` |
+
+## Historical 10.5.6.0 / Manager 2.3.0 testing preview (2026-10-08)
 
 October audit follow-up. OpenSSH remains 10.5p1. Available as **unsigned,
 testing-only prereleases**:
 [preview-v10.5.6.0-r3](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r3)
 and [preview-manager-v2.3.0-r3](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r3).
 The artifacts were built and tested locally; these previews have no GitHub-hosted
-build provenance or artifact attestations. Stable 10.5.5.0 / Manager 2.2.1 and its
-release records are unchanged. The preview tags are not marked as latest stable.
+build provenance or artifact attestations. At preview publication, 10.5.5.0 / Manager 2.2.1
+remained the regular release. The r3 tags, assets and historical release records remain unchanged.
 See [the audit](AUDIT-2026-10-08.md) and [acceptance plan](IMPROVEMENT-PLAN.md).
 
 - Client config and known-host edits detect external changes and use atomic writes.
@@ -87,7 +115,7 @@ See [the audit](AUDIT-2026-10-08.md) and [acceptance plan](IMPROVEMENT-PLAN.md).
   Compiler text inputs are normalized to UTF-8/LF without modifying the checkout;
   LF/no-BOM and CRLF/BOM checkouts at different paths must produce identical bytes.
 
-Local validation passed **162 manager unit tests and 49 automated GUI checks**,
+At preview publication, local validation passed **162 manager unit tests and 49 automated GUI checks**,
 native x64, x86 and ARM64 compilation, focused native parser/dumper and crypto probes,
 installer-script and extracted-package checks. The full counts and commands are
 maintained in the acceptance plan. Elevated symlink, authentication/SFTP, install/upgrade,
@@ -106,8 +134,8 @@ static checks do not establish that those scenarios passed.
 | `OpenSSHServerPNManager.exe` (2.3.0) | `86AE48A2D5EBF97D51391A1505E04247C4FCA3A78665E82F7E5DEA75EADA25FD` |
 
 The preview releases include `SHA256SUMS.txt`. Keep the manager's `.exe.config`
-beside its executable. Use these builds only for testing until the pending
-acceptance and signing gates are completed.
+beside its executable. These r3 files remain testing prereleases with their original
+acceptance record; the new regular release uses separate tags and does not relabel them.
 
 ## 10.5.5.0 / Manager 2.2.1 (2026-09-29)
 

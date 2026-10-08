@@ -1,5 +1,13 @@
 # Security policy
 
+Current regular releases: **product 10.5.7.0 / Manager 2.3.1**, unsigned.
+Manager downloads: [EXE](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/OpenSSHServerPNManager.exe)
+and [required `.exe.config`](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/OpenSSHServerPNManager.exe.config);
+keep them together and compare the release's [checksums](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/SHA256SUMS.txt).
+Both were published on **8 October 2026**, with **Manager 2.3.1 marked Latest**.
+All required hosted gates passed; fresh downloads of all 19 published assets matched
+the accepted staging-file hashes.
+
 ## Scope
 
 OpenSSH Server PN packages OpenSSH for Windows with its own installer and management console.
@@ -24,30 +32,50 @@ You can expect an acknowledgement within seven days. Fixed packages are announce
 
 ## Supported builds
 
-Only the most recent stable build listed in the README receives fixes. Older packages should be
-replaced with the newest stable one, or with an official Microsoft release. Testing previews
-have outstanding acceptance checks and do not replace the supported stable release.
+Only the most recent regular build listed in the README receives fixes. Older packages should
+be replaced with the newest regular one, or with an official Microsoft release. A regular
+release may be unsigned: consult its integrity record below and its documented acceptance
+limits. The historical testing previews retain their outstanding acceptance record and do
+not replace the current supported regular release.
 
 ## Integrity of the packages
 
-Historical packages may be unsigned; verify their release-specific `SHA256SUMS.txt` and provenance.
-The revised workflows require trusted, timestamped Authenticode signatures for stable product and manager
-tags. They build the manager twice with pinned compiler/reference archives, test the fresh executable,
-sign and retest it, and embed those same bytes in the MSIs. CAB extraction verifies payload identity
-and signatures. Branch artifacts remain unsigned. Separately marked `preview-*` prereleases
-distribute locally tested unsigned builds for evaluation, with checksums and explicit pending
-acceptance. Their local provenance records are not GitHub cryptographic attestations; see
-[the preview policy](docs/RELEASING.md#unsigned-testing-previews).
+Product **10.5.7.0** and Manager **2.3.1** use the owner-authorized, manually published
+`release-v10.5.7.0` and `release-manager-v2.3.1` regular-release channel. Their bytes come
+from the exact GitHub-hosted branch build artifacts for source
+[098e124](https://github.com/patnawa/openssh_server_pn/commit/098e124), with checksums,
+compiler metadata, run records and a product SBOM. **They are unsigned and have no
+cryptographic build attestation.** Hosted origin recorded by an Actions run is different
+from a signed attestation or Authenticode publisher trust; a regular/Latest label supplies
+neither. See [the release policy](docs/RELEASING.md#unsigned-regular-releases).
 
-Signing is implemented but not configured: repository Actions variable and secret lists were empty on
-2026-10-08. No signed release was produced as part of this work. An owner must supply a signing identity
-as described in [RELEASING.md](docs/RELEASING.md); tag workflows fail without one.
+Hosted manager validation passed 164 unit tests, 49 GUI checks and 13 installer-fixture
+checks; its SHA-256 is `EF1B84B5A1D5D3FE63579CEB50E614795DE77C95B1090042BE044B81B3090EA3`.
+The [manager run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773127926)
+and [product run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773128497)
+passed their required gates, including native build/unit/crypto/configuration checks and
+all four installation lanes. Each lane passed 212/212 installed self-tests, actual SYSTEM
+process-termination recovery and wizard checks; client-only, authentication, SSH/SFTP and
+installer lifecycle checks passed. Signing, actual reboot and GUI-click recovery,
+other-account UAC and manual accessibility/multiple-monitor acceptance remain pending.
 
-Check hashes with `Get-FileHash <file> -Algorithm SHA256`, signature status with
-`Get-AuthenticodeSignature <file>`, and provenance with
-`gh attestation verify <file> --repo patnawa/openssh_server_pn`. Provenance identifies the workflow and
-source commit; it is separate from Authenticode publisher trust. Treat any hash mismatch as a changed
-file and do not install it.
+The separate `v*` / `manager-v*` tag workflows require trusted, timestamped Authenticode
+signatures. They build the manager twice with pinned compiler/reference archives, test
+the fresh executable, sign and retest it, and embed those same bytes in the MSIs. CAB
+extraction verifies payload identity and signatures. Those signing gates are unchanged;
+the manual `release-*` namespace does not run or weaken them. An owner still needs to
+configure a signing identity as described in [RELEASING.md](docs/RELEASING.md). No signed
+release is claimed for 10.5.7.0 / 2.3.1.
+
+Historical releases have their own signature and provenance records. The locally built
+`preview-*-r3` files remain unchanged, unsigned prereleases with their original hashes;
+their local provenance records are not GitHub cryptographic attestations. Earlier regular
+releases that published attestations keep those historical records.
+
+Check hashes with `Get-FileHash <file> -Algorithm SHA256` and signature status with
+`Get-AuthenticodeSignature <file>`. For releases that actually publish attestations, use
+`gh attestation verify <file> --repo patnawa/openssh_server_pn`; this does not apply to the
+current manual unsigned assets. Treat a hash mismatch as a changed file and do not install it.
 
 ## Security design of the packages
 

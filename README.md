@@ -1,5 +1,47 @@
 # OpenSSH Server PN
 
+## Downloads: 10.5.7.0 / Manager 2.3.1
+
+Published **8 October 2026** as unsigned regular releases. **Manager 2.3.1 is Latest.**
+
+**Manager 2.3.1:** [Download the EXE](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/OpenSSHServerPNManager.exe)
+and its **[required `.exe.config` file](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/OpenSSHServerPNManager.exe.config)**.
+Save both files in the same folder. [Manager release notes](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.1)
+and [SHA256SUMS.txt](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/SHA256SUMS.txt).
+
+**Server and client packages 10.5.7.0:** [x64 MSI](https://github.com/patnawa/openssh_server_pn/releases/download/release-v10.5.7.0/OpenSSH-Win64-v10.5.7.0.msi),
+[x86 MSI](https://github.com/patnawa/openssh_server_pn/releases/download/release-v10.5.7.0/OpenSSH-Win32-v10.5.7.0.msi),
+[ARM64 MSI](https://github.com/patnawa/openssh_server_pn/releases/download/release-v10.5.7.0/OpenSSH-ARM64-v10.5.7.0.msi).
+[Product release notes](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.7.0)
+and [SHA256SUMS.txt](https://github.com/patnawa/openssh_server_pn/releases/download/release-v10.5.7.0/SHA256SUMS.txt).
+
+These are **unsigned regular releases**, assembled from the exact GitHub-hosted branch
+build artifacts for source [098e124](https://github.com/patnawa/openssh_server_pn/commit/098e124).
+They have no Authenticode publisher signature or cryptographic build attestation.
+The Actions run records, compiler metadata and checksums document their origin; compare
+download hashes with the release's `SHA256SUMS.txt`. See the
+[release policy](docs/RELEASING.md#unsigned-regular-releases).
+
+[Hosted manager validation](https://github.com/patnawa/openssh_server_pn/actions/runs/37773127926)
+passed **164 unit tests, 49 GUI checks and 13 installer-fixture checks**, with the same
+executable hash as the reviewed local build. The [full product run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773128497)
+passed all required gates: x64/x86/ARM64 builds, native unit/crypto/configuration tests,
+and all four installation lanes (Server 2022, Server 2025, PowerShell 2.0 and Windows 11
+ARM64). Each lane passed **212 installed self-tests**, actual SYSTEM process-termination
+recovery and wizard launch, alongside client-only, authentication, SSH/SFTP and installer
+lifecycle checks. Signing, actual reboot and GUI-click recovery, other-account UAC and
+manual accessibility/multiple-monitor acceptance remain pending. See the [verification record](docs/IMPROVEMENT-PLAN.md)
+and [VM validation guide](docs/VALIDATION.md).
+
+| Release file | SHA-256 |
+|---|---|
+| `OpenSSHServerPNManager.exe` (2.3.1) | `EF1B84B5A1D5D3FE63579CEB50E614795DE77C95B1090042BE044B81B3090EA3` |
+| `OpenSSH-Win64-v10.5.7.0.msi` | `03659f8895cd400b0838209ae59ff0db36f2842fafe13daf80fedd3e377678a1` |
+| `OpenSSH-Win32-v10.5.7.0.msi` | `ba7eb6b3d45d8b1e4f119f7a15b30f834aeec33d1db26df2bdeb2f1a6fab8dc7` |
+| `OpenSSH-ARM64-v10.5.7.0.msi` | `ce5022c4047d70452b0c87cea167ac99585e1f53e23714b3b7f30fbc848d8beb` |
+
+The manager extracted from each of the three MSIs matches the tested executable hash above.
+
 **OpenSSH Server PN** is an OpenSSH server and client for Windows with its own installer and a
 management console. It builds on OpenSSH 10.5p1 and the Windows port of OpenSSH, and adds an
 installer that cleans up whatever was installed before, a GUI with a setup wizard, a key-pair
@@ -18,14 +60,15 @@ you have set up keys; the manager's setup wizard switches them off for administr
 
 This project is independent: it is not affiliated with Microsoft or the OpenBSD OpenSSH project.
 
-## Testing preview: 10.5.6.0 / Manager 2.3.0 (2026-10-08)
+## Historical testing preview: 10.5.6.0 / Manager 2.3.0 (2026-10-08)
 
 Download the **unsigned, testing-only prereleases**:
 [product 10.5.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r3)
 or [Manager 2.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r3).
 Keep `OpenSSHServerPNManager.exe.config` beside the manager executable and compare
-downloads with `SHA256SUMS.txt`. Stable **10.5.5.0 / Manager 2.2.1 remains unchanged**;
-these previews are not marked as the latest stable release.
+downloads with `SHA256SUMS.txt`. At their publication, **10.5.5.0 / Manager 2.2.1**
+remained the regular release. These r3 releases remain prereleases; their tags, assets
+and hashes below are retained unchanged.
 
 The October audit follow-up adds a normal-user client workspace, conflict-checked
 configuration and trust editing, durable restart recovery, incremental transfer
@@ -35,9 +78,10 @@ and 49 automated GUI checks passed**, along with native compilation and focused
 parser, installer-script and extracted-package checks. They do not carry
 GitHub-hosted build provenance or artifact attestations.
 
-Use a disposable test machine. Elevated installation, authentication/SFTP and
-process-termination/reboot recovery acceptance remain pending, as do signing,
-ARM64 runtime execution and manual accessibility/multiple-monitor checks.
+At preview publication, elevated installation, authentication/SFTP and
+process-termination/reboot recovery acceptance were pending, as were signing,
+ARM64 runtime execution and manual accessibility/multiple-monitor checks. This is the
+historical preview record; the regular release's evidence is recorded above.
 See the [audit](docs/AUDIT-2026-10-08.md),
 [verification plan](docs/IMPROVEMENT-PLAN.md) and [VM validation guide](docs/VALIDATION.md).
 
@@ -48,7 +92,7 @@ See the [audit](docs/AUDIT-2026-10-08.md),
 | `OpenSSH-ARM64-v10.5.6.0.msi` | `F2AC4A7A3E826A4E0C6957E95E3717C200277540C0334B5363F2DDA8331A3521` |
 | `OpenSSHServerPNManager.exe` (2.3.0) | `86AE48A2D5EBF97D51391A1505E04247C4FCA3A78665E82F7E5DEA75EADA25FD` |
 
-## Stable release: 10.5.5.0 / Manager 2.2.1 (2026-09-29)
+## Previous regular release: 10.5.5.0 / Manager 2.2.1 (2026-09-29)
 
 This maintenance release fixes configuration precedence, transfer reporting, background-job
 state races, installer rollback ports, and GUI save, selection, refresh, and theme defects.
@@ -106,7 +150,7 @@ shows that a file was built by this repository's workflow. Anyone can rebuild th
 [docs/BUILDING.md](docs/BUILDING.md). Installed, the product appears as *OpenSSH Server PN* in
 *Apps & features*, and the server identifies itself as `SSH-2.0-OpenSSH_for_Windows_10.5 OpenSSH-Server-PN`.
 
-What is in this build:
+Component versions recorded for 10.5.5.0:
 
 | Component | Version | Note |
 |---|---|---|
@@ -144,7 +188,7 @@ off). Details: [docs/INSTALL.md](docs/INSTALL.md).
 
 ```powershell
 # install (elevated)
-msiexec /i .\OpenSSH-Win64-v10.5.3.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
+msiexec /i .\OpenSSH-Win64-v10.5.7.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
 
 # verify
 ssh -V                                  # OpenSSH_for_Windows_10.5p1 OpenSSH-Server-PN, LibreSSL 4.3.2
@@ -239,7 +283,7 @@ Windows Server Core is supported (silent `msiexec` install). Windows Server is x
 Win64 package there. [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) has the evidence and the
 known limitations.
 
-## Verification of this build
+## Historical verification: 10.5.4.0
 
 - The CI built the release from the tag `v10.5.4.0` (2026-09-27, run 36320527427) and ran all 767
   OpenSSH unit tests on x64, x86 and ARM64, none failed.

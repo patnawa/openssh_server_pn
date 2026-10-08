@@ -1,8 +1,30 @@
 # Disposable Windows acceptance runs
 
-These drivers accompany the unsigned **10.5.7.0 / Manager 2.3.0** testing preview. The user has deferred
-actual VM runs and has no signing identity yet. None of the VM, reboot or signature scenarios below
-is claimed as passed by adding the drivers. Do not run them on the workstation or an unidentified VM.
+These drivers target **10.5.7.0 / Manager 2.3.1** at source
+`098e124122438ae9b123af881a3897ba6487d8b4`. Use the driver checkout and artifacts from
+the same tested revision. Local manual VM/reboot acceptance remains deferred; do not
+run destructive installation scenarios on the workstation or an unidentified VM.
+
+The [hosted manager run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773127926)
+passed 164 unit tests, 49 GUI checks and 13 installer-fixture checks, matching the local
+manager bytes. [Product run 37773128497](https://github.com/patnawa/openssh_server_pn/actions/runs/37773128497)
+completed successfully: all 14 expected jobs passed, with tag-only signing/release jobs
+intentionally skipped. x64/x86/ARM64 native build/unit/crypto/configuration gates and all
+four installation lanes passed. Server 2022, Server 2025, PowerShell 2.0 and Windows 11
+ARM64 each passed 212/212 installed self-tests, actual SYSTEM process-termination recovery,
+wizard launch, client-only coexistence, authentication, SSH/SFTP, upgrade, repair, rollback
+and uninstall. The release-files gate passed; informational Pester reported 159 passed,
+0 failures and 1 ignored.
+
+Regular unsigned `release-v10.5.7.0` and `release-manager-v2.3.1` were published on
+**8 October 2026** from the exact accepted hosted artifacts, with **Manager Latest**.
+Both regular-release flags and GitHub's Latest destination were verified. All 11 product
+and 8 Manager assets were downloaded afresh before publication and publicly afterward;
+all 19 hashes matched the accepted staging files.
+Signing and cryptographic build attestations are not supplied by that publication path.
+Manual actual-reboot/pending-file-replacement acceptance, GUI-click recovery, other-account
+UAC/client identity and accessibility/multiple-monitor checks remain pending. The commands
+below describe how to exercise them; their presence is not evidence that they passed.
 
 ## Required fixture
 
@@ -16,7 +38,7 @@ is claimed as passed by adding the drivers. Do not run them on the workstation o
   path. No production keys, users, credentials, firewall rules or unrelated applications in the VM.
 - A checkout of the **same commit** as the artifacts, the release MSI for the VM architecture, and its
   upgrade-test MSI from the same CI run. Product version is `10.5.7.0`; the fixture MSI uses `10.5.8.0`
-  with the identical executable payload. Keep `manager-tested`, its hashes, and build provenance.
+  with the identical executable payload. Keep `manager-tested`, its hashes, build metadata and hosted run records.
 - No PN MSI already installed, no pending manager recovery or file-replacement transaction, and an unused state directory.
   Preserve the whole state directory and MSI logs as evidence. It contains ephemeral test private keys:
   the scripts restrict access to SYSTEM and Administrators. Dispose of the VM after collecting needed
@@ -72,7 +94,9 @@ all assertions pass. A missing checkpoint, missing result, or changed fixture is
 ```
 
 The recovery fixture uses reflection into the installed production `SaveValidated`, `Arm`, firewall
-and task APIs. It kills only the process it created. The **actual SYSTEM task and copied recovery
+and task APIs. Its Windows PowerShell child prioritizes Windows PowerShell's own modules so
+inherited PowerShell 7 paths cannot hide required commands such as `Get-FileHash`. It kills
+only the process it created. The **actual SYSTEM task and copied recovery
 runner**, not an in-process test stand-in, perform restoration.
 Before applying the fixture mutation, the driver verifies the registered task's SYSTEM principal,
 exact recovery arguments and content-addressed runner path, compares its executable/runtime-config
