@@ -66,10 +66,15 @@ namespace OpenSSHServerPNManager
                 if (!hash.ComputeHash(File.ReadAllBytes(Path)).SequenceEqual(_digest)) throw Conflict();
         }
 
+        private bool Matches(byte[] bytes)
+        {
+            using (var hash = SHA256.Create()) return hash.ComputeHash(bytes).SequenceEqual(_digest);
+        }
+
         /// <summary>Whether a file holds exactly the displayed bytes; false when it is missing or cannot be read.</summary>
         private bool Holds(string file)
         {
-            try { using (var hash = SHA256.Create()) return hash.ComputeHash(File.ReadAllBytes(file)).SequenceEqual(_digest); }
+            try { return Matches(File.ReadAllBytes(file)); }
             catch (IOException) { return false; }
             catch (UnauthorizedAccessException) { return false; }
         }
@@ -115,14 +120,26 @@ namespace OpenSSHServerPNManager
                             // ssh appends to known_hosts without the manager's lock. When it does so during the replace, the
                             // replace can stop half-way: the backup then holds the displayed file and only the temporary file
                             // holds the edit.
-                            if (Holds(Path)) throw;
+                            byte[] current = null; bool open = false;
+                            if (File.Exists(Path))
+                                try { current = File.ReadAllBytes(Path); }
+                                catch (IOException) { open = true; }
+                                catch (UnauthorizedAccessException) { open = true; }
+                            if (current != null && Matches(current)) throw;
+                            // A backup left by an earlier save is not the displayed version: only its bytes tell.
+                            bool backupHolds = Holds(backup);
+                            // A writer that keeps the file open (ssh appending a host key) blocks both the replace and the read:
+                            // the file is still there and was not replaced.
+                            if (open && !backupHolds)
+                                throw new ConfigException("Another program has " + Path + " open, so it was not replaced (" + ex.Message.Trim() + "). No changes were saved.\n\nWait until that program closes the file, then Refresh the Client tab and try again.");
                             keepTemp = true;
                             var unsaved = Path + ".unsaved";
                             try { if (File.Exists(unsaved)) File.Delete(unsaved); File.Move(temp, unsaved); }
                             catch (IOException) { unsaved = temp; }
                             catch (UnauthorizedAccessException) { unsaved = temp; }
-                            throw new ConfigException("Saving " + Path + " failed part-way (" + ex.Message.Trim() + "). Another program probably changed the file at the same moment.\n\nYour edit is kept in " + unsaved +
-                                (File.Exists(backup) ? "\nThe version you saw is kept in " + backup : "") + "\n\nCompare them with the current file, then Refresh the Client tab.");
+                            throw new ConfigException("Saving " + Path + " failed (" + ex.Message.Trim() + "). Another program changed the file at the same moment.\n\nYour edit is kept in " + unsaved +
+                                (backupHolds ? "\nThe version you saw is kept in " + backup : current != null ? "\n" + Path + " was not replaced: it holds the other program's version." : "") +
+                                "\n\nCompare your edit with the current file, then Refresh the Client tab.");
                         }
                         if (privateFile) KeyGen.EnsurePrivateKeyAcl(Path);
                         // The last check and the replace are separate steps: an append in between lands in the backup.

@@ -169,6 +169,54 @@ namespace OpenSSHServerPNManager
                 if (Directory.GetFiles(tmpDir, ".pn-client-*.tmp").Length != 0) throw new Exception("a temporary file was left behind");
                 return null;
             });
+            test("client files: a failed replace never offers a backup from an earlier save as the displayed version", () =>
+            {
+                var path = Path.Combine(tmpDir, "client-stale-backup");
+                File.WriteAllText(path + ".bak", "older\n");
+                File.WriteAllText(path, "original\n");
+                var snapshot = ClientFileSnapshot.Read(path);
+                FileStream held = null;
+                snapshot.BeforeReplace = () => { File.WriteAllText(path, "other\n"); held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read); };
+                try { snapshot.Write(new[] { "ours" }, ".bak", false); throw new Exception("the failed replace was not reported"); }
+                catch (ConfigException ex)
+                {
+                    if (!ex.Message.Contains(path + ".unsaved")) throw new Exception("the message does not name the kept edit: " + ex.Message);
+                    if (ex.Message.Contains(path + ".bak")) throw new Exception("the stale backup is offered as the displayed version: " + ex.Message);
+                }
+                finally { if (held != null) held.Dispose(); }
+                if (File.ReadAllText(path + ".bak") != "older\n" || File.ReadAllText(path) != "other\n") throw new Exception("a file other than the edit changed");
+                return null;
+            });
+            test("client files: a file another program holds open is reported as not replaced, not as a part-way save", () =>
+            {
+                var path = Path.Combine(tmpDir, "client-held-open");
+                File.WriteAllText(path + ".old", "older\n");
+                File.WriteAllText(path, "host-a ssh-ed25519 AAAA\n");
+                var snapshot = ClientFileSnapshot.Read(path);
+                FileStream writer = null;
+                // As ssh opens known_hosts to append an accepted key: write access, no delete sharing.
+                snapshot.BeforeReplace = () => { writer = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite); };
+                try { snapshot.Write(new[] { "host-a ssh-ed25519 AAAA", "host-b ssh-ed25519 BBBB" }, ".old", false); throw new Exception("the failed replace was not reported"); }
+                catch (ConfigException ex)
+                {
+                    if (!ex.Message.Contains("not replaced") || ex.Message.Contains("part-way") || ex.Message.Contains(".unsaved") || ex.Message.Contains(path + ".old")) throw new Exception("an untouched file is reported as a part-way save: " + ex.Message);
+                }
+                finally { if (writer != null) writer.Dispose(); }
+                if (File.ReadAllText(path) != "host-a ssh-ed25519 AAAA\n" || File.ReadAllText(path + ".old") != "older\n" || File.Exists(path + ".unsaved")) throw new Exception("the files changed");
+                if (Directory.GetFiles(tmpDir, ".pn-client-*.tmp").Length != 0) throw new Exception("a temporary file was left behind");
+                return null;
+            });
+            test("known hosts: an already trusted key is still a conflict when the file changed after it was displayed", () =>
+            {
+                var path = Path.Combine(tmpDir, "client-trusted-stale");
+                File.WriteAllText(path, "server ssh-ed25519 AAAA\n");
+                var snapshot = ClientFileSnapshot.Read(path);
+                File.WriteAllText(path, ""); // ssh-keygen -R server while the trust dialog is open
+                try { SshClient.AddKnownHosts(snapshot, new[] { "server ssh-ed25519 AAAA" }); throw new Exception("the removed key is reported as already present"); }
+                catch (ConfigException ex) { if (!ex.Message.Contains("changed after it was displayed")) throw new Exception("not a conflict: " + ex.Message); }
+                if (File.ReadAllText(path) != "") throw new Exception("the file was written");
+                return null;
+            });
             test("client hosts: changing the key list keeps the escaped path ssh read", () =>
             {
                 foreach (var raw in new[] { @"C:\Users\Jane\ Doe\.ssh\id", @"~/.ssh/id\ work" })

@@ -101,7 +101,8 @@ namespace OpenSSHServerPNManager
             var result = snapshot.Lines.ToList(); int added = 0;
             // A key stored under a hashed name (HashKnownHosts) is the same trust: a clear-text copy would undo the hashing.
             foreach (var line in lines) if (!result.Contains(line) && !DirectlyTrusted(known, line)) { result.Add(line); added++; }
-            if (added > 0) snapshot.Write(result, ".old", false);
+            // With nothing to write, "already trusted" still holds only if the file is the one the trust dialog showed.
+            if (added > 0) snapshot.Write(result, ".old", false); else snapshot.RequireUnchanged();
             return added;
         }
 
