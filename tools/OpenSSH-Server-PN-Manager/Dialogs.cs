@@ -131,12 +131,13 @@ namespace OpenSSHServerPNManager
         private readonly Button _browse = new Button { Text = "Browse...", AutoSize = true, MinimumSize = new Size(Ui.Px(90), Ui.Px(28)), Margin = new Padding(3, 1, 3, 2) };
         private readonly CheckBox _readOnly = new CheckBox { Text = "Download only: no upload, rename, removal or new folders", AutoSize = true, Margin = new Padding(3, 8, 3, 2) };
         private readonly List<SftpRule> _others;
+        private readonly SftpRule _existing;
         private readonly string _defaultUserFolder = Path.Combine(Path.GetPathRoot(Environment.SystemDirectory) ?? "C:\\", "SFTP") + "\\%u";
         public SftpRule Result;
 
         public SftpRuleDialog(SftpRule existing, List<SftpRule> others)
         {
-            _others = others ?? new List<SftpRule>();
+            _others = others ?? new List<SftpRule>(); _existing = existing;
             Text = existing == null ? "Add an SFTP-only account or group" : "SFTP-only " + existing.Kind.ToLowerInvariant() + " " + existing.Name;
             StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
             MinimizeBox = MaximizeBox = false; ShowInTaskbar = false; AutoSize = true; AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -223,7 +224,10 @@ namespace OpenSSHServerPNManager
                 if (ferr != null) { MessageBox.Show(this, ferr, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); _folder.Focus(); return; }
             }
             if (_others.Any(o => o.IsGroup == group && o.Name == name)) { MessageBox.Show(this, "There is already a rule for " + (group ? "group " : "user ") + name + ".", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-            Result = new SftpRule { IsGroup = group, Name = name, Folder = folder, ReadOnly = _readOnly.Checked };
+            // The dialog does not edit AuthorizedKeysFile (the partner rules' admin-managed keys); the same rule keeps it.
+            // Dropping it would make sshd ignore every partner key after the next restart.
+            bool sameRule = _existing != null && _existing.IsGroup == group && _existing.Name == name;
+            Result = new SftpRule { IsGroup = group, Name = name, Folder = folder, ReadOnly = _readOnly.Checked, KeysFile = sameRule ? _existing.KeysFile : null };
             DialogResult = DialogResult.OK;
         }
     }
@@ -484,7 +488,7 @@ namespace OpenSSHServerPNManager
             unblock.Click += (s, e) => Guard(Unblock);
             _sources.KeyDown += async (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete || (e.Control && e.KeyCode == System.Windows.Forms.Keys.B)) { e.Handled = true; await GuardAsync(Block); } };
             _blocked.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Guard(Unblock); } };
-            Load += (s, e) => FillBlocked();
+            Load += (s, e) => Guard(FillBlocked);
             FormClosing += (s, e) => { if (_actionRunning) e.Cancel = true; };
         }
 

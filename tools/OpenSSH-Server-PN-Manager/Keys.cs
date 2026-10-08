@@ -45,13 +45,35 @@ namespace OpenSSHServerPNManager
         // Key type names: ssh-rsa, ssh-ed25519, ssh-dss, ecdsa-sha2-nistp*, the sk- (FIDO) and webauthn- variants, certificates
         // (-cert-v01@openssh.com) and the post-quantum ssh-mldsa44-ed25519@openssh.com introduced with OpenSSH 10.5.
         private const string TypePattern = @"(?:webauthn-)?(?:sk-)?(?:ssh-[a-z0-9-]+?|ecdsa-sha2-nistp\d+)(?:-cert-v01)?(?:@openssh\.com)?";
-        private static readonly Regex KeyLine = new Regex(@"(?:^|\s)(" + TypePattern + @")\s+([A-Za-z0-9+/=]+)(?:\s+(.*))?$");
-        private static readonly Regex KeyLineLoose = new Regex(@"(?:^|\s)" + TypePattern + @"\s+[A-Za-z0-9+/=]{20,}");
+        private static readonly Regex KeyAt = new Regex(@"\G(" + TypePattern + @")[ \t]+([A-Za-z0-9+/=]+)(?:\s+(.*))?$");
+
+        /// <summary>
+        /// The key of an authorized_keys line, found as sshd finds it (auth2-pubkeyfile.c): a key at the start of the line, or
+        /// else one options field followed by the key. The options field ends at the first space or tab outside double quotes,
+        /// so a key type inside an option (command="exec ssh-agent bash") is never taken for the key.
+        /// </summary>
+        private static Match KeyLine(string line)
+        {
+            line = line ?? "";
+            int start = 0;
+            while (start < line.Length && (line[start] == ' ' || line[start] == '\t')) start++;
+            var m = KeyAt.Match(line, start);
+            if (m.Success) return m;
+            int i = start; bool quoted = false;
+            for (; i < line.Length && (quoted || (line[i] != ' ' && line[i] != '\t')); i++)
+            {
+                if (line[i] == '\\' && i + 1 < line.Length && line[i + 1] == '"') i++;
+                else if (line[i] == '"') quoted = !quoted;
+            }
+            if (quoted || i == start) return Match.Empty; // sshd refuses an unterminated quote
+            while (i < line.Length && (line[i] == ' ' || line[i] == '\t')) i++;
+            return KeyAt.Match(line, i);
+        }
 
         public static KeyEntry Parse(string line)
         {
             var e = new KeyEntry { Line = line };
-            var m = KeyLine.Match(line);
+            var m = KeyLine(line);
             if (m.Success)
             {
                 e.Type = m.Groups[1].Value; e.Comment = m.Groups[3].Value.Trim();
@@ -65,7 +87,7 @@ namespace OpenSSHServerPNManager
         /// <summary>The base64 key material of a public key line (ignores options and comment), or the whole line when unparsable.</summary>
         public static string Blob(string line)
         {
-            var m = KeyLine.Match(line ?? "");
+            var m = KeyLine(line);
             return m.Success ? m.Groups[2].Value : (line ?? "").Trim();
         }
 
@@ -74,7 +96,7 @@ namespace OpenSSHServerPNManager
 
         public static string Fingerprint(string keyLine)
         {
-            var m0 = KeyLine.Match(keyLine ?? "");
+            var m0 = KeyLine(keyLine);
             var cacheKey = m0.Success ? m0.Groups[1].Value + " " + m0.Groups[2].Value : null;
             if (cacheKey != null) lock (FingerprintCache) { string fp; if (FingerprintCache.TryGetValue(cacheKey, out fp)) return fp; }
             var tmp = Path.Combine(Path.GetTempPath(), "key." + Guid.NewGuid().ToString("N") + ".pub");
@@ -93,14 +115,30 @@ namespace OpenSSHServerPNManager
 
         public static bool LooksLikePublicKey(string line)
         {
-            return KeyLineLoose.IsMatch((line ?? "").Trim());
+            var m = KeyLine((line ?? "").Trim());
+            return m.Success && m.Groups[2].Value.Length >= 20;
         }
 
         public static void Write(string path, IEnumerable<string> lines, SecurityIdentifier ownerSid)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             if (File.Exists(path)) File.Copy(path, path + ".bak", true);
-            File.WriteAllText(path, string.Join("\n", lines) + "\n", new UTF8Encoding(false));
+            // Replaced in one rename: a full disk or a killed process must not leave a truncated file that refuses every key.
+            // The original owner is not copied (another account's SID needs SeRestorePrivilege); the ACL and owner rules
+            // below are the ones every write applies anyway.
+            var tmp = path + ".new-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                using (var stream = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+                {
+                    var bytes = new UTF8Encoding(false).GetBytes(string.Join("\n", lines) + "\n");
+                    stream.Write(bytes, 0, bytes.Length); stream.Flush(true);
+                }
+                Acl.Restrict(tmp, ownerSid);
+                Acl.EnsureOwner(tmp, ownerSid);
+                ConfigurationTransaction.RenameReplacing(tmp, path);
+            }
+            finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch { } }
             Acl.Restrict(path, ownerSid);
             // sshd also checks the owner (w32-sshfileperm.c): the account itself, SYSTEM or Administrators. A file created by an
             // elevated administrator whose objects are owned by the account (not the Administrators group) would be refused.

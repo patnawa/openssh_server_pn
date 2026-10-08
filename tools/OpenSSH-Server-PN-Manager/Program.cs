@@ -93,9 +93,31 @@ namespace OpenSSHServerPNManager
             FreeConsole();
         }
 
+        /// <summary>
+        /// Dates are written as yyyy-MM-dd everywhere: lists, logs, e-mails, file names. Under a culture with another calendar
+        /// (th-TH counts in the Buddhist era: 2569 for 2026) the window and alerts showed 2569 next to logs and reports in 2026.
+        /// The culture's names and formats stay; only its calendar becomes the Gregorian one it offers.
+        /// </summary>
+        internal static void UseGregorianCalendar()
+        {
+            try
+            {
+                var current = System.Globalization.CultureInfo.CurrentCulture;
+                if (current.Calendar is System.Globalization.GregorianCalendar) return;
+                var gregorian = current.OptionalCalendars.OfType<System.Globalization.GregorianCalendar>().FirstOrDefault();
+                if (gregorian == null) return;
+                var culture = (System.Globalization.CultureInfo)current.Clone();
+                culture.DateTimeFormat.Calendar = gregorian;
+                System.Globalization.CultureInfo.DefaultThreadCurrentCulture = culture;
+                Thread.CurrentThread.CurrentCulture = culture;
+            }
+            catch (Exception ex) { Log.Error("Could not switch to the Gregorian calendar", ex, false); }
+        }
+
         [STAThread]
         private static int Main(string[] args)
         {
+            UseGregorianCalendar();
             // SSH_ASKPASS helper for the key generator: ssh-keygen and ssh run this program with the prompt as argument
             // and read the answer from standard output. The answer comes from an environment variable that the
             // generator sets only for its own child processes, so a passphrase never appears on a command line

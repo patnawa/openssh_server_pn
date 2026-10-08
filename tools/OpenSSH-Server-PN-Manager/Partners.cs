@@ -150,7 +150,7 @@ namespace OpenSSHServerPNManager
             SftpConfig.Apply(cand, true, true, sftpRules);
             var authRules = AuthRules(g);
             authRules.AddRange(AuthConfig.Read(cand).Rules.Where(r => !(r.IsGroup && names.Contains(r.Name))));
-            AuthConfig.Apply(cand, AuthConfig.Read(cand).Global, authRules);
+            AuthConfig.Apply(cand, null, authRules); // the rules only: never rewrite the login methods of every account
             string err;
             var allowGroups = cand.GetCombinedArgs("AllowGroups", out err);
             if (allowGroups != null && allowGroups.Count > 0)
@@ -190,6 +190,8 @@ namespace OpenSSHServerPNManager
             if (!Regex.IsMatch(name, @"^[A-Za-z0-9][A-Za-z0-9._-]*$") || name.EndsWith(".")) return "Use letters, digits, - _ and . only, starting with a letter or digit (the name also names the partner's folder).";
             if (Regex.IsMatch(name, @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|\z)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
                 return "Choose another account name: Windows reserves this name for a device, so it cannot name the partner's folder or keys file.";
+            // sshd reads partner_keys\%u: name.bak is where the keys of the partner "name" are backed up.
+            if (name.EndsWith(".bak", StringComparison.OrdinalIgnoreCase)) return "Choose a name that does not end in .bak: the keys folder keeps each partner's previous keys under that name.";
             if (Acl.SidOfAccount(name) != null) return "An account or group called " + name + " exists already on this computer.";
             return null;
         }
@@ -238,6 +240,12 @@ namespace OpenSSHServerPNManager
             var e = NameError(name);
             if (e != null) throw new ConfigException(e);
             if ((fullName ?? "").Any(char.IsControl) || (company ?? "").Any(char.IsControl) || (fullName ?? "").Length > 100 || (company ?? "").Length > 100) throw new ConfigException("The name and the company are one line each, at most 100 characters.");
+            // A new account cannot own an existing folder: it holds someone else's files, and its owner and other entries in
+            // its permissions would keep control over what the partner exchanges.
+            var folder = FolderOf(root, name);
+            if (Directory.Exists(folder) || File.Exists(folder))
+                throw new ConfigException("The folder " + folder + " exists already (left by an earlier partner of that name, or made by someone else). A new partner starts with a new, empty folder: move or rename the existing one first, or choose another name.");
+            RetireKeys(g, name);
             var password = NewPassword();
             LocalAccounts.CreateUser(name, password, company ?? "", LocalAccounts.UF_DONT_EXPIRE_PASSWD | LocalAccounts.UF_PASSWD_CANT_CHANGE);
             try
@@ -330,7 +338,8 @@ namespace OpenSSHServerPNManager
             var r = LocalAccounts.DeleteUser(p.Name, p.Sid, out note);
             if (r != null) problems.Add(r);
             try { LocalAccounts.HideFromSignIn(p.Name, false); } catch { }
-            try { var k = KeysFileOf(g, p.Name); if (File.Exists(k)) File.Delete(k); } catch (Exception ex) { problems.Add("keys file: " + ex.Message); }
+            foreach (var k in new[] { KeysFileOf(g, p.Name), KeysFileOf(g, p.Name) + ".bak" })
+                try { if (File.Exists(k)) File.Delete(k); } catch (Exception ex) { problems.Add("keys file: " + ex.Message); }
             if (deleteFolder)
             {
                 var folder = FolderOf(root, p.Name);
@@ -338,6 +347,25 @@ namespace OpenSSHServerPNManager
             }
             Log.Info("SFTP partner deleted: " + p.Name + (deleteFolder ? ", with its folder" : ", its folder kept"));
             return problems.Count == 0 ? null : string.Join("; ", problems);
+        }
+
+        /// <summary>
+        /// Moves keys left in partner_keys by an earlier account of this name (deleted outside this program, or a backup that
+        /// earlier versions kept on delete) to partner_keys.removed, which sshd never reads: they must not log in to the new account.
+        /// </summary>
+        internal static void RetireKeys(PartnerGroups g, string name)
+        {
+            var stale = new[] { KeysFileOf(g, name), KeysFileOf(g, name) + ".bak" }.Where(File.Exists).ToList();
+            if (stale.Count == 0) return;
+            var removed = g.KeysDir.TrimEnd('\\') + ".removed";
+            if (!Directory.Exists(removed)) Acl.CreatePrivateFolder(removed);
+            var stamp = DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", System.Globalization.CultureInfo.InvariantCulture);
+            foreach (var f in stale)
+            {
+                var target = Path.Combine(removed, Path.GetFileName(f) + "." + stamp);
+                File.Move(f, target);
+                Log.Info("Keys left by an earlier account " + name + " moved from " + f + " to " + target);
+            }
         }
 
         /// <summary>The partner's authorized keys file, created with the permissions of administrators_authorized_keys when needed.</summary>

@@ -2255,16 +2255,23 @@ namespace OpenSSHServerPNManager
 
         private async Task NewPartner()
         {
-            var g = PartnerGroups.Default; var root = PartnerRoot; string password = null, name = null; bool keyOnly = false;
+            var g = PartnerGroups.Default; var root = PartnerRoot; string password = null, name = null, notifyError = null; bool keyOnly = false;
             using (var d = new PartnerDialog(null, root, "", async dlg =>
             {
                 var n = dlg.AccountName; var fn = dlg.FullName; var co = dlg.Company; var ro = dlg.ReadOnlyAccess; var ko = dlg.KeyOnly; var last = dlg.LastDay; var notify = dlg.Notify;
-                password = await BgAsync("Creating the partner " + n + "...", () => { var pw = Partners.Create(g, root, n, fn, co, ro, ko, last); SetPartnerNotify(n, notify); return pw; });
+                password = await BgAsync("Creating the partner " + n + "...", () =>
+                {
+                    var pw = Partners.Create(g, root, n, fn, co, ro, ko, last);
+                    // The account exists from here on: a failed notify setting must not lose the only copy of its password.
+                    try { SetPartnerNotify(n, notify); } catch (Exception ex) { notifyError = ex.Message; Log.Error("Saving the upload notifications of " + n, ex, false); }
+                    return pw;
+                });
                 name = n; keyOnly = ko;
             }))
                 if (d.ShowDialog(this) != DialogResult.OK) return;
             await LoadPartners(); FillPartners(name);
-            _ptResult.Text = "Created the partner " + name + ", with the folder " + Partners.FolderOf(root, name) + "."; _ptResult.ForeColor = Green;
+            _ptResult.Text = "Created the partner " + name + ", with the folder " + Partners.FolderOf(root, name) + "." + (notifyError == null ? "" : " Its upload notifications were not saved: " + notifyError);
+            _ptResult.ForeColor = notifyError == null ? Green : Orange;
             Status("Partner created: " + name);
             if (keyOnly)
             {

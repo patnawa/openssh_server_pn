@@ -114,9 +114,12 @@ namespace OpenSSHServerPNManager
             {
                 case "ssh-ed25519":
                 {
-                    var pk = pub.String(); var seed = r.String();
-                    if (pk.Length != 32 || seed.Length != 32) throw new FormatException("The key file is damaged: an Ed25519 key has 32-byte keys.");
-                    var sk = seed.Concat(pk).ToArray(); w.String(pk).String(sk); Wipe(seed, sk); break;
+                    // PuTTY writes the private key as a minimal little-endian integer (put_mp_le_unsigned): one key in 256
+                    // ends in a zero byte and is stored shorter. Zeros on the right restore the 32-byte seed.
+                    var pk = pub.String(); var stored = r.String();
+                    if (pk.Length != 32 || stored.Length == 0 || stored.Length > 32) throw new FormatException("The key file is damaged: an Ed25519 key has 32-byte keys.");
+                    var seed = new byte[32]; Buffer.BlockCopy(stored, 0, seed, 0, stored.Length);
+                    var sk = seed.Concat(pk).ToArray(); w.String(pk).String(sk); Wipe(stored, seed, sk); break;
                 }
                 case "ssh-rsa":
                 {

@@ -325,8 +325,10 @@ namespace OpenSSHServerPNManager
             var l = new List<KeyValuePair<string, dynamic>>();
             foreach (var n in new[] { BlockRuleName, LegacyBlockRuleName })
             {
-                // No such rule: through dynamic, the COM error comes as FileNotFoundException (0x80070002).
-                try { dynamic r = policy.Rules.Item(n); l.Add(new KeyValuePair<string, dynamic>(n, r)); } catch (Exception ex) when (ex is COMException || ex is FileNotFoundException) { }
+                // No such rule: through dynamic, the COM error comes as FileNotFoundException (0x80070002). Any other failure
+                // is not "nothing blocked": callers rewrite the rule from this list, which would unblock every other address.
+                try { dynamic r = policy.Rules.Item(n); l.Add(new KeyValuePair<string, dynamic>(n, r)); }
+                catch (Exception ex) when (ex is FileNotFoundException || (ex is COMException && ((COMException)ex).ErrorCode == unchecked((int)0x80070002))) { }
             }
             return l;
         }
@@ -339,22 +341,18 @@ namespace OpenSSHServerPNManager
 
         /// <summary>
         /// The addresses in the block rule (empty when there is none). When both names exist (1.6.0 was started again after
-        /// 2.0.0), the addresses of both.
+        /// 2.0.0), the addresses of both. A rule that cannot be read throws: the list is written back with additions.
         /// </summary>
         public static List<string> BlockedAddresses()
         {
-            try
+            var all = new List<string>();
+            foreach (var kv in BlockRules((object)Policy()))
             {
-                var all = new List<string>();
-                foreach (var kv in BlockRules((object)Policy()))
-                {
-                    var v = (string)kv.Value.RemoteAddresses;
-                    if (string.IsNullOrEmpty(v) || v == "*") continue;
-                    all.AddRange(v.Split(',').Select(a => NormaliseAddress(a.Trim())).Where(a => a.Length > 0));
-                }
-                return all.Distinct().ToList();
+                var v = (string)kv.Value.RemoteAddresses;
+                if (string.IsNullOrEmpty(v) || v == "*") continue;
+                all.AddRange(v.Split(',').Select(a => NormaliseAddress(a.Trim())).Where(a => a.Length > 0));
             }
-            catch (COMException) { return new List<string>(); }
+            return all.Distinct().ToList();
         }
 
         /// <summary>"1.2.3.4/255.255.255.255" (how Windows stores a single address) as "1.2.3.4"; ranges and subnets stay as they are.</summary>

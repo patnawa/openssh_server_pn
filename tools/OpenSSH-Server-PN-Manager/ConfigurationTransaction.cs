@@ -143,6 +143,12 @@ namespace OpenSSHServerPNManager
         [DllImport("kernel32.dll", EntryPoint = "MoveFileExW", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool MoveFileEx(string source, string destination, uint flags);
 
+        /// <summary>Same-directory rename over the destination (or to a new name), with no copy/delete fallback.</summary>
+        internal static void RenameReplacing(string source, string destination)
+        {
+            if (!MoveFileEx(source, destination, 1 | 8)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
         private static void CopyExactSecurity(string path, FileSecurity security)
         {
             var raw = new RawSecurityDescriptor(security.GetSecurityDescriptorBinaryForm(), 0);

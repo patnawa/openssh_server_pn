@@ -421,11 +421,12 @@ namespace OpenSSHServerPNManager
         /// Match block per rule, in order, before the first other Match block so that the rules take precedence, closed by
         /// "Match all". Keyboard-interactive is switched off: OpenSSH for Windows has no keyboard-interactive back end, so it
         /// never logs anyone in, and each client attempt at it counts against MaxAuthTries. Windows passwords use the
-        /// password method.
+        /// password method. A null global leaves the settings for all accounts exactly as they are: their values may come from
+        /// an included file, which the main file's defaults must not override.
         /// </summary>
         public static void Apply(SshdConfig cfg, AuthMethods global, List<AuthRule> rules)
         {
-            if (!global.AnyEnabled) throw new ConfigException("Tick at least one login method for all accounts.");
+            if (global != null && !global.AnyEnabled) throw new ConfigException("Tick at least one login method for all accounts.");
             if (rules != null)
             {
                 var keys = new HashSet<string>(StringComparer.Ordinal);
@@ -442,14 +443,17 @@ namespace OpenSSHServerPNManager
             var problem = FindRegion(cfg.Lines, out begin, out end);
             if (problem == null && begin >= 0) ParseRules(cfg.Lines, begin, end, out problem); // never overwrite lines added by hand
             if (rules != null && problem != null) throw new ConfigException("The rules section in sshd_config was changed by hand (" + problem + "). Correct or delete it on the sshd_config (text) tab first.");
-            cfg.Set("PasswordAuthentication", YesNo(global.Password));
-            cfg.Set("PubkeyAuthentication", YesNo(global.PublicKey));
-            cfg.Set("GSSAPIAuthentication", YesNo(global.Kerberos));
-            cfg.Set("KbdInteractiveAuthentication", "no");
-            cfg.Set("ChallengeResponseAuthentication", ""); // older name of KbdInteractiveAuthentication; its first value would win
-            var req = global.Requirement;
-            // Removing the directive restores the default only when no included file can supply a requirement.
-            cfg.Set("AuthenticationMethods", req == "any" && cfg.GetAll("Include").Count == 0 ? "" : req);
+            if (global != null)
+            {
+                cfg.Set("PasswordAuthentication", YesNo(global.Password));
+                cfg.Set("PubkeyAuthentication", YesNo(global.PublicKey));
+                cfg.Set("GSSAPIAuthentication", YesNo(global.Kerberos));
+                cfg.Set("KbdInteractiveAuthentication", "no");
+                cfg.Set("ChallengeResponseAuthentication", ""); // older name of KbdInteractiveAuthentication; its first value would win
+                var req = global.Requirement;
+                // Removing the directive restores the default only when no included file can supply a requirement.
+                cfg.Set("AuthenticationMethods", req == "any" && cfg.GetAll("Include").Count == 0 ? "" : req);
+            }
             if (rules == null) return;
             FindRegion(cfg.Lines, out begin, out end); // Set may have inserted lines above the section
             int at;

@@ -51,6 +51,7 @@ namespace OpenSSHServerPNManager
                 AuditGuiTests.Run(test, tmpDir);
                 ClientRegressionTests.Run(test, tmpDir);
                 AuditInfrastructureTests.Run(test, tmpDir);
+                FollowUpAuditTests.Run(test, tmpDir);
                 if (!unitOnly) Server(test, tmpDir);
             }
             finally { try { Directory.Delete(tmpDir, true); } catch { } }

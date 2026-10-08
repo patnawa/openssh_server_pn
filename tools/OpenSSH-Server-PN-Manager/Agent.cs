@@ -176,7 +176,12 @@ namespace OpenSSHServerPNManager
         {
             var d = new Dictionary<string, string>(StringComparer.Ordinal);
             if (!File.Exists(path)) return d;
-            foreach (var line in File.ReadAllLines(path, Encoding.UTF8))
+            // Shared for delete: a window reading the state must never make the agent's File.Replace fail.
+            var lines = new List<string>();
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var reader = new StreamReader(stream, Encoding.UTF8))
+            { string l; while ((l = reader.ReadLine()) != null) lines.Add(l); }
+            foreach (var line in lines)
             {
                 if (line.StartsWith("#")) continue;
                 int i = line.IndexOf('=');
@@ -430,7 +435,7 @@ namespace OpenSSHServerPNManager
             {
                 var events = EventLogs.Read(20000, null, TimeSpan.FromMinutes(s.BlockWindowMinutes), CancellationToken.None);
                 var sources = EventLogs.FailedByAddress(events);
-                if (s.AutoBlock) Block(s, st, sources, now, server);
+                if (s.AutoBlock) Block(s, st, sources, now, server, checkpoint);
                 int total = sources.Sum(x => x.Count);
                 if (s.OnFailedLogins && total >= s.BurstThreshold && (st.LastBurstAlert == null || st.LastBurstAlert < now.AddMinutes(-15)))
                 {
@@ -529,16 +534,25 @@ namespace OpenSSHServerPNManager
         /// that does not exist twice, so such attempts count double): 1 hour, then 24 hours, then 7 days within a week. Never
         /// blocked: the allow list, this computer, and addresses with a logged-in session.
         /// </summary>
-        internal static List<string> Block(AlertSettings s, AgentState st, List<EventLogs.FailedSource> sources, DateTime now, string server)
+        internal static List<string> Block(AlertSettings s, AgentState st, List<EventLogs.FailedSource> sources, DateTime now, string server, Action checkpoint = null)
         {
             var state = ServerState.Read(); HashSet<string> peers; string error;
             if (!state.Verified)
             { st.BlockingDegradedReason = state.Error; Note("automatic blocking deferred: " + state.Error); return new List<string>(); }
             if (!Sessions.TryLoggedInAddresses(state.Ports, out peers, out error))
             { st.BlockingDegradedReason = error; Note("automatic blocking deferred: " + error); return new List<string>(); }
+            HashSet<string> already;
+            try { already = new HashSet<string>(Firewall.BlockedAddresses()); }
+            catch (Exception ex)
+            {
+                // Rewriting the rule from an unread list would unblock every address already in it.
+                st.BlockingDegradedReason = "the firewall block rule could not be read: " + ex.Message;
+                Note("automatic blocking deferred: " + st.BlockingDegradedReason); return new List<string>();
+            }
             st.BlockingDegradedReason = "";
-            var already = new HashSet<string>(Firewall.BlockedAddresses());
             var add = PlanBlocks(s, st, sources, now, already, peers, a => Firewall.NotBlockable(a) != null);
+            // Record the schedule before the firewall changes: a block whose expiry was never saved would last for ever.
+            if (add.Count > 0 && checkpoint != null) checkpoint();
             foreach (var a in add)
             {
                 var x = sources.First(y => y.Address == a); var b = st.Blocks[a];
@@ -731,9 +745,17 @@ namespace OpenSSHServerPNManager
                 }
                 return quoted.Append('"').ToString();
             };
-            if (!teams) return "{\"text\":" + j(subject + "\n" + text) + "}";
+            // Account and file names in alerts are chosen by whoever connects. Alerts use no markup of their own, so none of the
+            // text may act as markup: no labelled links ("[Unlock](https://...)"), no Slack links or <!channel>, no @mentions.
+            Func<string, string> inert = v =>
+            {
+                v = Regex.Replace(v ?? "", @"\]\s*\(", "]​(");
+                v = Regex.Replace(v, @"@(?=\w)", "@​");
+                return teams ? v : v.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+            };
+            if (!teams) return "{\"text\":" + j(inert(subject + "\n" + text)) + "}";
             return "{\"type\":\"message\",\"attachments\":[{\"contentType\":\"application/vnd.microsoft.card.adaptive\",\"content\":{\"$schema\":\"http://adaptivecards.io/schemas/adaptive-card.json\",\"type\":\"AdaptiveCard\",\"version\":\"1.4\",\"body\":[" +
-                   "{\"type\":\"TextBlock\",\"size\":\"Medium\",\"weight\":\"Bolder\",\"wrap\":true,\"text\":" + j(subject) + "},{\"type\":\"TextBlock\",\"wrap\":true,\"text\":" + j(text.Replace("\n", "\n\n")) + "}]}}]}";
+                   "{\"type\":\"TextBlock\",\"size\":\"Medium\",\"weight\":\"Bolder\",\"wrap\":true,\"text\":" + j(inert(subject)) + "},{\"type\":\"TextBlock\",\"wrap\":true,\"text\":" + j(inert(text).Replace("\n", "\n\n")) + "}]}}]}";
         }
 
         public static void SendHook(AlertSettings s, string subject, string text, string notificationId = null)
@@ -743,6 +765,8 @@ namespace OpenSSHServerPNManager
             var req = (HttpWebRequest)WebRequest.Create(s.Webhook);
             req.Method = "POST"; req.ContentType = "application/json; charset=utf-8"; req.Timeout = 30000; req.ContentLength = body.Length; req.ServicePoint.Expect100Continue = false; req.UserAgent = Program.AppName + "/" + Program.AppVersion;
             req.ReadWriteTimeout = 30000;
+            // A redirect would repeat the request as a GET without the alert, and its 200 would count as delivered.
+            req.AllowAutoRedirect = false;
             if (notificationId != null) req.Headers.Add("Idempotency-Key", notificationId);
             using (var rs = req.GetRequestStream()) rs.Write(body, 0, body.Length);
             using (var resp = (HttpWebResponse)req.GetResponse()) { if ((int)resp.StatusCode >= 300) throw new WebException("HTTP " + (int)resp.StatusCode); }

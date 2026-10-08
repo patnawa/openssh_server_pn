@@ -371,19 +371,50 @@ namespace OpenSSHServerPNManager
         public static void Start(string name, int timeoutSec = 40)
         {
             using (var sc = new ServiceController(name))
-            {
-                if (sc.Status == ServiceControllerStatus.Running) return;
-                if (sc.Status != ServiceControllerStatus.StartPending) sc.Start();
-                sc.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(timeoutSec));
-            }
+                MoveTo(name, ServiceControllerStatus.Running, () => { sc.Refresh(); return sc.Status; }, sc.Start, TimeSpan.FromSeconds(timeoutSec), Thread.Sleep);
         }
         public static void Stop(string name, int timeoutSec = 40)
         {
             using (var sc = new ServiceController(name))
+                MoveTo(name, ServiceControllerStatus.Stopped, () => { sc.Refresh(); return sc.Status; }, sc.Stop, TimeSpan.FromSeconds(timeoutSec), Thread.Sleep);
+        }
+
+        /// <summary>
+        /// Brings a service to Running or Stopped. The status can change between reading it and sending the control (the SCM's
+        /// recovery actions, another console, a service that ends by itself); the SCM then refuses the control, which is only a
+        /// failure if the service is not already on its way to the target. A transition in the other direction is allowed to
+        /// finish first, since the SCM refuses controls during it. A service that stops again while starting fails at once
+        /// rather than at the end of the timeout.
+        /// </summary>
+        internal static void MoveTo(string name, ServiceControllerStatus target, Func<ServiceControllerStatus> status, Action control, TimeSpan timeout, Action<int> sleep)
+        {
+            bool starting = target == ServiceControllerStatus.Running;
+            var pending = starting ? ServiceControllerStatus.StartPending : ServiceControllerStatus.StopPending;
+            var opposite = starting ? ServiceControllerStatus.StopPending : ServiceControllerStatus.StartPending;
+            var sw = Stopwatch.StartNew();
+            Action<string> waitOrFail = what =>
             {
-                if (sc.Status == ServiceControllerStatus.Stopped) return;
-                if (sc.Status != ServiceControllerStatus.StopPending) sc.Stop();
-                sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(timeoutSec));
+                if (sw.Elapsed > timeout) throw new System.ServiceProcess.TimeoutException("The " + name + " service did not " + what + " within " + (int)timeout.TotalSeconds + " seconds.");
+                sleep(250);
+            };
+            var s = status();
+            while (s == opposite) { waitOrFail("finish " + (starting ? "stopping" : "starting")); s = status(); }
+            if (s == target) return;
+            if (s != pending)
+            {
+                try { control(); }
+                catch (InvalidOperationException)
+                {
+                    s = status();
+                    if (s != target && s != pending) throw;
+                }
+            }
+            // The SCM reports StartPending before an accepted start returns, so Stopped from here on means the service ended.
+            while ((s = status()) != target)
+            {
+                if (starting && s == ServiceControllerStatus.Stopped)
+                    throw new InvalidOperationException("The " + name + " service stopped while starting. See the Logs tab or the OpenSSH event log.");
+                waitOrFail(starting ? "start" : "stop");
             }
         }
         public static void Restart(string name) { Stop(name); Start(name); }
