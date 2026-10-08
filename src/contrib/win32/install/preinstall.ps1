@@ -33,24 +33,36 @@
 # session (an sshd-session.exe process that does not host this installation).
 #
 # The sshd firewall rule belongs to the package: removing the old package deletes it, and the new
-# package creates it again with port 22. These phases carry its settings over an upgrade or repair:
+# package creates it again with port 22. The services are registered again as Automatic and
+# started. These phases carry the settings over an install, upgrade or repair of the server or the
+# agent, in HKLM\SOFTWARE\OpenSSH\Installer (only SYSTEM and Administrators can write there):
 # - "fwsave" (deferred, LocalSystem; InstallExecute runs it before RemoveExistingProducts removes the
-#   old package): when a package of this series is installed (-Previous keep), writes the rule's
-#   LocalPorts, Profiles, Enabled and RemoteAddresses to HKLM\SOFTWARE\OpenSSH\Installer, value
-#   FirewallRule (only SYSTEM and Administrators can write there). The rule of OpenSSH Server PN Manager
-#   counts when the package's rule is missing. On a fresh install, only removes a leftover record.
+#   old package): writes value Services: which of sshd and ssh-agent are running, and the start type
+#   to keep, Disabled or Automatic (Delayed Start), of a service registered from this package's
+#   folder (not of the in-box registration: its defaults are Windows', not an administrator's).
+#   With the Server feature, when a package of this series is installed (-Previous keep), writes
+#   value FirewallRule: the rule's LocalPorts, Profiles, Enabled and RemoteAddresses. The rule of
+#   OpenSSH Server PN Manager counts when the package's rule is missing. Otherwise only removes a
+#   leftover firewall record.
 # - "firewall" (deferred, after the WiX firewall action has created the rule): sets the rule.
 #   Networks: FIREWALL_PROFILES, else the saved ones, else all on Windows Server and Domain plus
 #   Private on client editions. Ports: SSHD_PORT, else the saved ones, else 22 (server.wxs). Enabled
 #   and remote addresses: the saved ones, else enabled and any.
+# - "svcrestore" (deferred, after StartServices and phase "port"): sets the kept start types again
+#   and stops a service that is Disabled again.
 # - "fwcommit" (commit): deletes the record once the installation has succeeded.
-# - "fwrollback" (rollback): when the installation fails, puts the saved settings back on the rule
-#   that the rolled-back old package re-created, and deletes the record.
+# - "fwrollback" (rollback, the last step of a rollback): when the installation fails, puts the
+#   saved settings back on the rule that the rolled-back old package re-created, sets the kept start
+#   types again, starts the services that were running and deletes the record. Phase "pre" stops
+#   them before Windows Installer's StopServices, whose rollback therefore does not start them.
 #
 # Phase "port" (deferred, after StartServices, only with SSHD_PORT): sets "Port <n>" in
-# %ProgramData%\ssh\sshd_config (the previous file is kept as sshd_config.bak.<date>-<time>) and
-# restarts sshd. If sshd then does not listen on the port, the previous file is put back, sshd is
-# restarted and the firewall rule gets the port(s) of that file.
+# %ProgramData%\ssh\sshd_config (the previous file is kept as sshd_config.bak.<date>-<time>, named in
+# value SshdConfig) and restarts sshd. If then not the sshd service alone listens on the port (it
+# could not bind, or another program holds the port), the previous file is put back, sshd is
+# restarted and the firewall rule gets the port(s) of that file. Phase "portrollback" (rollback)
+# puts the previous file back when the installation fails, or deletes sshd_config when phase
+# "port" created it.
 #
 # Except "sessions", every phase is best effort: the script exits 0 and never blocks an
 # installation (product.wxs also ignores its exit code).
@@ -225,6 +237,9 @@ $ruleName = 'OpenSSH SSH Server Preview (sshd)'   # FirewallException/@Name in s
 $altRuleName = 'OpenSSH SSH Server (sshd)'        # OpenSSH Server PN Manager creates this one when the rule above is missing
 $recordKey = 'HKLM\SOFTWARE\OpenSSH\Installer'
 $recordValue = 'FirewallRule'
+$serviceValue = 'Services'
+$portValue = 'SshdConfig'
+$sc = Join-Path $sysNative 'sc.exe'
 # First lines of the sections that OpenSSH Server PN Manager keeps in sshd_config before its Match blocks
 # (Auth.cs and Sftp.cs, RegionBegin), and that of its earlier name, OpenSSH Server Manager (1.6.0 and older).
 $managerRegions = @(
@@ -340,19 +355,94 @@ function Set-RuleSettings($policy, [string]$name, $s) {
     return $result
 }
 
-function Get-SavedRecord {
-    $out = & $reg query $recordKey /v $recordValue 2>&1 | Out-String
+function Get-SavedRecord([string]$value = $recordValue) {
+    $out = & $reg query $recordKey /v $value 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) { return '' }
-    foreach ($line in ($out -split "`r?`n")) { if ($line -match ('^\s*' + $recordValue + '\s+REG_SZ\s+(.*?)\s*$')) { return $matches[1] } }
+    foreach ($line in ($out -split "`r?`n")) { if ($line -match ('^\s*' + $value + '\s+REG_SZ\s+(.*?)\s*$')) { return $matches[1] } }
     return ''
 }
 
-function Save-Record([string]$text) {
-    & $reg add $recordKey /v $recordValue /t REG_SZ /d $text /f 2>&1 | Out-Null
+function Save-Record([string]$text, [string]$value = $recordValue) {
+    & $reg add $recordKey /v $value /t REG_SZ /d $text /f 2>&1 | Out-Null
     return ($LASTEXITCODE -eq 0)
 }
 
-function Remove-Record { & $reg delete $recordKey /f 2>&1 | Out-Null }
+# Deletes one value of the record; '' deletes the whole key (commit and rollback, which end the
+# installation that wrote it).
+function Remove-Record([string]$value = $recordValue) {
+    if ($value -eq '') { & $reg delete $recordKey /f 2>&1 | Out-Null } else { & $reg delete $recordKey /v $value /f 2>&1 | Out-Null }
+}
+
+# ---- services ----
+
+# The start type an upgrade or repair keeps, from the values Start and DelayedAutostart of the
+# service: 'disabled', 'delayed-auto' (sc.exe names), or '' (Automatic and Manual come from the package).
+function Get-KeptStart($start, $delayed) {
+    if ([string]$start -eq '4') { return 'disabled' }
+    if ([string]$start -eq '2' -and [string]$delayed -eq '1') { return 'delayed-auto' }
+    return ''
+}
+
+# Running, Start, Delayed and Dir (the ImagePath without quotes and its last part: the folder of the
+# binary when no argument has a backslash) of sshd and ssh-agent; a service that is not registered
+# is left out.
+function Get-ServiceStates {
+    $states = @{}
+    foreach ($name in @('sshd', 'ssh-agent')) {
+        $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+        if (-not $svc) { continue }
+        $k = Get-ItemProperty -Path ('HKLM:\SYSTEM\CurrentControlSet\Services\' + $name) -ErrorAction SilentlyContinue
+        $states[$name] = @{ Running = ($svc.Status -eq 'Running'); Start = $k.Start; Delayed = $k.DelayedAutostart; Dir = ([string]$k.ImagePath -replace '"|\\[^\\]*$', '') }
+    }
+    return $states
+}
+
+# The record is one line: v1|<name>=<1 running, 0 not>,<start type to keep>|... A start type is
+# kept only for a service whose binary is in $dir, the install folder.
+function ConvertTo-ServiceRecord($states, [string]$dir) {
+    $text = 'v1'
+    foreach ($name in @('sshd', 'ssh-agent')) {
+        $s = $states[$name]
+        if (-not $s) { continue }
+        $keep = ''
+        if ([string]::Equals([string]$s.Dir, $dir, [StringComparison]::OrdinalIgnoreCase)) { $keep = Get-KeptStart $s.Start $s.Delayed }
+        $run = '0'
+        if ($s.Running) { $run = '1' }
+        $text += '|' + $name + '=' + $run + ',' + $keep
+    }
+    return $text
+}
+
+# Name -> @{ Running; Start }; only the two service names and known start types are accepted.
+function ConvertFrom-ServiceRecord([string]$text) {
+    $r = @{}
+    $parts = @($text.Trim() -split '\|')
+    if ($parts[0] -ne 'v1') { return $r }
+    foreach ($part in $parts) {
+        if ($part -match '^(sshd|ssh-agent)=([01]),(disabled|delayed-auto)?$') { $r[$matches[1]] = @{ Running = ($matches[2] -eq '1'); Start = [string]$matches[3] } }
+    }
+    return $r
+}
+
+# What phases svcrestore and fwrollback do, for the saved record and the current states: 'config
+# <name> <start type>' when the re-registration replaced the kept start type, 'stop <name>' for a
+# running service that is Disabled again and, with $rollback, 'start <name>' for a service that ran
+# before and is stopped now.
+function Get-ServicePlan($saved, $states, [bool]$rollback) {
+    $plan = @()
+    foreach ($name in @('sshd', 'ssh-agent')) {
+        $r = $saved[$name]
+        $s = $states[$name]
+        if (-not $r -or -not $s) { continue }
+        $start = $r.Start
+        if ($start -ne '' -and (Get-KeptStart $s.Start $s.Delayed) -ne $start) {
+            $plan += ('config ' + $name + ' ' + $start)
+            if ($start -eq 'disabled' -and $s.Running) { $plan += ('stop ' + $name) }
+        }
+        if ($rollback -and $r.Running -and -not $s.Running -and $start -ne 'disabled') { $plan += ('start ' + $name) }
+    }
+    return $plan
+}
 
 # ---- sshd_config ----
 
@@ -427,55 +517,138 @@ function Get-BackupPath([string]$path, [DateTime]$now) {
     return ($b + '-' + $i)
 }
 
-function Copy-Dacl([string]$from, [string]$to) {
-    $fs = New-Object Security.AccessControl.FileSecurity
-    $fs.SetSecurityDescriptorSddlForm([IO.File]::GetAccessControl($from).GetSecurityDescriptorSddlForm('Access'), 'Access')
-    [IO.File]::SetAccessControl($to, $fs)
+# A new file (it must not exist) with the owner, group and permissions of the security descriptor
+# $sd (binary form), or only its permissions when the owner cannot be set (another account owns
+# the original); the bytes are written once the permissions are in place. When a step fails, the
+# file is deleted: an empty or partly written backup must not be taken for the previous file.
+function New-SecuredFile([string]$file, [byte[]]$sd, [byte[]]$bytes) {
+    (New-Object IO.FileStream($file, [IO.FileMode]::CreateNew)).Close()
+    try {
+        foreach ($s in @('Owner, Group, Access', 'Access')) {
+            $fs = New-Object Security.AccessControl.FileSecurity
+            $fs.SetSecurityDescriptorBinaryForm($sd, $s)
+            try { [IO.File]::SetAccessControl($file, $fs); break } catch { if ($s -eq 'Access') { throw $_ } }
+        }
+        [IO.File]::WriteAllBytes($file, $bytes)
+    } catch {
+        $err = $_
+        try { [IO.File]::Delete($file) } catch { }
+        throw $err
+    }
 }
 
-# Writes the file through a temporary file that ReplaceFile swaps in: the new file keeps the
-# permissions of the old one, which becomes $backup. Where that fails, copies the backup and
-# writes in place, which keeps the permissions as well. Returns how the file was written.
-function Write-ConfigText([string]$path, [string]$text, [string]$backup) {
-    $bytes = [IO.File]::ReadAllBytes($path)
-    $bom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
-    $enc = New-Object Text.UTF8Encoding($bom)
+# Replaces the file as OpenSSH Server PN Manager does (ConfigurationTransaction.AtomicBytes): the
+# bytes go to a temporary file in the same folder with the owner, group, permissions, attributes
+# and creation time of the live file, and a rename (MoveFileEx, replacing an existing file, through
+# Microsoft.VisualBasic in PowerShell 2.0) swaps it in. Unlike ReplaceFile, the rename does not turn
+# inherited permission entries into explicit ones (seen on Windows Server 2022). $backup, unless
+# '', becomes a copy of the previous file with the same permissions. Throws when a step fails; the
+# live file is then unchanged.
+function Write-ConfigBytes([string]$path, [byte[]]$bytes, [string]$backup) {
+    $sd = [IO.File]::GetAccessControl($path, 'Owner, Group, Access').GetSecurityDescriptorBinaryForm()
+    if ($backup -ne '') { New-SecuredFile $backup $sd ([IO.File]::ReadAllBytes($path)) }
     $tmp = $path + '.new-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
     try {
-        [IO.File]::WriteAllText($tmp, $text, $enc)
-        [IO.File]::Replace($tmp, $path, $backup)
-        return 'replaced'
+        New-SecuredFile $tmp $sd $bytes
+        [IO.File]::SetCreationTimeUtc($tmp, [IO.File]::GetCreationTimeUtc($path))
+        [IO.File]::SetAttributes($tmp, [IO.File]::GetAttributes($path))
+        Add-Type -AssemblyName Microsoft.VisualBasic
+        [Microsoft.VisualBasic.FileIO.FileSystem]::MoveFile($tmp, $path, $true)
     } finally {
         if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     }
 }
 
-# True when the sshd service runs and something listens on the port, still after 3 more seconds
-# (sshd stops by itself when it cannot bind any address).
+# Writes text in the encoding of the file (UTF-8, its byte order mark kept or left out).
+function Write-ConfigText([string]$path, [string]$text, [string]$backup) {
+    $bytes = [IO.File]::ReadAllBytes($path)
+    $bom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    $enc = New-Object Text.UTF8Encoding($bom)
+    Write-ConfigBytes $path ([byte[]]($enc.GetPreamble() + $enc.GetBytes($text))) $backup
+}
+
+# The IDs of the processes listening on TCP port $port, from the output of "netstat -ano": the rows
+# whose foreign address is 0.0.0.0:0 or [::]:0. The state column is localized and is not read.
+function Get-PortListenerPids([string]$text, [int]$port) {
+    $ids = @()
+    foreach ($l in ($text -split "`r?`n")) {
+        if ($l -match '^\s*TCP\s+\S+:([0-9]+)\s+(0\.0\.0\.0:0|\[::\]:0)\s.*\s([0-9]+)\s*$' -and [int]$matches[1] -eq $port -and $ids -notcontains [int]$matches[3]) { $ids += [int]$matches[3] }
+    }
+    return $ids
+}
+
+# True when the port has listeners and all of them are the sshd service process.
+function Test-PortOwnedBySshd($ids, [int]$sshdPid) {
+    $ids = @($ids)
+    return ($sshdPid -gt 0 -and $ids.Count -gt 0 -and @($ids | Where-Object { $_ -ne $sshdPid }).Count -eq 0)
+}
+
+# The process ID of the sshd service when it alone listens on the port, else 0.
+function Get-SshdOnPort([int]$port) {
+    $id = 0
+    if ((& $sc queryex sshd 2>&1 | Out-String) -match 'PID\s*:\s*([0-9]+)') { $id = [int]$matches[1] }
+    if (Test-PortOwnedBySshd (Get-PortListenerPids (& (Join-Path $sysNative 'netstat.exe') -ano 2>&1 | Out-String) $port) $id) { return $id }
+    return 0
+}
+
+# True when the sshd service alone listens on the port, the same process still after 3 more
+# seconds (sshd stops by itself when it cannot bind any address, and keeps running when it binds
+# only some: another program on the port then serves part of the connections).
 function Test-SshdListening([int]$port) {
     for ($i = 0; $i -lt 15; $i++) {
         Start-Sleep -Seconds 1
-        $svc = Get-Service -Name sshd -ErrorAction SilentlyContinue
-        $listening = $false
-        foreach ($ep in [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()) { if ($ep.Port -eq $port) { $listening = $true } }
-        if ($svc -and $svc.Status -eq 'Running' -and $listening) {
+        $id = Get-SshdOnPort $port
+        if ($id -ne 0) {
             Start-Sleep -Seconds 3
-            $svc.Refresh()
-            return ($svc.Status -eq 'Running')
+            return ((Get-SshdOnPort $port) -eq $id)
         }
     }
     return $false
+}
+
+# Gives the firewall rule these ports; returns a sentence for the log, '' when that failed.
+function Set-RulePorts([string]$ports) {
+    try {
+        $res = Set-RuleSettings (New-Object -ComObject HNetCfg.FwPolicy2) $ruleName @{ LocalPorts = $ports }
+        if ($res['Rules'] -gt 0 -and $res['Errors'].Count -eq 0) { return (' The firewall rule allows port ' + $ports + ' again.') }
+    } catch { }
+    return ''
 }
 #endregion firewall
 
 if ($Phase -eq 'functions') { return }   # tests\preinstall.Tests.ps1 dot-sources the functions
 
 #region firewall
+# Runs a plan of Get-ServicePlan; the steps are logged, a failed one as a warning.
+function Invoke-ServicePlan($plan, [string]$prefix) {
+    foreach ($step in $plan) {
+        $w = $step -split ' '
+        try {
+            switch ($w[0]) {
+                'config' {
+                    & $sc config $w[1] start= $w[2] 2>&1 | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw ('sc.exe exit ' + $LASTEXITCODE) }
+                    Log ($prefix + 'service ' + $w[1] + ': start type ' + $w[2] + ', as before')
+                }
+                'stop' { Stop-Service -Name $w[1] -Force -ErrorAction Stop; Log ($prefix + 'stopped ' + $w[1] + ' (disabled)') }
+                'start' { Start-Service -Name $w[1] -ErrorAction Stop; Log ($prefix + 'started ' + $w[1]) }
+            }
+        } catch { Log ('warning: ' + $prefix + $step + ': ' + $_.Exception.Message) }
+    }
+}
+
 if ($Phase -eq 'fwsave') {
+    # Every value comes from this installation: a record left by an interrupted one is replaced.
+    Remove-Record $portValue
+    try {
+        $services = ConvertTo-ServiceRecord (Get-ServiceStates) $folder
+        if (-not (Save-Record $services $serviceValue)) { throw ('reg.exe exit ' + $LASTEXITCODE) }
+        Log ("saved the services (<name>=<running>,<start type to keep>): " + $services)
+    } catch { Remove-Record $serviceValue; Log ("warning: could not save the state of the services: " + $_.Exception.Message) }
     $old = Get-SavedRecord
-    if ($Previous -ne 'keep') {
+    if ($Previous -ne 'keep' -or $ServerAction -ne 'install') {
         if ($old -ne '') { Remove-Record; Log ("removed a saved firewall record left by an interrupted installation: " + $old) }
-        Log "fresh install: the firewall rule gets this package's defaults"
+        if ($ServerAction -eq 'install') { Log "fresh install: the firewall rule gets this package's defaults" }
         exit 0
     }
     $r = $null
@@ -496,14 +669,18 @@ if ($Phase -eq 'fwsave') {
 }
 
 if ($Phase -eq 'fwcommit') {
-    if ((Get-SavedRecord) -ne '') { Remove-Record; Log "installation complete: removed the saved firewall settings" }
+    if ((Get-SavedRecord) -ne '') { Log "installation complete: removed the saved firewall settings" }
+    Remove-Record ''
+    exit 0
+}
+
+if ($Phase -eq 'svcrestore') {
+    Invoke-ServicePlan (Get-ServicePlan (ConvertFrom-ServiceRecord (Get-SavedRecord $serviceValue)) (Get-ServiceStates) $false) ''
     exit 0
 }
 
 if ($Phase -eq 'fwrollback') {
-    $text = Get-SavedRecord
-    if ($text -eq '') { exit 0 }
-    $saved = ConvertFrom-FirewallRecord $text
+    $saved = ConvertFrom-FirewallRecord (Get-SavedRecord)
     if ($saved -and $saved['Rule'] -eq $ruleName) {
         try {
             $res = Set-RuleSettings (New-Object -ComObject HNetCfg.FwPolicy2) $ruleName $saved
@@ -512,7 +689,23 @@ if ($Phase -eq 'fwrollback') {
             else { Log ("warning: rollback: firewall rule '" + $ruleName + "' not found; saved settings: " + (Format-FirewallRecord $saved)) }
         } catch { Log ("warning: rollback: could not set the firewall rule: " + $_.Exception.Message) }
     }
-    Remove-Record
+    # After the firewall rule: the rolled-back services run again as before the installation.
+    Invoke-ServicePlan (Get-ServicePlan (ConvertFrom-ServiceRecord (Get-SavedRecord $serviceValue)) (Get-ServiceStates) $true) 'rollback: '
+    Remove-Record ''
+    exit 0
+}
+
+if ($Phase -eq 'portrollback') {
+    $cfg = Join-Path $env:ProgramData 'ssh\sshd_config'
+    $b = Get-SavedRecord $portValue
+    if ($b -eq 'created') {
+        Remove-Item -LiteralPath $cfg -Force -ErrorAction Stop
+        Log ("rollback: deleted " + $cfg + ", created by the SSHD_PORT step")
+    } elseif ($b -match '^sshd_config\.bak\.[0-9]{8}-[0-9]{6}(-[0-9]+)?$') {
+        Write-ConfigBytes $cfg ([IO.File]::ReadAllBytes((Join-Path $env:ProgramData ('ssh\' + $b)))) ''
+        Log ("rollback: sshd_config put back from " + $b)
+    }
+    Remove-Record $portValue
     exit 0
 }
 
@@ -561,7 +754,10 @@ if ($Phase -eq 'port') {
     if ($port -eq 0) { Log ("warning: SSHD_PORT '" + $SshdPort + "' is not a port number; sshd_config unchanged"); exit 0 }
     $cfgDir = Join-Path $env:ProgramData 'ssh'
     $cfg = Join-Path $cfgDir 'sshd_config'
-    if (-not (Test-Path -LiteralPath $cfg)) {
+    # Phase portrollback undoes what this phase changes: the record names it before the change.
+    $created = -not (Test-Path -LiteralPath $cfg)
+    if ($created) {
+        $null = Save-Record 'created' $portValue
         # sshd creates the file at its first start; this covers a service that did not get that far.
         if (-not (Test-Path -LiteralPath $cfgDir)) {
             $ds = New-Object Security.AccessControl.DirectorySecurity
@@ -581,28 +777,34 @@ if ($Phase -eq 'port') {
         Log ("sshd_config already has Port " + $port)
     } else {
         $backup = Get-BackupPath $cfg (Get-Date)
-        $how = Write-ConfigText $cfg $new $backup
-        Log ("sshd_config: Port " + $port + " (written " + $how + "; previous file: " + $backup + ")")
+        if (-not $created) { $null = Save-Record (Split-Path -Leaf $backup) $portValue }
+        try { Write-ConfigText $cfg $new $backup } catch {
+            # sshd_config is unchanged: nothing for phase portrollback to put back (the backup may be
+            # incomplete). A file this step created stays recorded, for the rollback to delete it.
+            if (-not $created) { Remove-Record $portValue }
+            # The firewall step has already given the rule the new port: back to the port(s) sshd keeps using.
+            $ports = @(Get-SshdConfigPorts $text) -join ','
+            Log ("warning: sshd_config unchanged, sshd keeps port " + $ports + ": " + $_.Exception.Message + (Set-RulePorts $ports))
+            exit 0
+        }
+        Log ("sshd_config: Port " + $port + " (previous file: " + $backup + ")")
     }
     $others = @(Get-SshdConfigPorts $new | Where-Object { $_ -ne [string]$port })
     if ($others.Count -gt 0) { Log ("sshd_config has further Port lines; sshd also listens on " + ($others -join ', ')) }
     try { Restart-Service -Name sshd -Force -ErrorAction Stop } catch { Log ("warning: restarting sshd: " + $_.Exception.Message) }
     if (Test-SshdListening $port) { Log ("sshd restarted and listens on port " + $port); exit 0 }
-    if ($backup -eq '') { Log ("warning: sshd does not listen on port " + $port + " after a restart. Check the OpenSSH/Operational event log."); exit 0 }
-    # Back to the previous configuration, so the server stays reachable as before.
-    $restore = $cfg + '.restore-' + [Guid]::NewGuid().ToString('N')
-    try {
-        [IO.File]::WriteAllBytes($restore, [IO.File]::ReadAllBytes($backup))
-        [IO.File]::Replace($restore, $cfg, $null)
-    } finally { if (Test-Path -LiteralPath $restore) { Remove-Item -LiteralPath $restore -Force -ErrorAction SilentlyContinue } }
+    $why = "warning: the sshd service does not listen on port " + $port + " alone (port in use, or blocked by a ListenAddress line?). "
+    if ($backup -eq '') { Log ($why + "Check the OpenSSH/Operational event log."); exit 0 }
+    # Back to the previous configuration, so the server stays reachable as before. sshd is stopped
+    # first: a service restarting after a failure could hold the file while the rename replaces it.
+    try { Stop-Service -Name sshd -Force -ErrorAction Stop } catch { }
+    try { Write-ConfigBytes $cfg ([IO.File]::ReadAllBytes($backup)) '' } catch {
+        Log ($why + "Copy " + $backup + " over sshd_config and restart sshd; it could not be put back: " + $_.Exception.Message)
+        exit 0
+    }
     try { Restart-Service -Name sshd -Force -ErrorAction Stop } catch { }
-    $ports = @(Get-SshdConfigPorts ([IO.File]::ReadAllText($cfg)))
-    $fwNote = ''
-    try {
-        $res = Set-RuleSettings (New-Object -ComObject HNetCfg.FwPolicy2) $ruleName @{ LocalPorts = ($ports -join ',') }
-        if ($res['Rules'] -gt 0 -and $res['Errors'].Count -eq 0) { $fwNote = ' The firewall rule allows port ' + ($ports -join ',') + ' again.' }
-    } catch { }
-    Log ("warning: sshd did not listen on port " + $port + " (port in use, or blocked by a ListenAddress line?). The previous sshd_config is back and sshd was restarted with port " + ($ports -join ',') + "." + $fwNote + " Check the OpenSSH/Operational event log, then set the port with OpenSSH Server PN Manager.")
+    $ports = @(Get-SshdConfigPorts ([IO.File]::ReadAllText($cfg))) -join ','
+    Log ($why + "The previous sshd_config is back and sshd was restarted with port " + $ports + "." + (Set-RulePorts $ports) + " Check the OpenSSH/Operational event log, then set the port with OpenSSH Server PN Manager.")
     exit 0
 }
 #endregion firewall
