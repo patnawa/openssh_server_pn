@@ -29,12 +29,25 @@ namespace OpenSSHServerPNManager
             try { return new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator); }
             catch { return false; }
         }
+
+        private const string RelaunchMarker = "--elevation-requested";
+
+        /// <summary>
+        /// Whether a process with these arguments may ask for elevation again. Without User Account Control, "runas" starts the
+        /// program with the caller's token, so a process that a relaunch started without rights would relaunch itself without end.
+        /// </summary>
+        internal static bool RelaunchAllowed(string[] args)
+        {
+            return !args.Any(a => a.Equals(RelaunchMarker, StringComparison.OrdinalIgnoreCase));
+        }
+
         /// <summary>Starts this program again with administrator rights (the UAC prompt), with the given arguments.</summary>
         public static bool Relaunch(string args = null)
         {
+            if (!RelaunchAllowed(Environment.GetCommandLineArgs())) return false;
             try
             {
-                var psi = new ProcessStartInfo(Application.ExecutablePath, args ?? "") { UseShellExecute = true, Verb = "runas" };
+                var psi = new ProcessStartInfo(Application.ExecutablePath, ((args ?? "") + " " + RelaunchMarker).Trim()) { UseShellExecute = true, Verb = "runas" };
                 Process.Start(psi);
                 return true;
             }
@@ -140,10 +153,10 @@ namespace OpenSSHServerPNManager
             return r;
         }
 
-        /// <summary>Opens a client program as the original desktop user with that user's environment.</summary>
-        public static void OpenUnelevated(string exe, string args)
+        /// <summary>Opens a client program as the original desktop user with that user's environment (see UserProcessLauncher.Open for connections).</summary>
+        public static void OpenUnelevated(string exe, string args, bool connection = false)
         {
-            try { UserProcessLauncher.Open(exe, args); }
+            try { UserProcessLauncher.Open(exe, args, connection); }
             catch (Exception ex) { Log.Error("Could not start " + exe + " as the desktop user", ex, true); }
         }
         public static void OpenExternal(string target, string args = null)

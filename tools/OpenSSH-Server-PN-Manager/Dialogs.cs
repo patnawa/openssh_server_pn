@@ -598,7 +598,7 @@ namespace OpenSSHServerPNManager
                 return t;
             };
             _pattern = row("Host:", existing == null ? "" : existing.Pattern, "the name you type: ssh <host>");
-            _fields["HostName"] = row("Host name:", existing == null ? "" : existing.Get("HostName"), "server name or address");
+            _fields["HostName"] = row("Host name:", existing == null ? "" : existing.Get("HostName"), "server name or address (a % is saved as %%)");
             _fields["User"] = row("User:", existing == null ? "" : existing.Get("User"), "account on the server");
             _fields["Port"] = row("Port:", existing == null ? "" : existing.Get("Port"), "empty = inherited setting (default 22)");
             _fields["IdentityFile"] = row("Key files:", existing == null ? "" : string.Join(Environment.NewLine, existing.GetAll("IdentityFile")), "one private key path per line; all are kept");
@@ -618,6 +618,8 @@ namespace OpenSSHServerPNManager
                 int port;
                 if (Pattern.Length == 0) { MessageBox.Show(this, "Enter the host name you want to type after ssh.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
                 if (_fields["Port"].Text.Trim().Length > 0 && (!int.TryParse(_fields["Port"].Text.Trim(), out port) || port < 1 || port > 65535)) { MessageBox.Show(this, "The port must be a number from 1 to 65535.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                var percent = SshClient.PercentProblem(existing, Values);
+                if (percent != null) { MessageBox.Show(this, percent, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
                 DialogResult = DialogResult.OK;
             };
         }
