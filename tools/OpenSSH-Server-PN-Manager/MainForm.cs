@@ -2148,7 +2148,7 @@ namespace OpenSSHServerPNManager
             PartnerSetupState st = null; List<PartnerAccount> list = null; List<TransferTotals> month = null;
             await BgAsync("Reading the partner accounts...", () =>
             {
-                st = PartnerSetup.Check(cfg, g); list = Partners.List(g);
+                st = PartnerSetup.Check(cfg, g); list = Partners.List(g, true);
                 var now = DateTime.Now;
                 month = Transfers.Totals(Transfers.Read(new DateTime(now.Year, now.Month, 1), now, CancellationToken.None));
             });
@@ -2187,7 +2187,8 @@ namespace OpenSSHServerPNManager
             }
             _lvPartners.EndUpdate();
             var st = _ptSetupState; var lines = new List<string>();
-            if (!st.Complete)
+            if (st.HostError != null) lines.Add(st.HostError);
+            else if (!st.Complete)
             {
                 lines.Add("Not set up yet: " + (st.MissingGroups.Count > 0 ? "the partner groups do not exist" : "sshd_config lacks " + st.Missing[0] + (st.Missing.Count > 1 ? ", and " + (st.Missing.Count - 1) + " more" : "")) +
                           ". \"Set up partner accounts\" adds what is missing, once.");
@@ -2202,14 +2203,14 @@ namespace OpenSSHServerPNManager
             }
             if (st.Problems.Count > 0) lines.Add("Note: " + string.Join("; ", st.Problems) + ".");
             _ptState.Text = string.Join("\n", lines);
-            _ptState.ForeColor = !st.Complete || st.Problems.Count > 0 || lines.Count > 1 ? Orange : Theme.Muted;
-            _ptSetup.Visible = !st.Complete;
+            _ptState.ForeColor = st.HostError != null || !st.Complete || st.Problems.Count > 0 || lines.Count > 1 ? Orange : Theme.Muted;
+            _ptSetup.Visible = st.HostError == null && (!st.Complete || st.RootFixable); // the setup also corrects the partners' folder
             UpdatePartnerButtons();
         }
 
         private void UpdatePartnerButtons()
         {
-            var p = SelectedPartner(); bool ready = _ptSetupState.Complete;
+            var p = SelectedPartner(); bool ready = _ptSetupState.Complete && _ptSetupState.HostError == null;
             _ptButtons[0].Enabled = ready;
             for (int i = 1; i <= 7; i++) _ptButtons[i].Enabled = p != null;
             _ptButtons[3].Text = p != null && p.Disabled ? "Enable" : "Disable";
@@ -2220,22 +2221,43 @@ namespace OpenSSHServerPNManager
         {
             var g = PartnerGroups.Default; var cfg = _cfg;
             var st = await BgAsync("Checking what partner accounts need...", () => PartnerSetup.Check(cfg, g));
-            string root = null;
-            using (var d = new PartnerSetupDialog(st, g, dlg => root = dlg.Root))
-                if (d.ShowDialog(this) != DialogResult.OK) return;
-            var cand = _cfg.Copy();
-            PartnerSetup.Apply(cand, g, root);
-            string backup = null; bool running = true;
-            if (cand.Text != _cfg.Text) backup = await SaveConfig(cand, "Set up SFTP partner accounts: rules for the groups " + string.Join(", ", g.All.Select(PartnerGroups.Sshd)) + ", folders under " + root + ", file transfers logged.", "Save and restart");
-            List<string> made = null;
-            await BgAsync("Creating the partner groups and folders...", () =>
+            if (st.HostError != null) throw new ConfigException(st.HostError);
+            string root = null; SshdConfig cand = null;
+            using (var d = new PartnerSetupDialog(st, g, async dlg =>
             {
-                made = PartnerSetup.CreateGroups(g);
-                if (!Directory.Exists(g.KeysDir)) Acl.CreatePrivateFolder(g.KeysDir);
-                if (!Directory.Exists(root)) Acl.CreatePrivateFolder(root);
-                try { Transfers.EnlargeLog(); } catch (Exception ex) { Log.Error("Enlarging the OpenSSH event log", ex, false); }
-            });
-            if (backup != null) { await UseConfig(cand); running = await RestartWithRollback(backup); }
+                var r = dlg.Root; var c = _cfg.Copy();
+                PartnerSetup.Apply(c, g, r);
+                // Whoever can make folders in the root can make the folder of a future partner first, and keep control of it.
+                bool canHarden = false;
+                var problem = await BgAsync("Checking the permissions of " + r + "...", () => PartnerSetup.RootProblem(r, out canHarden));
+                if (problem != null)
+                {
+                    if (string.Equals(Path.GetPathRoot(r), r, StringComparison.OrdinalIgnoreCase))
+                        throw new ConfigException(r + " lets other accounts in: " + problem + ".\n\nIt is the root of a drive, whose permissions are not changed here. Choose a folder in it, for example " + Path.Combine(r, "SFTP") + ".");
+                    if (!canHarden)
+                        throw new ConfigException(r + " lets other accounts in: " + problem + ".\n\nChoose a folder that only administrators can change, or a new folder (the setup makes it for administrators only).");
+                    if (Program.Unattended || MessageBox.Show(dlg, r + " lets other accounts in: " + problem + ".\n\nWhoever can make folders in it can make the folder of a future partner first, and keep control of it.\n\n" +
+                            "Make " + r + " a folder for administrators only? It is then owned by Administrators, and only SYSTEM and Administrators have access to it (partners keep their own folders in it); other accounts that use it lose their access.\n\nNo: choose another folder.",
+                            Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                        throw new OperationCanceledException();
+                    await BgAsync("Making " + r + " a folder for administrators only...", () => PartnerSetup.HardenRoot(r));
+                }
+                root = r; cand = c;
+            }))
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+            List<string> made = null; bool changed = cand.Text != _cfg.Text;
+            var running = await PartnerSetup.Run(changed,
+                () => BgAsync("Creating the partner groups and folders...", () =>
+                {
+                    made = PartnerSetup.CreateGroups(g);
+                    if (!Directory.Exists(g.KeysDir)) Acl.CreatePrivateFolder(g.KeysDir);
+                    if (!Directory.Exists(root)) SftpConfig.CreateNewFolder(root); // fails when someone made it since the check
+                    bool canHarden; var problem = PartnerSetup.RootProblem(root, out canHarden);
+                    if (problem != null) throw new ConfigException(root + " lets other accounts in: " + problem + ". Nothing was changed in sshd_config.");
+                    try { Transfers.EnlargeLog(); } catch (Exception ex) { Log.Error("Enlarging the OpenSSH event log", ex, false); }
+                }),
+                () => SaveConfig(cand, "Set up SFTP partner accounts: rules for the groups " + string.Join(", ", g.All.Select(PartnerGroups.Sshd)) + ", folders under " + root + ", file transfers logged.", "Save and restart"),
+                async b => { await UseConfig(cand); return await RestartWithRollback(b); }); // b is null for a first sshd_config, which is restarted with too
             _ptLoaded = false; await LoadPartners();
             _ptResult.Text = running
                 ? "Partner accounts are set up" + (made.Count > 0 ? " (groups " + string.Join(", ", made) + " created)" : "") + ". New partner... adds one; sshd is not restarted for that."
@@ -2259,13 +2281,19 @@ namespace OpenSSHServerPNManager
             using (var d = new PartnerDialog(null, root, "", async dlg =>
             {
                 var n = dlg.AccountName; var fn = dlg.FullName; var co = dlg.Company; var ro = dlg.ReadOnlyAccess; var ko = dlg.KeyOnly; var last = dlg.LastDay; var notify = dlg.Notify;
-                password = await BgAsync("Creating the partner " + n + "...", () =>
+                Func<bool, string> create = reuse => Partners.CreateKeepingPassword(() => Partners.Create(g, root, n, fn, co, ro, ko, last, reuse), () => SetPartnerNotify(n, notify), out notifyError);
+                PartnerFolderExistsException exists = null;
+                try { password = await BgAsync("Creating the partner " + n + "...", () => create(false)); }
+                catch (PartnerFolderExistsException ex) { if (Program.Unattended) throw; exists = ex; }
+                if (exists != null)
                 {
-                    var pw = Partners.Create(g, root, n, fn, co, ro, ko, last);
-                    // The account exists from here on: a failed notify setting must not lose the only copy of its password.
-                    try { SetPartnerNotify(n, notify); } catch (Exception ex) { notifyError = ex.Message; Log.Error("Saving the upload notifications of " + n, ex, false); }
-                    return pw;
-                });
+                    if (MessageBox.Show(dlg, "The folder " + exists.Folder + " exists already: " + exists.Details + ".\n\n" +
+                            "Give it to the new partner " + n + "? Its permissions and those of everything in it are reset: owner Administrators, access for SYSTEM, Administrators and " + n + " only. " +
+                            "Every file in it becomes visible to " + n + (ro ? "." : ", who can also change and delete them.") + "\n\nNo: nothing is created; choose another name, or move the folder away first.",
+                            Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                        throw new OperationCanceledException();
+                    password = await BgAsync("Creating the partner " + n + " with the existing folder...", () => create(true));
+                }
                 name = n; keyOnly = ko;
             }))
                 if (d.ShowDialog(this) != DialogResult.OK) return;
@@ -2322,11 +2350,12 @@ namespace OpenSSHServerPNManager
         private async Task TogglePartner()
         {
             var p = SelectedPartner(); if (p == null) return;
-            bool disable = !p.Disabled; int port = _cfg.EffectivePort; int ended = 0;
+            bool disable = !p.Disabled; int port = _cfg.EffectivePort; int ended = 0; string unended = null;
             if (disable && MessageBox.Show(this, "Disable " + p.Name + "? It can no longer log in, and its open sessions end now. Its folder, keys and settings stay.", Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-            await BgAsync((disable ? "Disabling " : "Enabling ") + p.Name + "...", () => { Partners.SetDisabled(p.Name, disable); if (disable) ended = Partners.Disconnect(p.Name, port); });
+            await BgAsync((disable ? "Disabling " : "Enabling ") + p.Name + "...", () => { Partners.SetDisabled(p.Name, disable); if (disable) ended = Partners.Disconnect(p.Name, port, out unended); });
             await LoadPartners();
-            _ptResult.Text = (disable ? "Disabled " + p.Name + (ended > 0 ? "; " + ended + " open session(s) ended" : "") : "Enabled " + p.Name) + "."; _ptResult.ForeColor = Green;
+            _ptResult.Text = (disable ? "Disabled " + p.Name + (ended > 0 ? "; " + ended + " open session(s) ended" : "") : "Enabled " + p.Name) + "." + (unended != null ? " Not done: " + unended + "." : "");
+            _ptResult.ForeColor = unended == null ? Green : Orange;
             Status(_ptResult.Text);
         }
 
@@ -2361,7 +2390,16 @@ namespace OpenSSHServerPNManager
             using (var d = new PartnerDeleteDialog(p, folder, size, async dlg =>
             {
                 var withFiles = dlg.DeleteFiles;
-                await BgAsync("Deleting " + p.Name + "...", () => { ended = Partners.Disconnect(p.Name, port); problems = Partners.Delete(g, root, p, withFiles, out note); try { SetPartnerNotify(p.Name, null); } catch (Exception ex) { Log.Error("Removing the recipients of " + p.Name, ex, false); } });
+                await BgAsync("Deleting " + p.Name + "...", () =>
+                {
+                    // Disabled first, as Disable does: a login that starts while the sessions end is refused, and an account
+                    // that cannot be deleted stays disabled.
+                    try { Partners.SetDisabled(p.Name, true); } catch (Exception ex) { Log.Error("Disabling " + p.Name + " before deleting it", ex, false); }
+                    string unended; ended = Partners.Disconnect(p.Name, port, out unended);
+                    problems = Partners.Delete(g, root, p, withFiles, out note);
+                    if (unended != null) problems = (problems == null ? "" : problems + "; ") + unended;
+                    try { SetPartnerNotify(p.Name, null); } catch (Exception ex) { Log.Error("Removing the recipients of " + p.Name, ex, false); }
+                });
                 deleted = true;
             }))
                 d.ShowDialog(this);

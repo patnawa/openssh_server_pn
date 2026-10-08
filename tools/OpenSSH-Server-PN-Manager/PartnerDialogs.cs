@@ -68,6 +68,7 @@ namespace OpenSSHServerPNManager
             _expires = new CheckBox { Text = "Can log in until the end of", AutoSize = true, Margin = new Padding(3, 12, 3, 2) };
             _lastDay = new DateTimePicker { Format = DateTimePickerFormat.Long, Width = Ui.Px(220), AccessibleName = "Last day the partner can log in", Margin = new Padding(3, 9, 3, 2) };
             var lastDay = existing == null ? null : LocalAccounts.LastDay(existing.Expires);
+            _lastDay.MaxDate = lastDay != null && lastDay.Value > LocalAccounts.MaxLastDay ? lastDay.Value : LocalAccounts.MaxLastDay; // what the account can store
             _expires.Checked = lastDay != null;
             _lastDay.Value = lastDay ?? DateTime.Today.AddMonths(12);
             _lastDay.Enabled = _expires.Checked;
@@ -83,10 +84,15 @@ namespace OpenSSHServerPNManager
         {
             if (_existing == null) { var e = Partners.NameError(AccountName); if (e != null) { _name.Focus(); throw new ConfigException(e); } }
             if (FullName.Any(char.IsControl) || Company.Any(char.IsControl) || FullName.Length > 100 || Company.Length > 100) throw new ConfigException("The contact name and the company are one line each, at most 100 characters.");
-            if (LastDay != null && LastDay.Value < DateTime.Today) throw new ConfigException("The last day to log in is in the past. Choose a later date, or disable the partner instead.");
+            // An expired partner keeps its date while other settings change; only a new date must not be in the past.
+            if (LastDay != null && LastDay.Value < DateTime.Today && (_existing == null || LastDay != LocalAccounts.LastDay(_existing.Expires)))
+                throw new ConfigException("The last day to log in is in the past. Choose a later date, or disable the partner instead.");
             AlertSettings.Addresses(_notify.Text); // throws ConfigException for an address that is not valid
             await _run(this);
         }
+
+        // --selftest
+        internal void SetLastDayForTest(DateTime day) { _lastDay.Value = day; }
     }
 
     /// <summary>A generated password, shown once: it is not stored anywhere.</summary>
@@ -425,7 +431,8 @@ namespace OpenSSHServerPNManager
             var steps = new List<string>();
             if (st.MissingGroups.Count > 0) steps.Add("Create the local groups " + string.Join(", ", st.MissingGroups) + ".");
             steps.AddRange(st.Missing.Select(m => "sshd_config: " + m + "."));
-            steps.Add("sshd_config is shown before it is saved, backed up, and sshd restarts once; you confirm the result.");
+            steps.Add("An existing folder must keep other accounts out: when they can change it, you are asked before it becomes a folder for administrators only.");
+            if (st.Missing.Count > 0) steps.Add("sshd_config is shown before it is saved, backed up, and sshd restarts once; you confirm the result.");
             Body.Controls.Add(Caption("What happens:"));
             Body.Controls.Add(new Label { Text = string.Join("\n", steps.Select(x => "- " + x)), AutoSize = true, MaximumSize = new Size(Ui.Px(Wide), 0), Margin = new Padding(12, 2, 3, 2) });
             if (st.Problems.Count > 0)
@@ -455,7 +462,7 @@ namespace OpenSSHServerPNManager
             Body.Controls.Add(Caption("Delete the account " + p.Name + (p.Company.Length > 0 ? " (" + p.Company + ")" : "") + "? Its open sessions end, and it can no longer log in. Its keys are removed.", true));
             _files = new CheckBox { Text = "Also delete its folder " + folder + (folderSize == null ? "" : " (" + folderSize + ")"), AutoSize = true, Margin = new Padding(3, 10, 3, 2), Enabled = folderSize != null };
             Body.Controls.Add(_files);
-            Body.Controls.Add(Note("Without the tick, the folder stays with its files, for administrators only; a partner created again with the same name gets it back."));
+            Body.Controls.Add(Note("Without the tick, the folder stays with its files, for administrators only. A partner created again with the same name can get it back: you are asked first, and its permissions are then reset for that partner alone."));
         }
 
         protected override async Task WorkAsync()

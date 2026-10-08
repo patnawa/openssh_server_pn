@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using Microsoft.Win32;
 
 namespace OpenSSHServerPNManager
@@ -69,6 +70,10 @@ namespace OpenSSHServerPNManager
         public List<string> Problems = new List<string>();
         /// <summary>The folder under which each partner gets a folder of its own (from the rules), or null before the setup.</summary>
         public string Root;
+        /// <summary>Why the root lets other accounts in (PartnerSetup.RootProblem), or null; also in Problems. RootFixable: the setup can correct it.</summary>
+        public string RootProblem; public bool RootFixable;
+        /// <summary>Why partners cannot be made on this computer at all (a domain controller), or null.</summary>
+        public string HostError;
         public bool Complete { get { return MissingGroups.Count == 0 && Missing.Count == 0; } }
     }
 
@@ -95,7 +100,9 @@ namespace OpenSSHServerPNManager
         public static PartnerSetupState Check(SshdConfig cfg, PartnerGroups g)
         {
             var st = new PartnerSetupState();
-            foreach (var n in g.All) if (Acl.SidOfAccount(n) == null) st.MissingGroups.Add(n);
+            st.HostError = Partners.HostError(LocalAccounts.IsDomainController());
+            // The local group itself: a domain group or a well-known name would pass a name lookup, but NetLocalGroupAddMembers needs the local group.
+            foreach (var n in g.All) if (!LocalAccounts.GroupExists(n)) st.MissingGroups.Add(n);
             var sftp = SftpConfig.Read(cfg);
             var auth = AuthConfig.Read(cfg);
             if (sftp.RulesProblem != null) st.Problems.Add("the section of SFTP-only accounts was changed by hand (" + sftp.RulesProblem + ")");
@@ -120,6 +127,27 @@ namespace OpenSSHServerPNManager
             int keyOnlyAt = rules.FindIndex(r => r.IsGroup && r.Name == wanted[0].Name);
             if (keyOnlyAt > 0 && rules.Take(keyOnlyAt).Any(r => r.IsGroup && (r.Name == wanted[1].Name || r.Name == wanted[2].Name)))
                 st.Missing.Add("the rule for " + wanted[0].Name + " before the rules for the other partner groups");
+            // The first rule that matches applies: a rule above a partner rule that also covers partners gives them its settings.
+            var partnerRules = new HashSet<string>(g.All.Select(PartnerGroups.Sshd));
+            List<string> members = null;
+            Func<bool, string, bool> covers = (isGroup, n) =>
+            {
+                if (isGroup) { var sid = Acl.SidOfAccount(n); return sid != null && !sid.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid); }
+                if (n.Contains("\\")) return false; // a domain account, never a partner
+                if (members == null) members = LocalAccounts.GroupMembers(g.Full).Concat(LocalAccounts.GroupMembers(g.ReadOnly)).Select(Accounts.AsciiLower).ToList();
+                return members.Contains(Accounts.AsciiLower(n));
+            };
+            int lastSftp = sftp.Rules.FindLastIndex(r => r.IsGroup && partnerRules.Contains(r.Name));
+            foreach (var r in sftp.Rules.Take(Math.Max(0, lastSftp)).Where(r => !(r.IsGroup && partnerRules.Contains(r.Name)) && covers(r.IsGroup, r.Name)))
+                st.Problems.Add("the SFTP rule for " + r.Kind.ToLowerInvariant() + " " + r.Name + " comes before a partner rule, so " + (r.IsGroup ? "partners in that group get" : "the partner " + r.Name + " gets") + " its folder and access instead (move it below the partner rules on the SFTP tab)");
+            int lastAuth = rules.FindLastIndex(r => r.IsGroup && partnerRules.Contains(r.Name));
+            foreach (var r in rules.Take(Math.Max(0, lastAuth)).Where(r => !(r.IsGroup && partnerRules.Contains(r.Name)) && covers(r.IsGroup, r.Name)))
+                st.Problems.Add("the login-method rule for " + r.Kind.ToLowerInvariant() + " " + r.Name + " comes before a partner rule, so " + (r.IsGroup ? "partners in that group log" : "the partner " + r.Name + " logs") + " in by its methods instead (move it below the partner rules on the Authentication tab)");
+            if (st.Root != null && Directory.Exists(st.Root))
+            {
+                st.RootProblem = RootProblem(st.Root, out st.RootFixable);
+                if (st.RootProblem != null) st.Problems.Add("the partners' folder is not for administrators only: " + st.RootProblem + ". Another account could make the folder of a future partner, or put a folder of its own in place of one" + (st.RootFixable ? " (Set up partner accounts can make it a folder for administrators only)" : ""));
+            }
             string err;
             var allowGroups = cfg.GetCombinedArgs("AllowGroups", out err);
             if (allowGroups != null && allowGroups.Count > 0 && !new[] { g.Full, g.ReadOnly }.All(n => allowGroups.Contains(PartnerGroups.Sshd(n), StringComparer.OrdinalIgnoreCase)))
@@ -160,9 +188,93 @@ namespace OpenSSHServerPNManager
             }
         }
 
+        private static readonly SecurityIdentifier Admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        private static readonly SecurityIdentifier LocalSystem = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        private static readonly SecurityIdentifier TrustedInstaller = new SecurityIdentifier("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
+        // write data, add a folder, write EA, delete child, write attributes, DELETE, WRITE_DAC, WRITE_OWNER, GENERIC_ALL, GENERIC_WRITE
+        private const int RootWriteMask = 0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x10000000 | 0x40000000;
+        // Above the root, making files and folders is fine (C:\ allows it); deleting or renaming what a folder holds, or the
+        // folder itself, or changing its permissions is not: that puts another folder in place of the root.
+        private const int AboveRootMask = 0x40 | 0x10000 | 0x40000 | 0x80000 | 0x10000000 | 0x40000000;
+
+        private static bool TrustedSid(SecurityIdentifier s)
+        {
+            return s == Admins || s == LocalSystem || s == TrustedInstaller || s.IsWellKnown(WellKnownSidType.CreatorOwnerSid) || s.Value == "S-1-3-4" /*OWNER RIGHTS*/;
+        }
+        private static string NameOf(SecurityIdentifier sid) { try { return sid.Translate(typeof(NTAccount)).Value; } catch { return sid.Value; } }
+
+        /// <summary>
+        /// Why the folder of the partners' folders lets other accounts in, or null: an owner other than SYSTEM, Administrators
+        /// or TrustedInstaller, of it or of a folder above it; another account that can change what it holds (and so make the
+        /// folder of a future partner first); or another account that can rename, delete or take over a folder above it (and
+        /// so put a folder of its own in its place). canHarden: only the root itself is concerned, so making it a folder for
+        /// administrators only (HardenRoot) corrects it; never for a drive root, a link or a folder that does not exist.
+        /// </summary>
+        public static string RootProblem(string root, out bool canHarden)
+        {
+            canHarden = false;
+            try
+            {
+                if (Directory.Exists(root) && (File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0) return root + " is a link (junction or symbolic link) to another folder";
+                return RootProblem(root, d => Directory.Exists(d) ? Directory.GetAccessControl(d, AccessControlSections.Owner | AccessControlSections.Access) : null, out canHarden);
+            }
+            catch (Exception ex) { canHarden = false; return "the permissions of " + root + " and of the folders above it were not checked (" + ex.Message + ")"; }
+        }
+
+        /// <param name="read">The permissions of a folder, or null when it does not exist.</param>
+        internal static string RootProblem(string root, Func<string, DirectorySecurity> read, out bool canHarden)
+        {
+            canHarden = false;
+            var full = Path.GetFullPath(root);
+            if (full.Length > 3) full = full.TrimEnd('\\');
+            var problems = new List<string>(); bool exists = false, aboveOnly = true;
+            for (var d = full; d != null; d = Path.GetDirectoryName(d))
+            {
+                var ds = read(d);
+                if (ds == null) continue; // made for administrators only by the setup
+                bool isRoot = d == full;
+                if (isRoot) exists = true;
+                var owner = ds.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+                var who = ds.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+                            .Where(r => r.AccessControlType == AccessControlType.Allow && (r.PropagationFlags & PropagationFlags.InheritOnly) == 0 && ((int)r.FileSystemRights & (isRoot ? RootWriteMask : AboveRootMask)) != 0)
+                            .Select(r => (SecurityIdentifier)r.IdentityReference).Where(s => !TrustedSid(s)).Distinct().Select(NameOf).ToList();
+                var where = isRoot ? d : d + " (above it)";
+                if (owner == null || !TrustedSid(owner)) problems.Add(where + " is owned by " + (owner == null ? "an unknown account" : NameOf(owner)));
+                if (who.Count > 0) problems.Add(string.Join(", ", who) + (isRoot ? " can change what " + d + " holds" : " can rename or take over " + where));
+                if (!isRoot && (who.Count > 0 || owner == null || !TrustedSid(owner))) aboveOnly = false;
+            }
+            if (problems.Count == 0) return null;
+            canHarden = exists && aboveOnly && !string.Equals(Path.GetPathRoot(full), full, StringComparison.OrdinalIgnoreCase);
+            return string.Join("; ", problems);
+        }
+
+        /// <summary>Makes an existing root a folder for administrators only: owner Administrators, SYSTEM and Administrators in full control, nothing inherited.</summary>
+        public static void HardenRoot(string root)
+        {
+            Directory.SetAccessControl(root, SftpConfig.AdminsOnly());
+            bool canHarden; var left = RootProblem(root, out canHarden);
+            if (left != null) throw new ConfigException("The permissions of " + root + " were changed, but it still lets other accounts in: " + left + ".");
+            Log.Info("Partners' folder " + root + " made a folder for administrators only");
+        }
+
+        /// <summary>
+        /// The order of the setup: the groups and folders first (when that fails, sshd_config stays as it was), then
+        /// sshd_config when it changes, then sshd restarted with it: also for a first sshd_config, where save returns no
+        /// backup. Returns whether sshd runs with the result.
+        /// </summary>
+        internal static async Task<bool> Run(bool changed, Func<Task> create, Func<Task<string>> save, Func<string, Task<bool>> useAndRestart)
+        {
+            await create();
+            if (!changed) return true;
+            var backup = await save();
+            return await useAndRestart(backup);
+        }
+
         /// <summary>Creates the partner groups that do not exist yet. Returns the names created.</summary>
         public static List<string> CreateGroups(PartnerGroups g)
         {
+            var host = Partners.HostError(LocalAccounts.IsDomainController());
+            if (host != null) throw new ConfigException(host);
             var made = new List<string>();
             var comments = new Dictionary<string, string>
             {
@@ -172,12 +284,21 @@ namespace OpenSSHServerPNManager
             };
             foreach (var n in g.All)
             {
-                if (Acl.SidOfAccount(n) != null) continue;
+                if (LocalAccounts.GroupExists(n)) continue;
                 LocalAccounts.CreateGroup(n, comments[n]);
                 made.Add(n);
             }
             return made;
         }
+    }
+
+    /// <summary>Partners.Create found the partner's folder there already: the new account takes it only when asked to (reuseFolder).</summary>
+    internal sealed class PartnerFolderExistsException : ConfigException
+    {
+        public readonly string Folder, Details;
+        public PartnerFolderExistsException(string folder, string details)
+            : base("The folder " + folder + " exists already (" + details + "). A new partner gets a folder of its own: move or rename the existing one first, or choose another name.")
+        { Folder = folder; Details = details; }
     }
 
     internal static class Partners
@@ -200,9 +321,25 @@ namespace OpenSSHServerPNManager
         public static string FolderOf(string root, string name) { return Path.Combine(root, Accounts.AsciiLower(name)); }
         public static string KeysFileOf(PartnerGroups g, string name) { return Path.Combine(g.KeysDir, Accounts.AsciiLower(name)); }
 
-        public static List<PartnerAccount> List(PartnerGroups g)
+        /// <summary>
+        /// The files of a partner in partner_keys: its keys, and the backup of its previous keys (name.bak) unless an account
+        /// of that name exists (earlier versions allowed such names): sshd reads that file as that account's keys.
+        /// </summary>
+        internal static List<string> KeysFilesOf(PartnerGroups g, string name, Func<string, bool> accountExists)
         {
-            var full = LocalAccounts.GroupMembers(g.Full); var ro = LocalAccounts.GroupMembers(g.ReadOnly); var keyOnly = new HashSet<string>(LocalAccounts.GroupMembers(g.KeyOnly), StringComparer.OrdinalIgnoreCase);
+            var l = new List<string> { KeysFileOf(g, name) };
+            if (!accountExists(name + ".bak")) l.Add(KeysFileOf(g, name) + ".bak");
+            return l;
+        }
+        private static List<string> KeysFilesOf(PartnerGroups g, string name) { return KeysFilesOf(g, name, n => Acl.SidOfAccount(n) != null); }
+
+        public static List<PartnerAccount> List(PartnerGroups g) { return List(g, false); }
+
+        /// <summary>The partners; strict: a group that cannot be read (other than one that does not exist) is an error, not an empty list.</summary>
+        public static List<PartnerAccount> List(PartnerGroups g, bool strict)
+        {
+            Func<string, List<string>> members = n => strict ? LocalAccounts.GroupMembersStrict(n) : LocalAccounts.GroupMembers(n);
+            var full = members(g.Full); var ro = members(g.ReadOnly); var keyOnly = new HashSet<string>(members(g.KeyOnly), StringComparer.OrdinalIgnoreCase);
             var l = new List<PartnerAccount>();
             foreach (var n in full.Concat(ro).Distinct(StringComparer.OrdinalIgnoreCase))
             {
@@ -230,24 +367,61 @@ namespace OpenSSHServerPNManager
             return p;
         }
 
+        /// <summary>Why partners cannot be made on this computer, or null: a domain controller has no local accounts.</summary>
+        public static string HostError(bool isDomainController)
+        {
+            return isDomainController
+                ? "This computer is a domain controller. Partner accounts are local accounts, and a domain controller has none: a partner made here would be a domain account, valid on every computer of the domain. Set up SFTP partners on a member server instead (groups SFTP-Partners* or partner accounts made here by an earlier version are in Active Directory: remove them there)."
+                : null;
+        }
+
+        public static string Create(PartnerGroups g, string root, string name, string fullName, string company, bool readOnly, bool keyOnly, DateTime? expires) { return Create(g, root, name, fullName, company, readOnly, keyOnly, expires, false); }
+
         /// <summary>
         /// Creates a partner: the local account (password never expires, the partner cannot change it: over SFTP it could not
         /// anyway; hidden from the sign-in screen), its groups, and its folder with access for it alone. Returns the generated
         /// password, which is not stored anywhere. When a step fails, the account is removed again.
+        /// An existing folder (a deleted partner's, kept) is a PartnerFolderExistsException, unless reuseFolder: then the new
+        /// account gets it, with its permissions and those of everything in it reset for that account alone.
         /// </summary>
-        public static string Create(PartnerGroups g, string root, string name, string fullName, string company, bool readOnly, bool keyOnly, DateTime? expires)
+        public static string Create(PartnerGroups g, string root, string name, string fullName, string company, bool readOnly, bool keyOnly, DateTime? expires, bool reuseFolder)
         {
             var e = NameError(name);
             if (e != null) throw new ConfigException(e);
+            e = HostError(LocalAccounts.IsDomainController());
+            if (e != null) throw new ConfigException(e);
             if ((fullName ?? "").Any(char.IsControl) || (company ?? "").Any(char.IsControl) || (fullName ?? "").Length > 100 || (company ?? "").Length > 100) throw new ConfigException("The name and the company are one line each, at most 100 characters.");
-            // A new account cannot own an existing folder: it holds someone else's files, and its owner and other entries in
+            LocalAccounts.ExpiryValue(expires); // a date the account cannot store is refused before anything is made
+            // An existing folder is never taken silently: it holds someone else's files, and its owner and other entries in
             // its permissions would keep control over what the partner exchanges.
             var folder = FolderOf(root, name);
-            if (Directory.Exists(folder) || File.Exists(folder))
-                throw new ConfigException("The folder " + folder + " exists already (left by an earlier partner of that name, or made by someone else). A new partner starts with a new, empty folder: move or rename the existing one first, or choose another name.");
-            RetireKeys(g, name);
-            var password = NewPassword();
-            LocalAccounts.CreateUser(name, password, company ?? "", LocalAccounts.UF_DONT_EXPIRE_PASSWD | LocalAccounts.UF_PASSWD_CANT_CHANGE);
+            if (File.Exists(folder)) throw new ConfigException("A file " + folder + " is where the partner's folder would be: move or rename it first, or choose another name.");
+            bool reuse = reuseFolder && Directory.Exists(folder), made = false;
+            if (Directory.Exists(folder))
+            {
+                var link = (File.GetAttributes(folder) & FileAttributes.ReparsePoint) != 0 ? folder : SftpConfig.Contents(folder).Where(x => (x.Attributes & FileAttributes.ReparsePoint) != 0).Select(x => x.FullName).FirstOrDefault();
+                if (link != null) throw new ConfigException("The folder " + folder + " exists already, and " + (link == folder ? "it is" : "it holds") + " a link (junction or symbolic link), " + link + ": whoever made it decides what the partner would reach through it. Move or rename the folder first, or choose another name.");
+                if (!reuse) throw new PartnerFolderExistsException(folder, FolderDetails(folder));
+            }
+            else
+            {
+                // Made before the account, for administrators only, in one step that fails when someone made the folder in
+                // the meantime: no other account can make it first once the name is known.
+                SftpConfig.CreateNewFolder(folder);
+                made = true;
+            }
+            string password;
+            try
+            {
+                RetireKeys(g, name);
+                password = NewPassword();
+                LocalAccounts.CreateUser(name, password, company ?? "", LocalAccounts.UF_DONT_EXPIRE_PASSWD | LocalAccounts.UF_PASSWD_CANT_CHANGE);
+            }
+            catch
+            {
+                if (made) try { Directory.Delete(folder, false); } catch (Exception ex) { Log.Error("Removing the new folder " + folder, ex, false); }
+                throw;
+            }
             try
             {
                 if (!string.IsNullOrEmpty(fullName)) LocalAccounts.SetFullName(name, fullName);
@@ -257,17 +431,81 @@ namespace OpenSSHServerPNManager
                 LocalAccounts.AddToGroup(readOnly ? g.ReadOnly : g.Full, sid);
                 if (keyOnly) LocalAccounts.AddToGroup(g.KeyOnly, sid);
                 LocalAccounts.HideFromSignIn(name, true);
-                SftpConfig.PrepareFolder(FolderOf(root, name), sid, readOnly);
-                Log.Info("SFTP partner created: " + name + (readOnly ? ", download only" : "") + (keyOnly ? ", key only" : "") + (expires != null ? ", expires " + expires.Value.ToString("yyyy-MM-dd") : ""));
+                var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+                if (reuse) SftpConfig.ResetFolder(folder, sid, readOnly, admins);
+                else SetFolderAccess(folder, sid, readOnly);
+                var wrong = FolderProblem(Directory.GetAccessControl(folder, AccessControlSections.Owner | AccessControlSections.Access), sid, admins);
+                if (wrong != null) throw new ConfigException("The folder " + folder + " is not as it was made for " + name + ": " + wrong + ".");
+                Log.Info("SFTP partner created: " + name + (readOnly ? ", download only" : "") + (keyOnly ? ", key only" : "") + (expires != null ? ", expires " + expires.Value.ToString("yyyy-MM-dd") : "") + (reuse ? ", with the existing folder " + folder : ""));
                 return password;
             }
             catch
             {
                 try { LocalAccounts.DeleteUser(name); } catch (Exception ex) { Log.Error("Removing the half-made partner account " + name, ex, false); }
                 try { LocalAccounts.HideFromSignIn(name, false); } catch { }
+                if (made) try { Directory.Delete(folder, false); } catch (Exception ex) { Log.Error("Removing the new folder " + folder, ex, false); }
                 throw;
             }
         }
+
+        /// <summary>
+        /// Creates a partner, then saves who is told about its uploads: once the account exists, a failure of that second
+        /// step only becomes notifyError, so the only copy of the password is not lost.
+        /// </summary>
+        internal static string CreateKeepingPassword(Func<string> create, Action notify, out string notifyError)
+        {
+            notifyError = null;
+            var password = create();
+            try { notify(); }
+            catch (Exception ex) { notifyError = ex.Message; Log.Error("Saving the upload notifications of a new partner", ex, false); }
+            return password;
+        }
+
+        /// <summary>What the question before a new partner takes an existing folder names: its owner, its files, and who else can open it.</summary>
+        internal static string FolderDetails(string folder)
+        {
+            var parts = new List<string>();
+            try
+            {
+                var ds = Directory.GetAccessControl(folder, AccessControlSections.Owner | AccessControlSections.Access);
+                var owner = ds.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+                parts.Add("owner " + (owner == null ? "unknown" : NameOf(owner)));
+                var others = ds.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+                               .Where(r => r.AccessControlType == AccessControlType.Allow && (r.PropagationFlags & PropagationFlags.InheritOnly) == 0)
+                               .Select(r => (SecurityIdentifier)r.IdentityReference)
+                               .Where(s => !s.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid) && !s.IsWellKnown(WellKnownSidType.LocalSystemSid) && !s.IsWellKnown(WellKnownSidType.CreatorOwnerSid))
+                               .Distinct().Select(NameOf).ToList();
+                parts.Add(others.Count == 0 ? "no account other than SYSTEM and Administrators has access" : "also open to " + string.Join(", ", others.Take(6)) + (others.Count > 6 ? ", ..." : ""));
+            }
+            catch (Exception ex) { parts.Add("its permissions could not be read: " + ex.Message); }
+            try
+            {
+                var files = SftpConfig.Contents(folder).OfType<FileInfo>().ToList();
+                parts.Insert(Math.Min(1, parts.Count), files.Count + " file(s), " + Ui.Bytes(files.Sum(f => f.Length)));
+            }
+            catch (Exception ex) { parts.Add("its files could not be counted: " + ex.Message); }
+            return string.Join("; ", parts);
+        }
+
+        /// <summary>
+        /// Why a partner's folder is not the one made for it, or null: it must be owned by the given owner (Administrators),
+        /// inherit nothing from above, and be open to SYSTEM, Administrators and the partner only.
+        /// </summary>
+        internal static string FolderProblem(DirectorySecurity ds, SecurityIdentifier partner, SecurityIdentifier owner)
+        {
+            var l = new List<string>();
+            var o = ds.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+            if (o == null || o != owner) l.Add("owned by " + (o == null ? "an unknown account" : NameOf(o)));
+            if (!ds.AreAccessRulesProtected) l.Add("it inherits permissions from the folder above");
+            var others = ds.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+                           .Where(r => r.AccessControlType == AccessControlType.Allow).Select(r => (SecurityIdentifier)r.IdentityReference)
+                           .Where(s => !s.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid) && !s.IsWellKnown(WellKnownSidType.LocalSystemSid) && s != partner)
+                           .Distinct().Select(NameOf).ToList();
+            if (others.Count > 0) l.Add("also open to " + string.Join(", ", others));
+            return l.Count == 0 ? null : string.Join(", ", l);
+        }
+
+        private static string NameOf(SecurityIdentifier sid) { try { return sid.Translate(typeof(NTAccount)).Value; } catch { return sid.Value; } }
 
         /// <summary>The name and company shown for a partner, its access and login method, and its expiry date.</summary>
         public static void Update(PartnerGroups g, string root, PartnerAccount before, string fullName, string company, bool readOnly, bool keyOnly, DateTime? expires)
@@ -315,17 +553,40 @@ namespace OpenSSHServerPNManager
 
         public static void Unlock(string name) { LocalAccounts.SetFlags(name, f => f & ~LocalAccounts.UF_LOCKOUT); Log.Info("SFTP partner unlocked: " + name); }
 
-        /// <summary>Ends the partner's open SSH sessions (a disabled or deleted partner would keep them otherwise). Returns how many.</summary>
-        public static int Disconnect(string name, int port)
+        /// <summary>
+        /// Ends the partner's open SSH sessions (a disabled or deleted partner would keep them otherwise). Returns how many;
+        /// problem says why some may still be open (the sessions could not be listed, or one did not end), or is null.
+        /// </summary>
+        public static int Disconnect(string name, int port, out string problem)
         {
-            var me = Accounts.AsciiLower(name); int n = 0;
-            foreach (var s in Sessions.List(port))
+            int n = 0;
+            foreach (var pid in SessionsOf(name, Sessions.List(port), out problem))
             {
-                var user = Accounts.AsciiLower(s.User ?? ""); var bare = user.Contains("\\") ? user.Substring(user.IndexOf('\\') + 1) : user;
-                if (bare != me) continue;
-                try { Sessions.Disconnect(s.Pid); n++; } catch (Exception ex) { Log.Error("Disconnecting " + name + " (PID " + s.Pid + ")", ex, false); }
+                try { Sessions.Disconnect(pid); n++; }
+                catch (Exception ex) { Log.Error("Disconnecting " + name + " (PID " + pid + ")", ex, false); problem = (problem == null ? "" : problem + "; ") + "the session with PID " + pid + " did not end: " + ex.Message; }
             }
             return n;
+        }
+
+        /// <summary>
+        /// The processes of a partner's sessions in a list from Sessions.List (its account, local to this computer). error:
+        /// why the list may lack some, from its error entry or from sessions whose account could not be read, or null.
+        /// </summary>
+        internal static List<int> SessionsOf(string name, IEnumerable<SessionInfo> sessions, out string error)
+        {
+            var me = Accounts.AsciiLower(name); var pids = new List<int>(); int unknown = 0; error = null;
+            foreach (var s in sessions)
+            {
+                var user = s.User ?? "";
+                if (s.Pid == 0 && user.StartsWith("error: ", StringComparison.Ordinal)) { error = "the open sessions could not be listed (" + user.Substring(7) + ")"; continue; }
+                if (user == "?") { unknown++; continue; }
+                user = Accounts.AsciiLower(user);
+                int slash = user.IndexOf('\\');
+                if (slash >= 0 && !string.Equals(user.Substring(0, slash), Environment.MachineName, StringComparison.OrdinalIgnoreCase)) continue; // a domain account of that name
+                if (user.Substring(slash + 1) == me) pids.Add(s.Pid);
+            }
+            if (error == null && unknown > 0) error = unknown + " open session(s) whose account could not be read were left open";
+            return pids;
         }
 
         /// <summary>
@@ -338,7 +599,7 @@ namespace OpenSSHServerPNManager
             var r = LocalAccounts.DeleteUser(p.Name, p.Sid, out note);
             if (r != null) problems.Add(r);
             try { LocalAccounts.HideFromSignIn(p.Name, false); } catch { }
-            foreach (var k in new[] { KeysFileOf(g, p.Name), KeysFileOf(g, p.Name) + ".bak" })
+            foreach (var k in KeysFilesOf(g, p.Name))
                 try { if (File.Exists(k)) File.Delete(k); } catch (Exception ex) { problems.Add("keys file: " + ex.Message); }
             if (deleteFolder)
             {
@@ -355,7 +616,7 @@ namespace OpenSSHServerPNManager
         /// </summary>
         internal static void RetireKeys(PartnerGroups g, string name)
         {
-            var stale = new[] { KeysFileOf(g, name), KeysFileOf(g, name) + ".bak" }.Where(File.Exists).ToList();
+            var stale = KeysFilesOf(g, name).Where(File.Exists).ToList();
             if (stale.Count == 0) return;
             var removed = g.KeysDir.TrimEnd('\\') + ".removed";
             if (!Directory.Exists(removed)) Acl.CreatePrivateFolder(removed);
@@ -437,6 +698,7 @@ namespace OpenSSHServerPNManager
         [DllImport("netapi32.dll", CharSet = CharSet.Unicode)] private static extern int NetLocalGroupAddMembers(string server, string group, int level, ref LOCALGROUP_MEMBERS_INFO_0 members, int count);
         [DllImport("netapi32.dll", CharSet = CharSet.Unicode)] private static extern int NetLocalGroupDelMembers(string server, string group, int level, ref LOCALGROUP_MEMBERS_INFO_0 members, int count);
         [DllImport("netapi32.dll", CharSet = CharSet.Unicode)] private static extern int NetLocalGroupGetMembers(string server, string group, int level, out IntPtr buf, int prefMaxLen, out int read, out int total, IntPtr resume);
+        [DllImport("netapi32.dll", CharSet = CharSet.Unicode)] private static extern int NetLocalGroupGetInfo(string server, string group, int level, out IntPtr buf);
         [DllImport("netapi32.dll")] private static extern int NetApiBufferFree(IntPtr buf);
         [DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool DeleteProfile(string sid, string profilePath, string computer);
 
@@ -518,19 +780,37 @@ namespace OpenSSHServerPNManager
         /// <summary>The account can log on until the end of the given day (local time); null: no expiry.</summary>
         public static void SetExpiry(string name, DateTime? lastDay)
         {
-            uint value = TIMEQ_FOREVER;
-            if (lastDay != null)
-            {
-                var end = lastDay.Value.Date.AddDays(1).ToUniversalTime();
-                value = (uint)Math.Max(1, (end - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds);
-            }
-            var i = new USER_INFO_1017 { AcctExpires = value }; int parm;
+            var i = new USER_INFO_1017 { AcctExpires = ExpiryValue(lastDay) }; int parm;
             int rc = NetUserSetInfo(null, name, 1017, ref i, out parm);
             if (rc != 0) throw Error("The expiry date of " + name + " could not be set", rc);
         }
 
+        /// <summary>The latest last day every time zone can store: the NetAPI counts seconds since 1970 in 32 bits, until 2106-02-07 06:28 UTC.</summary>
+        public static readonly DateTime MaxLastDay = new DateTime(2106, 2, 5);
+
+        /// <summary>
+        /// The NetAPI expiry of an account that can log on until the end of lastDay (local time): seconds since 1970 (UTC), or
+        /// TIMEQ_FOREVER for null. A day it cannot store is refused (an unchecked cast would wrap it to a date long past).
+        /// </summary>
+        internal static uint ExpiryValue(DateTime? lastDay)
+        {
+            if (lastDay == null) return TIMEQ_FOREVER;
+            var day = lastDay.Value.Date;
+            double secs = day.Year > 2106 ? double.MaxValue : (day.AddDays(1).ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
+            if (secs >= TIMEQ_FOREVER) throw new ConfigException("The last day to log in can be " + MaxLastDay.ToString("yyyy-MM-dd") + " at the latest. Untick the date for an account that does not expire.");
+            return (uint)Math.Max(1, secs);
+        }
+
         /// <summary>The last day an account set with SetExpiry may log on: the day before the moment it expires.</summary>
         public static DateTime? LastDay(DateTime? expires) { return expires == null ? (DateTime?)null : expires.Value.AddSeconds(-1).Date; }
+
+        /// <summary>Whether this computer is a domain controller: its account database is the domain's, so it has no local accounts.</summary>
+        public static bool IsDomainController()
+        {
+            try { using (var k = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\ProductOptions")) return IsDcProductType(k == null ? null : k.GetValue("ProductType") as string); }
+            catch { return false; }
+        }
+        internal static bool IsDcProductType(string productType) { return string.Equals(productType, "LanmanNT", StringComparison.OrdinalIgnoreCase); }
 
         public static void CreateGroup(string name, string comment)
         {
@@ -561,11 +841,37 @@ namespace OpenSSHServerPNManager
             if (rc != 0 && rc != 1377 /*ERROR_MEMBER_NOT_IN_ALIAS*/) throw Error("The account could not be removed from " + group, rc);
         }
 
-        /// <summary>The local user accounts in a local group (names without the computer name); empty when the group does not exist.</summary>
-        public static List<string> GroupMembers(string group)
+        /// <summary>Whether a local group of that name exists: the local account database only, where AddToGroup looks (a name lookup also finds domain groups and well-known names).</summary>
+        public static bool GroupExists(string name)
+        {
+            IntPtr buf;
+            int rc = NetLocalGroupGetInfo(null, name, 0, out buf);
+            if (rc == 0) NetApiBufferFree(buf);
+            return rc == 0;
+        }
+
+        /// <summary>The local user accounts in a local group (names without the computer name); empty when the group does not exist, or cannot be read.</summary>
+        public static List<string> GroupMembers(string group) { return Members(group, false); }
+
+        /// <summary>As GroupMembers, but a group that cannot be read (for a reason other than that it does not exist) is an error.</summary>
+        public static List<string> GroupMembersStrict(string group) { return Members(group, true); }
+
+        /// <summary>Why the members of a group could not be read, from the NetAPI's return code; null when they were, or when the group does not exist.</summary>
+        internal static Exception MembersError(string group, int rc)
+        {
+            return rc == 0 || rc == 2220 /*NERR_GroupNotFound*/ || rc == 1376 /*ERROR_NO_SUCH_ALIAS*/ ? null : Error("The members of " + group + " could not be read", rc);
+        }
+
+        private static List<string> Members(string group, bool strict)
         {
             var l = new List<string>(); IntPtr buf; int read, total;
-            if (NetLocalGroupGetMembers(null, group, 2, out buf, -1, out read, out total, IntPtr.Zero) != 0) return l;
+            int rc = NetLocalGroupGetMembers(null, group, 2, out buf, -1, out read, out total, IntPtr.Zero);
+            if (rc != 0)
+            {
+                var e = MembersError(group, rc);
+                if (strict && e != null) throw e;
+                return l;
+            }
             try
             {
                 int size = Marshal.SizeOf(typeof(LOCALGROUP_MEMBERS_INFO_2));
@@ -592,9 +898,10 @@ namespace OpenSSHServerPNManager
             note = null;
             var problems = new List<string>();
             var profile = sid == null ? null : Accounts.ProfileDir(sid);
-            bool profileGone = profile == null || DeleteProfile(sid.Value, null, null) || Accounts.ProfileDir(sid) == null;
+            // The account first: one that cannot be deleted keeps its profile. DeleteProfile works with the SID of a deleted account.
             int rc = NetUserDel(null, name);
-            if (rc != 0 && rc != 2221 /*NERR_UserNotFound*/) problems.Add("NetUserDel error " + rc);
+            if (rc != 0 && rc != 2221 /*NERR_UserNotFound*/) return "NetUserDel error " + rc;
+            bool profileGone = profile == null || DeleteProfile(sid.Value, null, null) || Accounts.ProfileDir(sid) == null;
             if (!profileGone)
             {
                 try

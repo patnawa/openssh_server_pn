@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.RegularExpressions;
@@ -362,7 +363,7 @@ namespace OpenSSHServerPNManager
         private static readonly SecurityIdentifier TrustedInstaller = new SecurityIdentifier("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
 
         /// <summary>SYSTEM and Administrators in full control, for this folder and everything in it; nobody else.</summary>
-        private static DirectorySecurity AdminsOnly()
+        internal static DirectorySecurity AdminsOnly()
         {
             var inherit = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
             var ds = new DirectorySecurity();
@@ -430,6 +431,77 @@ namespace OpenSSHServerPNManager
                 return notes.Count == 0 ? null : string.Join("; ", notes);
             }
             catch (Exception ex) { return "its permissions could not be read: " + ex.Message; }
+        }
+
+        [StructLayout(LayoutKind.Sequential)] private struct SECURITY_ATTRIBUTES { public int Length; public IntPtr SecurityDescriptor; public int InheritHandle; }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool CreateDirectoryW(string path, ref SECURITY_ATTRIBUTES sa);
+
+        /// <summary>
+        /// Creates a folder for SYSTEM and Administrators only, in one step that fails when the folder (or a file or link of
+        /// that name) exists: Directory.CreateDirectory(path, security) takes an existing folder silently, whoever made it.
+        /// Missing parents are made as PrepareFolder makes them.
+        /// </summary>
+        public static void CreateNewFolder(string path)
+        {
+            path = Path.GetFullPath(path);
+            var missing = new Stack<string>();
+            for (var d = Path.GetDirectoryName(path); !string.IsNullOrEmpty(d) && !Directory.Exists(d); d = Path.GetDirectoryName(d)) missing.Push(d);
+            while (missing.Count > 0) Directory.CreateDirectory(missing.Pop(), AdminsOnly());
+            var sd = AdminsOnly().GetSecurityDescriptorBinaryForm();
+            var pin = GCHandle.Alloc(sd, GCHandleType.Pinned);
+            try
+            {
+                var sa = new SECURITY_ATTRIBUTES { Length = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)), SecurityDescriptor = pin.AddrOfPinnedObject() };
+                if (CreateDirectoryW(path, ref sa)) return;
+                int e = Marshal.GetLastWin32Error();
+                if (e == 183 /*ERROR_ALREADY_EXISTS*/ || e == 80 /*ERROR_FILE_EXISTS*/) throw new IOException(path + " exists already.");
+                throw new IOException(path + " could not be created: " + new System.ComponentModel.Win32Exception(e).Message);
+            }
+            finally { pin.Free(); }
+        }
+
+        /// <summary>
+        /// Everything in a folder, each folder before what it holds, without following links (junctions, symbolic links):
+        /// they are listed, never entered. Lazy: a folder is read only after its entry was handled.
+        /// </summary>
+        internal static IEnumerable<FileSystemInfo> Contents(string folder)
+        {
+            var dirs = new Stack<DirectoryInfo>(); dirs.Push(new DirectoryInfo(folder));
+            while (dirs.Count > 0)
+            {
+                foreach (var e in dirs.Pop().EnumerateFileSystemInfos())
+                {
+                    yield return e;
+                    var d = e as DirectoryInfo;
+                    if (d != null && (e.Attributes & FileAttributes.ReparsePoint) == 0) dirs.Push(d);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Gives an existing folder to one account as if it had just been made for it: the owner given (Administrators),
+        /// SYSTEM and Administrators in full control and the account with its rights, nothing inherited from above; and
+        /// everything in it owned by that owner, inheriting only that. Each folder is locked before it is read, links in it
+        /// are never followed (icacls /T follows junctions, even with /L), and finding one stops the reset at the end.
+        /// </summary>
+        internal static void ResetFolder(string path, SecurityIdentifier who, bool readOnly, SecurityIdentifier owner)
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new ConfigException(path + " is a link (junction or symbolic link), not a folder.");
+            var ds = AdminsOnly(); ds.SetOwner(owner);
+            ds.AddAccessRule(new FileSystemAccessRule(who, readOnly ? FileSystemRights.ReadAndExecute : FileSystemRights.Modify, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+            Directory.SetAccessControl(path, ds);
+            var links = new List<string>();
+            foreach (var e in Contents(path))
+            {
+                if ((e.Attributes & FileAttributes.ReparsePoint) != 0) { links.Add(e.FullName); continue; }
+                var dir = e as DirectoryInfo;
+                FileSystemSecurity s = dir != null ? (FileSystemSecurity)dir.GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access) : ((FileInfo)e).GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access);
+                foreach (FileSystemAccessRule r in s.GetAccessRules(true, false, typeof(SecurityIdentifier))) s.RemoveAccessRuleSpecific(r);
+                s.SetAccessRuleProtection(false, false);
+                if (!owner.Equals(s.GetOwner(typeof(SecurityIdentifier)))) s.SetOwner(owner);
+                if (dir != null) dir.SetAccessControl((DirectorySecurity)s); else ((FileInfo)e).SetAccessControl((FileSecurity)s);
+            }
+            if (links.Count > 0) throw new ConfigException(path + " holds links (junctions or symbolic links), which were left as they are: " + string.Join(", ", links.Take(3)) + (links.Count > 3 ? ", ..." : "") + ". Whoever made them decides what they lead to: remove them first.");
         }
 
         private static bool IsCreatorOwner(SecurityIdentifier s) { return s.IsWellKnown(WellKnownSidType.CreatorOwnerSid); }
