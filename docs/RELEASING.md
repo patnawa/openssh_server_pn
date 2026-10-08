@@ -21,8 +21,10 @@ The stable product release remains 10.5.5.0. They do not establish production re
 
 Preview tags point to the source commit for the tested local artifacts and use a namespace that
 does not trigger the stable `v*` or `manager-v*` release workflows. Stable signing gates remain
-unchanged. A push of that source to `main` separately runs branch CI; its results are not
-claimed as evidence for local binaries. Do not dispatch a stable workflow against a preview tag.
+unchanged. A push of that source to `main` separately runs branch CI. Matching downloaded
+artifact hashes can provide independent verification, but do not turn local files into hosted
+builds or supply an attestation. See the [verification record](IMPROVEMENT-PLAN.md).
+Do not dispatch a stable workflow against a preview tag.
 
 Preview assets include SHA-256 checksums, compiler build metadata, local build provenance,
 validation results, and a product SBOM. Local provenance is a build record, **not** a GitHub

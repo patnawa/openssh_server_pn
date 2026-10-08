@@ -75,7 +75,9 @@ local scope. They do not imply that deferred acceptance or release signing passe
   round trips; interoperability drivers are prepared for the installed-server fixture.
 - [x] Update versions, the tested tracked manager binary, changelog, build/release,
   security and validation documentation.
-- [ ] Execute the changed hosted CI workflows on the final committed revision.
+- [x] Execute the hosted manager workflow on the preview source revision; verify
+  its downloaded executable matches the local tested bytes.
+- [ ] Complete the full hosted product workflow and its native/install acceptance.
 - [ ] Run the signed release workflow after a signing identity is configured.
 
 ## Local evidence — 8 October 2026
@@ -124,6 +126,27 @@ Native, installer and package commands and fixture requirements are documented i
 [VALIDATION.md](VALIDATION.md). VM drivers deliberately require an explicit
 `-DisposableMachine` argument. They have been prepared and checked locally but
 have not been run against a disposable installed system in this work.
+
+## Hosted verification and publication — 8 October 2026
+
+The [manager workflow](https://github.com/patnawa/openssh_server_pn/actions/runs/37737760048)
+passed on preview source commit `2f622a582dc894f683efc296b6b8fb86fa49a6d7`: **162 unit
+tests and 49 GUI checks**. Its downloaded executable has the exact SHA-256 listed
+above. All 19 screenshots had the expected dimensions, including full-width
+navigation at 100%, 150% and 200% on the runner's small desktop.
+
+Both unsigned prereleases are published:
+[product 10.5.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r3)
+and [Manager 2.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r3).
+All **12 product assets and 9 manager assets** were downloaded after publication
+and matched their staged files byte for byte. Stable `v10.5.5.0` remains latest.
+The uploaded files are local unsigned builds; the independent hosted result does
+not provide them with hosted build provenance or a cryptographic attestation.
+
+At publication, the [full product workflow](https://github.com/patnawa/openssh_server_pn/actions/runs/37737760283)
+had passed its Version and manager jobs and was still building x64, x86 and ARM64.
+Its complete native and installed-system result is pending; the deferred checks
+below are not marked passed by the manager result.
 
 ## Deferred acceptance
 
