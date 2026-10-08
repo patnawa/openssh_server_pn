@@ -54,15 +54,28 @@ namespace OpenSSHServerPNManager
         [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr value);
 
         internal static string ServiceDefinitionError(string command, string executable, string configPath)
+        { return ServiceDefinitionError(command, executable, configPath, File.Exists); }
+
+        internal static string ServiceDefinitionError(string command, string executable, string configPath, Func<string, bool> exists)
         {
             if (string.IsNullOrWhiteSpace(command)) return "The SSH service command line is missing or unavailable.";
             IntPtr arguments = IntPtr.Zero;
             try
             {
-                int count; arguments = CommandLineToArgvW(Environment.ExpandEnvironmentVariables(command.Trim()), out count);
+                var expanded = Environment.ExpandEnvironmentVariables(command.Trim());
+                // An unquoted path with spaces is read as Ssh.InstallDir reads it, not split at its first space.
+                string rest; var program = Services.SplitImagePath(expanded, out rest);
+                bool unquoted = !expanded.StartsWith("\"", StringComparison.Ordinal) && program != null && program.IndexOfAny(new[] { ' ', '\t' }) >= 0;
+                if (unquoted)
+                {
+                    var shadow = Services.UnquotedSearchOrder(program).FirstOrDefault(exists);
+                    if (shadow != null) return "The SSH service path is not quoted, so Windows starts " + shadow + " instead of " + program + ". Quote the path of the service, or repair the installation.";
+                }
+                int count; arguments = CommandLineToArgvW(unquoted ? "sshd " + rest : expanded, out count);
                 if (arguments == IntPtr.Zero || count == 0) return "The SSH service command line could not be parsed.";
                 var args = new List<string>();
                 for (int i = 0; i < count; i++) args.Add(Marshal.PtrToStringUni(Marshal.ReadIntPtr(arguments, i * IntPtr.Size)));
+                if (unquoted) args[0] = program;
                 if (!string.Equals(Path.GetFullPath(args[0]), Path.GetFullPath(executable), StringComparison.OrdinalIgnoreCase)) return "The SSH service runs a different executable than the manager's server tools.";
                 for (int i = 1; i < args.Count; i++)
                 {
