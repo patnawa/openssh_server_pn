@@ -48,18 +48,46 @@ namespace OpenSSHServerPNManager
             using (var r = new StreamReader(s)) return r.ReadToEnd();
         }
 
-        /// <summary>The key material ssh-keygen -i takes from an RFC 4716 file (do_convert_from_ssh2: header and continuation lines skipped).</summary>
+        /// <summary>
+        /// The key material ssh-keygen -i takes from an RFC 4716 file (do_convert_from_ssh2: header and continuation lines skipped,
+        /// a header line with " END " ends the key), or null where it would take the file for a private key.
+        /// </summary>
         private static string KeygenImport(string text)
         {
             var sb = new StringBuilder(); int escaped = 0;
             foreach (var line in text.Split('\n'))
             {
                 if (line.EndsWith("\\", StringComparison.Ordinal)) escaped++;
-                if (line.StartsWith("----", StringComparison.Ordinal) || line.Contains(": ")) continue;
+                if (line.StartsWith("----", StringComparison.Ordinal) || line.Contains(": "))
+                {
+                    if (line.Contains("---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----")) return null;
+                    if (line.Contains(" END ")) break;
+                    continue;
+                }
                 if (escaped > 0) { escaped--; continue; }
                 sb.Append(line);
             }
             return sb.ToString();
+        }
+
+        /// <summary>Checks an RFC 4716 export: lines ssh-keygen -i reads as this key, and a header that joins to the comment, quoted.</summary>
+        private static void CheckRfc4716(string text, string comment, string key)
+        {
+            var lines = text.TrimEnd('\n').Split('\n');
+            var header = new StringBuilder();
+            for (int i = 1; i < lines.Length && !lines[i].StartsWith("----", StringComparison.Ordinal); i++)
+            {
+                if (Encoding.UTF8.GetByteCount(lines[i]) > 72) throw new Exception("line over 72 bytes: " + lines[i]);
+                if (lines[i].Length > 0 && (char.IsHighSurrogate(lines[i].Last()) || char.IsLowSurrogate(lines[i][0]))) throw new Exception("a character split: " + lines[i]);
+                bool continuation = i > 1 && lines[i - 1].EndsWith("\\", StringComparison.Ordinal);
+                if (continuation && (lines[i].Contains(": ") || lines[i].StartsWith("----", StringComparison.Ordinal))) throw new Exception("ssh-keygen -i takes this continuation line for a header: " + lines[i]);
+                if (i == 1 || continuation) header.Append(lines[i].EndsWith("\\", StringComparison.Ordinal) ? lines[i].Substring(0, lines[i].Length - 1) : lines[i]);
+            }
+            var value = header.ToString();
+            var kept = new string(comment.Where(c => c != '"' && c != '\\').ToArray());
+            if (!value.StartsWith("Comment: \"", StringComparison.Ordinal) || !value.EndsWith("\"", StringComparison.Ordinal) || value.Substring(10, value.Length - 11).IndexOf('"') >= 0) throw new Exception("not one quoted value: " + value);
+            if (value.Substring(10, value.Length - 11) != kept) throw new Exception("comment: " + value);
+            if (KeygenImport(text) != key) throw new Exception("key material for [" + comment + "]: " + (KeygenImport(text) ?? "read as a private key"));
         }
 
         internal static void Run(Action<string, Func<string>> test, string tmpDir)
@@ -152,6 +180,68 @@ namespace OpenSSHServerPNManager
                 if (File.ReadAllText(outside) != "precious") throw new Exception("the other file changed");
                 return null;
             });
+            test("authorized_keys: what a change keeps is read after the folder is checked, never by name before", () =>
+            {
+                var dir = NewDir(tmpDir, "readfirst");
+                var real = Path.Combine(dir, "real"); Directory.CreateDirectory(real);
+                var link = Path.Combine(dir, "link");
+                var r = Proc.Run("cmd.exe", "/c mklink /J " + Proc.Quote(link) + " " + Proc.Quote(real), 30000);
+                if (!r.Ok || !Directory.Exists(link)) throw new Exception("mklink /J: " + r.Output);
+                var file = Path.Combine(real, "authorized_keys");
+                File.WriteAllText(file, "ssh-ed25519 " + Ed + " victim\n");
+                var via = Path.Combine(link, "authorized_keys");
+                // Held so that reading the file behind the junction fails with a sharing violation instead of the refusal.
+                using (new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.None))
+                {
+                    foreach (var change in new Func<object>[] { () => Keys.AddLines(via, new[] { "ssh-ed25519 " + Ed2 + " attacker" }, me), () => Keys.RemoveKey(via, "ssh-ed25519 " + Ed, me) })
+                    {
+                        try { change(); throw new Exception("changed through the junction"); }
+                        catch (ConfigException) { }
+                        catch (IOException ex) { throw new Exception("the file behind the junction was read first: " + ex.Message); }
+                    }
+                }
+                return null;
+            });
+            test("authorized_keys: a CR inside a line does not end it, as sshd reads the file", () =>
+            {
+                var dir = NewDir(tmpDir, "cr"); var file = Path.Combine(dir, "authorized_keys");
+                File.WriteAllText(file, "ssh-ed25519 " + Ed.Substring(0, 20) + "\r" + Ed.Substring(20) + " crkey\r\nssh-ed25519 " + Ed2 + " b\n");
+                var keys = Keys.Read(file);
+                if (keys.Count != 2 || keys[0].Type != "ssh-ed25519" || Keys.Blob(keys[0].Line) != Ed || keys[0].Comment != "crkey") throw new Exception("read: " + string.Join(" | ", keys.Select(k => k.Type + " " + k.Comment)));
+                if (Keys.RemoveKey(file, keys[0].Line, me) != 1) throw new Exception("not exactly one line removed");
+                var left = File.ReadAllText(file);
+                if (left != "ssh-ed25519 " + Ed2 + " b\n") throw new Exception("left: " + left);
+                return null;
+            });
+            test("authorized_keys: Fix permissions sets the key file's own ACL, never one behind a link", () =>
+            {
+                var dir = NewDir(tmpDir, "restrict");
+                var real = Path.Combine(dir, "real"); Directory.CreateDirectory(real);
+                var link = Path.Combine(dir, "link");
+                var r = Proc.Run("cmd.exe", "/c mklink /J " + Proc.Quote(link) + " " + Proc.Quote(real), 30000);
+                if (!r.Ok || !Directory.Exists(link)) throw new Exception("mklink /J: " + r.Output);
+                var file = Path.Combine(real, "authorized_keys");
+                File.WriteAllText(file, "ssh-ed25519 " + Ed + " a\n");
+                var users = new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null);
+                var fs = File.GetAccessControl(file);
+                fs.AddAccessRule(new FileSystemAccessRule(users, FileSystemRights.Read, AccessControlType.Allow));
+                File.SetAccessControl(file, fs);
+                var before = File.GetAccessControl(file).GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+                var second = Path.Combine(real, "second");
+                if (!CreateHardLink(second, file, IntPtr.Zero)) throw new Exception("CreateHardLink: " + Marshal.GetLastWin32Error());
+                foreach (var target in new[] { Path.Combine(link, "authorized_keys"), second })
+                {
+                    try { Keys.RestrictKeyFile(target, me); throw new Exception("set through a link: " + target); }
+                    catch (ConfigException) { }
+                }
+                if (File.GetAccessControl(file).GetSecurityDescriptorSddlForm(AccessControlSections.Access) != before) throw new Exception("the file behind a link changed");
+                File.Delete(second);
+                Keys.RestrictKeyFile(file, me);
+                var after = File.GetAccessControl(file);
+                var sids = after.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().Select(x => (SecurityIdentifier)x.IdentityReference).ToList();
+                if (!after.AreAccessRulesProtected || sids.Contains(users) || !sids.Contains(me) || sids.Count != 3) throw new Exception("ACL: " + after.GetSecurityDescriptorSddlForm(AccessControlSections.Access));
+                return null;
+            });
             test("authorized_keys: rsa-sha2 key names and \\v \\f \\r inside the key material are read as sshd reads them", () =>
             {
                 foreach (var type in new[] { "rsa-sha2-256", "rsa-sha2-512", "rsa-sha2-256-cert-v01@openssh.com", "rsa-sha2-512-cert-v01@openssh.com" })
@@ -227,30 +317,28 @@ namespace OpenSSHServerPNManager
                 // A long comment with what the format cannot hold, what ssh-keygen -i would take for a header, and multi-byte characters.
                 var comment = "a\"b\\c: d ---- e " + new string('\u00e9', 80) + " \ud83d\ude00\ud83d\ude00 -------- x: y " + new string('-', 70) + "z: " + new string('\u0e01', 30);
                 var text = KeyGen.Rfc4716("rsa-sha2-512 " + Rsa + " x", comment);
-                lines = text.TrimEnd('\n').Split('\n');
-                var header = new StringBuilder();
-                for (int i = 1; i < lines.Length && !lines[i].StartsWith("----", StringComparison.Ordinal); i++)
+                CheckRfc4716(text, comment, Rsa);
+                // ssh-keygen -i reads the first line as a header: " END " there ends the key, and a private key's begin line makes it one.
+                var markers = new[] { "FRONT END deploy key", "END END x","x ---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ---- y", "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ---- END x: y", "key END " + new string('\u00e9', 40) + " END x: y" };
+                var texts = new List<KeyValuePair<string, string>> { new KeyValuePair<string, string>(text, Rsa) };
+                foreach (var m in markers)
                 {
-                    if (Encoding.UTF8.GetByteCount(lines[i]) > 72) throw new Exception("line over 72 bytes: " + lines[i]);
-                    if (lines[i].Length > 0 && (char.IsHighSurrogate(lines[i].Last()) || char.IsLowSurrogate(lines[i][0]))) throw new Exception("a character split: " + lines[i]);
-                    bool continuation = i > 1 && lines[i - 1].EndsWith("\\", StringComparison.Ordinal);
-                    if (continuation && (lines[i].Contains(": ") || lines[i].StartsWith("----", StringComparison.Ordinal))) throw new Exception("ssh-keygen -i takes this continuation line for a header: " + lines[i]);
-                    if (i == 1 || continuation) header.Append(lines[i].EndsWith("\\", StringComparison.Ordinal) ? lines[i].Substring(0, lines[i].Length - 1) : lines[i]);
+                    var t = KeyGen.Rfc4716("ssh-ed25519 " + EdKey + " x", m);
+                    CheckRfc4716(t, m.Trim(), EdKey);
+                    texts.Add(new KeyValuePair<string, string>(t, EdKey));
                 }
-                var value = header.ToString();
-                var kept = new string(comment.Where(c => c != '"' && c != '\\').ToArray());
-                if (!value.StartsWith("Comment: \"", StringComparison.Ordinal) || !value.EndsWith("\"", StringComparison.Ordinal) || value.Substring(10, value.Length - 11).IndexOf('"') >= 0) throw new Exception("not one quoted value: " + value);
-                if (value.Substring(10, value.Length - 11) != kept) throw new Exception("comment: " + value);
-                if (KeygenImport(text) != Rsa) throw new Exception("key material: " + KeygenImport(text));
                 // The export itself, and ssh-keygen -i where it is installed.
                 var dir = NewDir(tmpDir, "rfc4716"); var target = Path.Combine(dir, "acme.pub");
                 KeyGen.Export(new KeyFileInfo { Path = Path.Combine(dir, "id_ed25519"), PublicLine = "ssh-ed25519 " + EdKey + " acme-partner-key", Comment = "acme-partner-key" }, KeyExportFormat.Rfc4716Public, target, null, null, DateTime.Now);
                 if (File.ReadAllText(target) != plain) throw new Exception("exported: " + File.ReadAllText(target));
                 var keygen = Ssh.Exe("ssh-keygen.exe");
                 if (!File.Exists(keygen)) return "ssh-keygen -i not run: not installed";
-                File.WriteAllText(target, text, new UTF8Encoding(false));
-                var r = Proc.Run(keygen, "-i -f " + Proc.Quote(target), 30000);
-                if (!r.Ok || Keys.Blob(r.StdOut.Trim()) != Rsa) throw new Exception("ssh-keygen -i: " + r.Output);
+                foreach (var t in texts)
+                {
+                    File.WriteAllText(target, t.Key, new UTF8Encoding(false));
+                    var r = Proc.Run(keygen, "-i -f " + Proc.Quote(target), 30000);
+                    if (!r.Ok || Keys.Blob(r.StdOut.Trim()) != t.Value) throw new Exception("ssh-keygen -i: " + r.Output + "\n" + t.Key);
+                }
                 return null;
             });
             test("key files: buffers that held key material are wiped when outgrown or no longer needed", () =>

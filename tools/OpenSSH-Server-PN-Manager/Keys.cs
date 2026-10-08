@@ -33,8 +33,7 @@ namespace OpenSSHServerPNManager
         public static List<KeyEntry> Read(string path)
         {
             var l = new List<KeyEntry>();
-            if (!File.Exists(path)) return l;
-            foreach (var raw in File.ReadAllLines(path))
+            foreach (var raw in ReadRaw(path)) // lines end at LF only, as sshd reads them: a lone CR stays in the line
             {
                 var line = raw.Trim();
                 if (line.Length == 0 || line.StartsWith("#")) continue;
@@ -132,27 +131,72 @@ namespace OpenSSHServerPNManager
         /// </summary>
         public static void Write(string path, IEnumerable<string> lines, SecurityIdentifier ownerSid, bool backup = true)
         {
+            var l = lines.ToList();
+            Update(path, previous => l, ownerSid, backup);
+        }
+
+        /// <summary>
+        /// Changes a key file as Write writes it: change gets the file's lines (as ReadRaw gives them) and returns the new lines,
+        /// or null to leave the file. The lines are read through the handle that was checked, inside the checked folder: read
+        /// by name before the checks, they could have come from another account's file.
+        /// </summary>
+        private static void Update(string path, Func<List<string>, List<string>> change, SecurityIdentifier ownerSid, bool backup)
+        {
             path = Path.GetFullPath(path);
             var dir = Path.GetDirectoryName(path);
             Directory.CreateDirectory(dir);
-            var bytes = new UTF8Encoding(false).GetBytes(string.Join("\n", lines) + "\n");
             using (OpenVerifiedFolder(dir))
             {
-                RequirePlainFile(path);
+                var previous = ReadPlainFile(path);
+                var lines = change(previous == null ? new List<string>() : Lines(Text(previous)));
+                if (lines == null) return;
                 if (backup) RequirePlainFile(path + ".bak");
-                if (backup && File.Exists(path))
+                if (backup && previous != null)
                 {
                     // A .bak someone holds open must not stop a change such as revoking a key: the backup is best effort.
-                    try { Replace(path + ".bak", ReadShared(path), ownerSid); }
+                    try { Replace(path + ".bak", previous, ownerSid); }
                     catch (Exception ex) { Log.Error("Could not keep the previous " + path + " as .bak", ex, false); }
                 }
                 // Replaced in one rename: a full disk or a killed process must not leave a truncated file that refuses every key.
-                Replace(path, bytes, ownerSid);
+                Replace(path, new UTF8Encoding(false).GetBytes(string.Join("\n", lines) + "\n"), ownerSid);
+            }
+        }
+
+        /// <summary>
+        /// Gives an existing key file the permissions Write gives it, through a handle on the file after the checks Write makes:
+        /// set by name, as administrator, they would follow a link the account made and grant it the file behind the link.
+        /// </summary>
+        public static void RestrictKeyFile(string path, SecurityIdentifier ownerSid)
+        {
+            path = Path.GetFullPath(path);
+            using (OpenVerifiedFolder(Path.GetDirectoryName(path)))
+            {
+                FileInformation info;
+                using (var h = OpenPlainFile(path, ReadControl | WriteDac | ReadAttributes, out info))
+                {
+                    if (h == null) return;
+                    var sd = new RawSecurityDescriptor(KeyFileSecurity(ownerSid).GetSecurityDescriptorBinaryForm(), 0);
+                    var dacl = new byte[sd.DiscretionaryAcl.BinaryLength];
+                    sd.DiscretionaryAcl.GetBinaryForm(dacl, 0);
+                    int error = SetSecurityInfo(h, 1, DaclSecurityInformation | ProtectedDaclSecurityInformation, IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero);
+                    if (error != 0) { var e = new Win32Exception(error); throw new IOException("Could not set the permissions of " + path + ": " + e.Message, e); }
+                }
             }
         }
 
         private static readonly SecurityIdentifier SystemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
         private static readonly SecurityIdentifier AdminsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+
+        /// <summary>SYSTEM, Administrators and ownerSid full control, nothing inherited.</summary>
+        private static FileSecurity KeyFileSecurity(SecurityIdentifier ownerSid)
+        {
+            var security = new FileSecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.AddAccessRule(new FileSystemAccessRule(SystemSid, FileSystemRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new FileSystemAccessRule(AdminsSid, FileSystemRights.FullControl, AccessControlType.Allow));
+            if (ownerSid != null && ownerSid != AdminsSid && ownerSid != SystemSid) security.AddAccessRule(new FileSystemAccessRule(ownerSid, FileSystemRights.FullControl, AccessControlType.Allow));
+            return security;
+        }
 
         /// <summary>
         /// Writes a new file beside path and renames it over path. Its permissions are final from its creation (SYSTEM,
@@ -162,11 +206,7 @@ namespace OpenSSHServerPNManager
         /// </summary>
         private static void Replace(string path, byte[] bytes, SecurityIdentifier ownerSid)
         {
-            var security = new FileSecurity();
-            security.SetAccessRuleProtection(true, false);
-            security.AddAccessRule(new FileSystemAccessRule(SystemSid, FileSystemRights.FullControl, AccessControlType.Allow));
-            security.AddAccessRule(new FileSystemAccessRule(AdminsSid, FileSystemRights.FullControl, AccessControlType.Allow));
-            if (ownerSid != null && ownerSid != AdminsSid && ownerSid != SystemSid) security.AddAccessRule(new FileSystemAccessRule(ownerSid, FileSystemRights.FullControl, AccessControlType.Allow));
+            var security = KeyFileSecurity(ownerSid);
             var tmp = path + ".new-" + Guid.NewGuid().ToString("N");
             try
             {
@@ -182,12 +222,8 @@ namespace OpenSSHServerPNManager
             finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch { } }
         }
 
-        private static byte[] ReadShared(string path)
-        {
-            // Shared like sshd's own reads, so that a login at this moment does not make the backup fail.
-            using (var s = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-            using (var m = new MemoryStream()) { s.CopyTo(m); return m.ToArray(); }
-        }
+        [DllImport("advapi32.dll")]
+        private static extern int SetSecurityInfo(SafeFileHandle handle, int objectType, uint securityInfo, IntPtr owner, IntPtr group, byte[] dacl, IntPtr sacl);
 
         [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
@@ -214,6 +250,7 @@ namespace OpenSSHServerPNManager
 
         private const uint ListDirectory = 0x1, ReadAttributes = 0x80, ShareRead = 0x1, ShareWrite = 0x2, ShareDelete = 0x4, OpenExisting = 3;
         private const uint BackupSemantics = 0x02000000, OpenReparsePoint = 0x00200000;
+        private const uint GenericRead = 0x80000000, ReadControl = 0x20000, WriteDac = 0x40000, DaclSecurityInformation = 0x4, ProtectedDaclSecurityInformation = 0x80000000;
 
         /// <summary>
         /// Opens a key file's folder and checks that it is the folder its path names, with no junction or symbolic link on the
@@ -243,32 +280,81 @@ namespace OpenSSHServerPNManager
             catch { h.Dispose(); throw; }
         }
 
-        /// <summary>Refuses a key file (or its .bak) that is a link, a folder, or a file with a second name (a hard link).</summary>
-        private static void RequirePlainFile(string path)
+        /// <summary>
+        /// Opens a key file (or its .bak) itself, never what a link leads to, and refuses one that is a link, a folder, or a file
+        /// with a second name (a hard link). Null when there is no such file.
+        /// </summary>
+        private static SafeFileHandle OpenPlainFile(string path, uint access, out FileInformation info)
         {
-            using (var h = CreateFile(path, ReadAttributes, ShareRead | ShareWrite | ShareDelete, IntPtr.Zero, OpenExisting, BackupSemantics | OpenReparsePoint, IntPtr.Zero))
+            info = new FileInformation();
+            var h = CreateFile(path, access, ShareRead | ShareWrite | ShareDelete, IntPtr.Zero, OpenExisting, BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+            if (h.IsInvalid)
             {
-                if (h.IsInvalid)
-                {
-                    int error = Marshal.GetLastWin32Error();
-                    if (error == 2) return; // not there (yet)
-                    var e = new Win32Exception(error); throw new IOException("Could not check " + path + ": " + e.Message, e);
-                }
-                FileInformation info; AttributeTagInformation tag;
+                int error = Marshal.GetLastWin32Error(); h.Dispose();
+                if (error == 2) return null; // not there (yet)
+                var e = new Win32Exception(error); throw new IOException("Could not open " + path + ": " + e.Message, e);
+            }
+            try
+            {
+                AttributeTagInformation tag;
                 if (!GetFileInformationByHandle(h, out info) || !GetFileInformationByHandleEx(h, 9, out tag, Marshal.SizeOf(typeof(AttributeTagInformation))))
                 { var e = new Win32Exception(Marshal.GetLastWin32Error()); throw new IOException("Could not check " + path + ": " + e.Message, e); }
                 // Name surrogates (symbolic links, junctions) lead elsewhere; other reparse points (deduplication, cloud files) do not.
                 if ((info.Attributes & 0x10) != 0 || (info.Attributes & 0x400) != 0 && (tag.ReparseTag & 0x20000000) != 0)
                     throw new ConfigException(path + " is a link or a folder, not a file. Key files are not written through links.");
                 if (info.Links > 1) throw new ConfigException(path + " has " + info.Links + " names (hard links). Key files are not written through links.");
+                return h;
             }
+            catch { h.Dispose(); throw; }
+        }
+
+        private static void RequirePlainFile(string path)
+        {
+            FileInformation info;
+            using (OpenPlainFile(path, ReadAttributes, out info)) { }
+        }
+
+        /// <summary>A key file's bytes, read through a handle OpenPlainFile checked; null when there is no file.</summary>
+        private static byte[] ReadPlainFile(string path)
+        {
+            FileInformation info;
+            var h = OpenPlainFile(path, GenericRead, out info);
+            if (h == null) return null;
+            try
+            {
+                if ((info.Attributes & 0x400) != 0)
+                {
+                    // A deduplicated or cloud file's data comes through its filter, which this handle bypasses: the same file
+                    // again by name, known by its file ID.
+                    var data = CreateFile(path, GenericRead, ShareRead | ShareWrite | ShareDelete, IntPtr.Zero, OpenExisting, 0, IntPtr.Zero);
+                    FileInformation same;
+                    if (data.IsInvalid || !GetFileInformationByHandle(data, out same) || same.Volume != info.Volume || same.IndexHigh != info.IndexHigh || same.IndexLow != info.IndexLow)
+                    { data.Dispose(); throw new IOException("Could not read " + path + " as the file that was checked."); }
+                    h.Dispose(); h = data;
+                }
+                // Shared like sshd's own reads, so that a login at this moment does not make the change fail.
+                using (var s = new FileStream(h, FileAccess.Read))
+                using (var m = new MemoryStream()) { s.CopyTo(m); return m.ToArray(); }
+            }
+            finally { h.Dispose(); }
+        }
+
+        /// <summary>Text as File.ReadAllText decodes it: UTF-8 unless a byte order mark says otherwise.</summary>
+        private static string Text(byte[] bytes)
+        {
+            using (var r = new StreamReader(new MemoryStream(bytes), Encoding.UTF8, true)) return r.ReadToEnd();
         }
 
         /// <summary>Every line of an authorized_keys file as written, comments and blank lines included.</summary>
         public static List<string> ReadRaw(string path)
         {
-            if (!File.Exists(path)) return new List<string>();
-            var l = File.ReadAllText(path).Split(new[] { "\r\n", "\n" }, StringSplitOptions.None).ToList();
+            return File.Exists(path) ? Lines(File.ReadAllText(path)) : new List<string>();
+        }
+
+        /// <summary>Lines as sshd reads them: ended by LF (a CR before it is dropped, one elsewhere kept), trailing blank lines left out.</summary>
+        private static List<string> Lines(string text)
+        {
+            var l = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None).ToList();
             while (l.Count > 0 && l[l.Count - 1].Trim().Length == 0) l.RemoveAt(l.Count - 1);
             return l;
         }
@@ -279,18 +365,25 @@ namespace OpenSSHServerPNManager
         /// </summary>
         public static int[] AddLines(string path, IEnumerable<string> newLines, SecurityIdentifier ownerSid, bool backup = true)
         {
-            var raw = ReadRaw(path);
-            var blobs = new HashSet<string>(Read(path).Select(k => Blob(k.Line)));
-            int added = 0, skipped = 0;
+            var lines = new List<string>();
             foreach (var n in newLines)
             {
                 var line = (n ?? "").Trim(); if (line.Length == 0 || line.StartsWith("#")) continue;
                 if (line.Any(c => c != '\t' && char.IsControl(c))) throw new ConfigException("A key line contains a control character.");
                 if (!LooksLikePublicKey(line)) throw new ConfigException("Not an OpenSSH public key line:\n" + line);
-                if (!blobs.Add(Blob(line))) { skipped++; continue; }
-                raw.Add(line); added++;
+                lines.Add(line);
             }
-            if (added > 0) Write(path, raw, ownerSid, backup);
+            int added = 0, skipped = 0;
+            if (lines.Count > 0) Update(path, raw =>
+            {
+                var blobs = new HashSet<string>(raw.Select(l => l.Trim()).Where(t => t.Length > 0 && !t.StartsWith("#")).Select(t => Blob(t)));
+                foreach (var line in lines)
+                {
+                    if (!blobs.Add(Blob(line))) { skipped++; continue; }
+                    raw.Add(line); added++;
+                }
+                return added > 0 ? raw : null;
+            }, ownerSid, backup);
             return new[] { added, skipped };
         }
 
@@ -298,10 +391,13 @@ namespace OpenSSHServerPNManager
         public static int RemoveKey(string path, string keyLine, SecurityIdentifier ownerSid, bool backup = true)
         {
             var blob = Blob(keyLine);
-            var raw = ReadRaw(path);
-            var kept = raw.Where(l => { var t = l.Trim(); return t.Length == 0 || t.StartsWith("#") || Blob(t) != blob; }).ToList();
-            int removed = raw.Count - kept.Count;
-            if (removed > 0) Write(path, kept, ownerSid, backup);
+            int removed = 0;
+            if (File.Exists(path)) Update(path, raw =>
+            {
+                var kept = raw.Where(l => { var t = l.Trim(); return t.Length == 0 || t.StartsWith("#") || Blob(t) != blob; }).ToList();
+                removed = raw.Count - kept.Count;
+                return removed > 0 ? kept : null;
+            }, ownerSid, backup);
             return removed;
         }
 

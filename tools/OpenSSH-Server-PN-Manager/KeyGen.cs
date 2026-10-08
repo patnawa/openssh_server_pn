@@ -598,15 +598,24 @@ namespace OpenSSHServerPNManager
         /// <summary>
         /// One RFC 4716 header as lines of at most 72 bytes. ssh-keygen -i skips continuation lines only while they look like
         /// no header themselves: none holds ": " or starts with "----". A dash run too long for any line ends the comment.
+        /// The first line is a header to it, so it ends before any " END " (which would end the key there) and before the
+        /// begin line of an SSH2 private key (which would make it read one).
         /// </summary>
         private static List<string> HeaderLines(string header)
         {
             var lines = new List<string>();
+            int stop = header.Length;
+            foreach (var marker in new[] { " END ", "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----" })
+            {
+                int at = header.IndexOf(marker, StringComparison.Ordinal);
+                if (at >= 0 && at < stop) stop = at;
+            }
             for (int start = 0; ; )
             {
                 int end = Utf8Fit(header, start, 72);
-                if (end == header.Length && (lines.Count == 0 || header.IndexOf(": ", start, StringComparison.Ordinal) < 0)) { lines.Add(header.Substring(start)); return lines; }
+                if (end == header.Length && (lines.Count == 0 ? stop == header.Length : header.IndexOf(": ", start, StringComparison.Ordinal) < 0)) { lines.Add(header.Substring(start)); return lines; }
                 end = Utf8Fit(header, start, 71); // room for the backslash
+                if (lines.Count == 0 && stop < end) end = stop;
                 int colon = lines.Count == 0 ? -1 : header.IndexOf(": ", start, end - start, StringComparison.Ordinal);
                 if (colon >= 0 && colon + 1 < end) end = colon + 1;
                 while (end > start + 1 && string.CompareOrdinal(header, end, "----", 0, 4) == 0) end--;
