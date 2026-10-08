@@ -15,6 +15,34 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
+## 10.5.7.0 / Manager 2.3.1 (2026-10-08)
+
+Repairs the three kinds of installer acceptance failures found in the 10.5.6.0
+preview. OpenSSH remains 10.5p1; native source and dependency versions are unchanged
+apart from the Windows product version resource.
+
+- Off-screen installed-manager tests now dispatch the posted window-start event
+  before waiting for asynchronous initialization. Their background-refresh hook
+  restores the WinForms synchronization context before starting work, and fixtures
+  restore their caller's context afterward. The original six failing assertions
+  remain intact. New startup and cross-thread regressions catch both causes, and
+  scratch fixtures refuse any attempted default-shell registry write.
+- The recovery test's Windows PowerShell child prioritizes its own modules instead
+  of inheriting PowerShell 7's module precedence. This restores `Get-FileHash` and
+  other required commands before the transaction is armed. Restoration checks for
+  the actual SYSTEM task, configuration, firewall and listeners remain required.
+- The first-run wizard test checks asynchronous MSI launch records correctly.
+  Missing, cancelled and failed action records still fail. The wizard must also
+  open, run as the installing user and consume its request.
+- Thirteen fast installer-fixture checks now run before the manager build in CI,
+  including the original child-process failure and captured MSI log regressions.
+
+Local validation passes **164 manager unit tests and 49 GUI checks**, the original
+six isolated installed-window cases, and the installer-fixture checks. Independent pinned
+manager builds match byte for byte. The complete hosted installer matrix must
+pass before the corrected files are published as regular releases. Signing is
+still unavailable; regular release status does not supply an Authenticode signature.
+
 ## 10.5.6.0 / Manager 2.3.0 testing preview (2026-10-08)
 
 October audit follow-up. OpenSSH remains 10.5p1. Available as **unsigned,

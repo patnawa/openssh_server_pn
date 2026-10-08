@@ -28,6 +28,21 @@ $script:Checks = New-Object System.Collections.Generic.List[object]
 
 function Get-OpenSSHInstallDir { Join-Path $env:ProgramFiles 'OpenSSH' }
 
+function Get-AsyncWizardLaunchEvidence {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Log)
+    # OpenSSHOpenWizard is an EXE action with Return=asyncNoWait. Its process may
+    # outlive MSI, so the log is scheduling evidence, not an exit-code assertion.
+    # Test-Installer separately requires the wizard-open log, process owner and
+    # consumed request. Keep rejecting an explicit failed/cancelled MSI action.
+    $started = [regex]::IsMatch($Log, 'Action start [\d:]+: OpenSSHOpenWizard\.')
+    $ended = [regex]::Matches($Log, 'Action ended [\d:]+: OpenSSHOpenWizard\. Return value (-?\d+)')
+    $codes = @($ended | ForEach-Object { $_.Groups[1].Value })
+    [pscustomobject]@{
+        Valid = $started -and $codes.Count -gt 0 -and @($codes | Where-Object { $_ -notin '0','1' }).Count -eq 0
+        Detail = if ($codes.Count) { 'asynchronous action log return value(s): ' + ($codes -join ', ') } else { 'missing asynchronous action start/end record' }
+    }
+}
+
 function Write-Annotation {
     param(
         [ValidateSet('error', 'warning', 'notice')][string]$Level,
@@ -586,4 +601,4 @@ function Start-TestSshSession {
 Export-ModuleMember -Function Write-Annotation, Invoke-Native, Get-MsiInfo, New-FailingMsi, Set-MsiPowerShellArguments, Get-MsiTableRows, Invoke-Msiexec, Get-InstalledOpenSSHProduct,
     Get-SshBanner, Get-SshdListenPort, Get-SshdFirewallRule, Get-DefaultFirewallProfileMask, Reset-Checks, Test-Check,
     Complete-Checks, Get-CheckMode, Test-OpenSSHInstallation, Test-MsiLog, Invoke-ManagerTest, New-AdminTestKey,
-    Start-TestSshSession, Get-OpenSSHInstallDir, Get-ManagerPath, Get-ManagerShortcut, Get-ManagerProcess
+    Start-TestSshSession, Get-OpenSSHInstallDir, Get-ManagerPath, Get-ManagerShortcut, Get-ManagerProcess, Get-AsyncWizardLaunchEvidence

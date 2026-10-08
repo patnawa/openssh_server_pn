@@ -30,6 +30,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check installer fixtures without installing
+        run: ./.github/scripts/Test-InstallerFixtures.ps1
+
       - name: Require a supported signing method for release tags
         if: github.ref_type == 'tag'
         env:

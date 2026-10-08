@@ -84,25 +84,59 @@ namespace OpenSSHServerPNManager
         {
             var dir = Path.Combine(tmpDir, "window-" + Guid.NewGuid().ToString("N").Substring(0, 8));
             Directory.CreateDirectory(dir);
-            var old = Ssh.ConfigDirOverride; Ssh.ConfigDirOverride = dir;
+            var old = Ssh.ConfigDirOverride; var oldContext = SynchronizationContext.Current;
+            Ssh.ConfigDirOverride = dir;
             try
             {
                 File.WriteAllText(Ssh.ConfigPath, configText, new UTF8Encoding(false));
                 using (var f = new MainForm())
                 {
+                    // A scratch configuration must never write the machine's default-shell registry value.
+                    bool attemptedLiveShellWrite = false;
+                    typeof(MainForm).GetField("_writeDefaultShell", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                        .SetValue(f, (Action<string, string>)((shell, option) => { attemptedLiveShellWrite = true; throw new InvalidOperationException("The scratch window attempted a live default-shell write."); }));
                     f.StartPosition = FormStartPosition.Manual; f.Location = new Point(-20000, -20000); f.ShowInTaskbar = false;
-                    f.Show(); f.WaitForIdleForTest(); Application.DoEvents();
+                    // Shown is posted by WinForms. Dispatch it before waiting for the async
+                    // startup operations it registers; otherwise the idle set is still empty.
+                    f.Show(); Application.DoEvents(); f.WaitForIdleForTest();
                     body(f);
+                    if (attemptedLiveShellWrite) throw new Exception("The scratch window attempted a live default-shell write.");
                     f.Close();
                 }
             }
-            finally { Ssh.ConfigDirOverride = old; }
+            finally { Ssh.ConfigDirOverride = old; SynchronizationContext.SetSynchronizationContext(oldContext); }
         }
 
         [DllImport("shell32.dll", CharSet = CharSet.Unicode)] private static extern uint ExtractIconEx(string file, int index, IntPtr[] large, IntPtr[] small, uint count);
 
         private static void Unit(Action<string, Func<string>> test, string tmpDir)
         {
+            test("GUI startup: the off-screen fixture awaits posted Shown and configuration loading", () =>
+            {
+                WithTestWindow(tmpDir, "Port 2222\nAllowUsers alice\nAllowUsers bob\nPasswordAuthentication yes\nSubsystem sftp sftp-server.exe\n", f =>
+                {
+                    if (f.FieldTextForTest("AllowUsers") != "alice bob") throw new Exception("Settings were inspected before the file's AllowUsers lines were loaded");
+                    if (f.WorkingValueForTest("Port") != "2222") throw new Exception("The fixture did not adopt its scratch configuration");
+                    if (f.AuthCandidateForTest().Get("PasswordAuthentication") != "yes") throw new Exception("Authentication was not initialized from the file");
+                    if (!SftpConfig.Read(f.SftpCandidateForTest()).Enabled) throw new Exception("SFTP was not initialized from the file");
+                    if (f.UnsavedTabsForTest().Count != 0) throw new Exception("A freshly loaded fixture reports unsaved changes: " + string.Join(", ", f.UnsavedTabsForTest()));
+                });
+                return null;
+            });
+            test("GUI background fixture: refresh returns to the window after a foreground await", () =>
+            {
+                bool old = Control.CheckForIllegalCrossThreadCalls; Control.CheckForIllegalCrossThreadCalls = true;
+                try
+                {
+                    WithTestWindow(tmpDir, "Port 2222\n", f =>
+                    {
+                        var times = f.BackgroundRefreshForTest();
+                        if (times[1].TotalMilliseconds > 100) throw new Exception("Starting the background refresh blocked the window thread for " + times[1].TotalMilliseconds + " ms");
+                    });
+                }
+                finally { Control.CheckForIllegalCrossThreadCalls = old; }
+                return null;
+            });
             test("program icon: every size, in the resource and in the executable", () =>
             {
                 if (Ui.AppIcon == null) throw new Exception("no app.ico resource: build.ps1 did not find app.ico");

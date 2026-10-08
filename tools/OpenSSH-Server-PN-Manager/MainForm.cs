@@ -366,6 +366,9 @@ namespace OpenSSHServerPNManager
         public TimeSpan[] BackgroundRefreshForTest()
         {
             var sw = Stopwatch.StartNew(); AsyncUiTest.Wait(() => RefreshDashboard()); var direct = sw.Elapsed;
+            // A standalone DoEvents pump can uninstall its WindowsForms synchronization context.
+            // Production timer ticks have Application.Run's context; restore it for this direct test call.
+            AsyncUiTest.EnsureContext();
             _lblVersion.Text = "...";
             sw.Restart();
             if (!RefreshInBackground(CollectDashboard, ShowDashboard)) throw new Exception("a background refresh was already running");

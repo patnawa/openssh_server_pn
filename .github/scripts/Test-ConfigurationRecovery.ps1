@@ -102,6 +102,7 @@ function Assert-Restored($record) {
 }
 if ($Phase -eq 'Child') {
     if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'The fixture child must run on Windows PowerShell 5.1.' }
+    & (Join-Path $PSScriptRoot 'Initialize-WindowsPowerShell.ps1')
     $assembly = [Reflection.Assembly]::LoadFrom((Resolve-Path $Manager).Path)
     $flags = [Reflection.BindingFlags]'Public,Static'
     $cfgType = $assembly.GetType('OpenSSHServerPNManager.SshdConfig', $true)

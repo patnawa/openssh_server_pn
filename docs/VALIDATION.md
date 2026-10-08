@@ -1,6 +1,6 @@
 # Disposable Windows acceptance runs
 
-These drivers accompany the unsigned **10.5.6.0 / Manager 2.3.0** testing preview. The user has deferred
+These drivers accompany the unsigned **10.5.7.0 / Manager 2.3.0** testing preview. The user has deferred
 actual VM runs and has no signing identity yet. None of the VM, reboot or signature scenarios below
 is claimed as passed by adding the drivers. Do not run them on the workstation or an unidentified VM.
 
@@ -15,7 +15,7 @@ is claimed as passed by adding the drivers. Do not run them on the workstation o
 - A local administrator account able to authenticate through the default administrator authorized-key
   path. No production keys, users, credentials, firewall rules or unrelated applications in the VM.
 - A checkout of the **same commit** as the artifacts, the release MSI for the VM architecture, and its
-  upgrade-test MSI from the same CI run. Product version is `10.5.6.0`; the fixture MSI uses `10.5.7.0`
+  upgrade-test MSI from the same CI run. Product version is `10.5.7.0`; the fixture MSI uses `10.5.8.0`
   with the identical executable payload. Keep `manager-tested`, its hashes, and build provenance.
 - No PN MSI already installed, no pending manager recovery or file-replacement transaction, and an unused state directory.
   Preserve the whole state directory and MSI logs as evidence. It contains ephemeral test private keys:
@@ -29,11 +29,11 @@ From the checkout root inside the VM:
 ```powershell
 $fixture = @{
     MsiDir = 'C:\fixtures'
-    Msi = 'OpenSSH-Win64-v10.5.6.0.msi'
-    UpgradeMsi = 'OpenSSH-Win64-v10.5.7.0-upgradetest.msi'
-    Version = '10.5.6.0'
-    UpgradeVersion = '10.5.7.0'
-    StateDir = 'C:\validation\pn-10.5.6.0-run1'
+    Msi = 'OpenSSH-Win64-v10.5.7.0.msi'
+    UpgradeMsi = 'OpenSSH-Win64-v10.5.8.0-upgradetest.msi'
+    Version = '10.5.7.0'
+    UpgradeVersion = '10.5.8.0'
+    StateDir = 'C:\validation\pn-10.5.7.0-run1'
     DisposableMachine = $true
 }
 ./.github/scripts/Invoke-DisposableValidation.ps1 -Phase BeforeReboot @fixture
@@ -63,7 +63,7 @@ all assertions pass. A missing checkpoint, missing result, or changed fixture is
 ## Focused runs and coverage limits
 
 ```powershell
-./.github/scripts/Test-ClientOnly.ps1 -Msi C:\fixtures\OpenSSH-Win64-v10.5.6.0.msi -LogDir C:\logs -DisposableMachine
+./.github/scripts/Test-ClientOnly.ps1 -Msi C:\fixtures\OpenSSH-Win64-v10.5.7.0.msi -LogDir C:\logs -DisposableMachine
 ./.github/scripts/Test-SshInterop.ps1 -LogDir C:\logs -DisposableMachine
 ./.github/scripts/Test-ConfigurationRecovery.ps1 -Phase Kill -FixtureDir C:\validation\recovery-kill -DisposableMachine
 ./.github/scripts/Test-ConfigurationRecovery.ps1 -Phase ArmReboot -FixtureDir C:\validation\recovery-reboot -DisposableMachine
@@ -92,6 +92,7 @@ high contrast, 200% scaling, and movement between monitors with different DPI.
 ## Local checks without installation
 
 ```powershell
+pwsh -NoProfile -File .github/scripts/Test-InstallerFixtures.ps1
 ./.github/scripts/Test-ManagerBuild.ps1 -OutDir "$env:TEMP\manager-tested"
 powershell.exe -NoProfile -File src/contrib/win32/install/tests/preinstall.Tests.ps1
 powershell.exe -NoProfile -File src/contrib/win32/install/tests/package.Tests.ps1 -Msi <built-msi>

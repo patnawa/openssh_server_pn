@@ -52,9 +52,9 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Management console of OpenSSH Server PN: service, configuration, login methods, SFTP, keys, firewall, logs and hardening")]
 [assembly: System.Reflection.AssemblyCompany(OpenSSHServerPNManager.Program.Publisher)]
 [assembly: System.Reflection.AssemblyCopyright(OpenSSHServerPNManager.Program.Copyright)]
-[assembly: System.Reflection.AssemblyVersion("2.3.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.3.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("2.3.0")]
+[assembly: System.Reflection.AssemblyVersion("2.3.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.3.1.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("2.3.1")]
 
 namespace OpenSSHServerPNManager
 {
@@ -64,7 +64,7 @@ namespace OpenSSHServerPNManager
     internal static class Program
     {
         public const string AppName = "OpenSSH Server PN Manager";
-        public const string AppVersion = "2.3.0";
+        public const string AppVersion = "2.3.1";
         public const string Publisher = "patnawa";
         public const string Copyright = "Copyright © 2026 patnawa";
         public const string Website = "https://github.com/patnawa/openssh_server_pn";

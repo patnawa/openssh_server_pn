@@ -289,8 +289,8 @@ switch ($Scenario) {
             if (-not $opened) { Start-Sleep -Seconds 2 }
         }
         $log = Get-Content -LiteralPath (Join-Path $LogDir '9-first-run.log') -Raw
-        $ran = [regex]::Match($log, 'Action ended [\d:]+: OpenSSHOpenWizard\. Return value (\d+)')
-        Test-Check 'MSI log: explicit wizard launch action completed' ($ran.Success -and $ran.Groups[1].Value -eq '1') "$(if ($ran.Success) { 'return value ' + $ran.Groups[1].Value } else { 'no OpenSSHOpenWizard in the log' })" | Out-Null
+        $launch = Get-AsyncWizardLaunchEvidence -Log $log
+        Test-Check 'MSI log: explicit asynchronous wizard launch was scheduled' $launch.Valid $launch.Detail | Out-Null
         $running = @(Get-ManagerProcess | ForEach-Object { $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner; [pscustomobject]@{ Id = $_.ProcessId; User = "$($o.Domain)\$($o.User)"; CommandLine = $_.CommandLine } })
         $running | ForEach-Object { Write-Host "OpenSSHServerPNManager.exe PID $($_.Id) as $($_.User): $($_.CommandLine)" }
         Test-Check 'The setup wizard of the manager opens after a first installation with a window' ($null -ne $opened) "$(if ($opened) { $opened } else { "no 'Setup wizard opened' in $managerLog within 60 s; $($running.Count) manager process(es)" })" | Out-Null
