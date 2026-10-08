@@ -364,7 +364,8 @@ namespace OpenSSHServerPNManager
 
     internal static class Agent
     {
-        internal const string StateLockName = "Global\\OpenSSHServerPNManager.AgentState";
+        /// <summary>Machine-wide. Unit tests set a lock of their own, so they never wait for or hold up the installed agent.</summary>
+        internal static string StateLockName = "Global\\OpenSSHServerPNManager.AgentState";
         public const string TaskFolder = "OpenSSH Server PN Manager";
         public static readonly string WatchTask = TaskFolder + "\\Watch", DailyTask = TaskFolder + "\\Daily";
         public static string LogPath { get { return Path.Combine(AlertSettings.Dir, "agent.log"); } }
@@ -615,10 +616,22 @@ namespace OpenSSHServerPNManager
             try { if (add.Count > 0 || already.Count > 0) addBlocked(add, ports); }
             catch
             {
-                // Nothing was blocked: a strike recorded for it would make the next attempt's block longer.
+                // The write is several firewall calls and the first adds the addresses. An address the failed write did add keeps
+                // its timer, or it would stay blocked for ever; one it did not add gets no strike, or its next block would be longer.
                 if (add.Count > 0)
                 {
-                    st.Blocks.Clear(); foreach (var e in before) st.Blocks[e.Key] = e.Value;
+                    List<string> inRule = null;
+                    try { inRule = readBlocked(); } catch { }
+                    foreach (var a in add)
+                    {
+                        AgentState.BlockEntry old;
+                        bool had = before.TryGetValue(a, out old);
+                        if (inRule != null && inRule.Any(r => SameAddress(r, a))) continue;
+                        // Not known whether it was added: the timer stays to lift it, without the strike.
+                        if (inRule == null) st.Blocks[a] = new AgentState.BlockEntry { Until = st.Blocks[a].Until, Strikes = had ? old.Strikes : 0, LastStrike = had ? old.LastStrike : DateTime.MinValue };
+                        else if (had) st.Blocks[a] = old;
+                        else st.Blocks.Remove(a);
+                    }
                     if (checkpoint != null) checkpoint();
                 }
                 throw;
@@ -734,7 +747,12 @@ namespace OpenSSHServerPNManager
         /// <summary>Watch and Daily advance the same journal, archive, and pending-upload transaction.</summary>
         internal static void CollectTransfers(AlertSettings s, AgentState st, DateTime now, TransferJournal.EventSource source = null, HashSet<string> partnerNames = null)
         {
-            if (!st.Journal.NotifyFromUtc.HasValue) st.Journal.NotifyFromUtc = now.ToUniversalTime().AddHours(-2);
+            if (!st.Journal.NotifyFromUtc.HasValue)
+            {
+                st.Journal.NotifyFromUtc = now.ToUniversalTime().AddHours(-2);
+                // Manager 2.2 and older archived transfers without this journal, from a start they did not record: no late start then.
+                if (st.ArchivedUntil == DateTime.MinValue && st.ReportedMonth.Length == 0) st.Journal.StartedUtc = now.ToUniversalTime();
+            }
             var records = TransferJournal.Read(st.Journal, now, source);
             Archive(records);
             st.LastRecordId = st.Journal.LastRecordId; // retained for older managers reading their compatibility field
@@ -795,9 +813,8 @@ namespace OpenSSHServerPNManager
             var l = new List<string>();
             if (journal.Gap.Length > 0 && journal.GapUtc.HasValue && journal.GapUtc.Value >= from.ToUniversalTime())
                 l.Add("History gap noticed " + local(journal.GapUtc.Value) + ": " + journal.Gap + " The figures may be incomplete.");
-            // CollectTransfers starts the journal two hours before its first run.
-            if (journal.NotifyFromUtc.HasValue && journal.NotifyFromUtc.Value.AddHours(2) > from.ToUniversalTime())
-                l.Add("The background agent began collecting transfers " + local(journal.NotifyFromUtc.Value.AddHours(2)) + "; earlier transfers of the period come only from what the event log still held.");
+            if (journal.StartedUtc.HasValue && journal.StartedUtc.Value > from.ToUniversalTime())
+                l.Add("The background agent began collecting transfers " + local(journal.StartedUtc.Value) + "; earlier transfers of the period come only from what the event log still held.");
             l.AddRange((problems ?? Enumerable.Empty<string>()).Select(p => "Not included: " + p));
             return l;
         }

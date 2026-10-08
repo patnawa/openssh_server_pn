@@ -13,6 +13,8 @@ namespace OpenSSHServerPNManager
         public long LastRecordId;
         public string Generation = "", LastIdentity = "", Gap = "";
         public DateTime? CheckedUtc, LastEventUtc, GapUtc, NotifyFromUtc;
+        /// <summary>The first run of the journal; none when an earlier version had archived transfers already (its start is unknown).</summary>
+        public DateTime? StartedUtc;
         public Transfers.ParserState Parser = new Transfers.ParserState();
         public long Backlog;
 
@@ -26,6 +28,7 @@ namespace OpenSSHServerPNManager
             d["journal.event"] = LastEventUtc.HasValue ? LastEventUtc.Value.ToString("o") : "";
             d["journal.gapat"] = GapUtc.HasValue ? GapUtc.Value.ToString("o") : "";
             d["journal.notifyfrom"] = NotifyFromUtc.HasValue ? NotifyFromUtc.Value.ToString("o") : "";
+            d["journal.started"] = StartedUtc.HasValue ? StartedUtc.Value.ToString("o") : "";
         }
         internal static TransferJournalState Load(IDictionary<string, string> d)
         {
@@ -39,6 +42,7 @@ namespace OpenSSHServerPNManager
             if (d.TryGetValue("journal.event", out s) && DateTime.TryParse(s, null, DateTimeStyles.RoundtripKind, out t)) st.LastEventUtc = t;
             if (d.TryGetValue("journal.gapat", out s) && DateTime.TryParse(s, null, DateTimeStyles.RoundtripKind, out t)) st.GapUtc = t;
             if (d.TryGetValue("journal.notifyfrom", out s) && DateTime.TryParse(s, null, DateTimeStyles.RoundtripKind, out t)) st.NotifyFromUtc = t;
+            if (d.TryGetValue("journal.started", out s) && DateTime.TryParse(s, null, DateTimeStyles.RoundtripKind, out t)) st.StartedUtc = t;
             if (d.TryGetValue("journal.parser", out s)) st.Parser = Transfers.ParserState.Restore(s);
             return st;
         }

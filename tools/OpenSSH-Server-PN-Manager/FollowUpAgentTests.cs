@@ -188,6 +188,50 @@ namespace OpenSSHServerPNManager
                 if (back.Strikes != 1 || back.LastStrike != now.AddDays(-1) || back.Until != DateTime.MinValue) throw new Exception("the earlier strike was not restored");
                 return null;
             }));
+            test("agent: an address a failed block write did add keeps its timer; when the rule cannot be read again, the timer stays without the strike", () => Isolated(dir =>
+            {
+                var s = new AlertSettings { BlockThreshold = 10, OnFailedLogins = false };
+                var now = new DateTime(2026, 10, 8, 12, 0, 0);
+                var sources = new List<EventLogs.FailedSource> { new EventLogs.FailedSource { Address = "192.0.2.7", Count = 12, First = now, Last = now } };
+                var peers = new HashSet<string>();
+                // The addresses took effect, then setting the ports failed (the firewall service restarting).
+                var rule = new List<string>(); int checkpoints = 0;
+                var st = new AgentState();
+                try
+                {
+                    Agent.ApplyBlocks(s, st, sources, now, "fixture", peers, "22", () => new List<string>(rule),
+                        (a, p) => { rule.AddRange(a.Select(x => x + "/255.255.255.255")); throw new COMException("fixture: RPC server unavailable", unchecked((int)0x800706BA)); }, () => checkpoints++);
+                    throw new Exception("the failed write was not reported");
+                }
+                catch (COMException) { }
+                AgentState.BlockEntry b;
+                if (!st.Blocks.TryGetValue("192.0.2.7", out b) || b.Until != now.AddHours(1) || b.Strikes != 1 || checkpoints != 2) throw new Exception("a block the write made lost its timer, so it would never be lifted");
+                var removed = new List<string>();
+                if (Agent.LiftExpired(st, now.AddHours(1), a => removed.AddRange(a)) != null || string.Join(",", removed) != "192.0.2.7") throw new Exception("the block was not lifted on time");
+                // The write failed and the rule cannot be read again: whether the address is blocked is not known.
+                st = new AgentState(); var reads = 0;
+                try
+                {
+                    Agent.ApplyBlocks(s, st, sources, now, "fixture", peers, "22", () => { if (reads++ > 0) throw new COMException("fixture", unchecked((int)0x800706BA)); return new List<string>(); },
+                        (a, p) => { throw new COMException("fixture", unchecked((int)0x800706BA)); }, null);
+                }
+                catch (COMException) { }
+                if (!st.Blocks.TryGetValue("192.0.2.7", out b) || b.Until != now.AddHours(1) || b.Strikes != 0) throw new Exception("an unknown outcome lost the timer or kept the strike");
+                st.Save(); st = AgentState.Load();
+                // It was not blocked after all: the next attempt is still a first block.
+                Agent.ApplyBlocks(s, st, sources, now.AddMinutes(1), "fixture", peers, "22", () => new List<string>(), (a, p) => { }, null);
+                if (st.Blocks["192.0.2.7"].Strikes != 1 || st.Blocks["192.0.2.7"].Until != now.AddMinutes(1).AddHours(1)) throw new Exception("the retry escalated to strike " + st.Blocks["192.0.2.7"].Strikes);
+                return null;
+            }));
+            test("agent tests: the state lock is the fixture's own, never the installed agent's", () =>
+            {
+                var installed = Agent.StateLockName;
+                string inside = null;
+                Isolated(dir => { inside = Agent.StateLockName; return null; });
+                if (inside == installed || !inside.StartsWith("Local\\", StringComparison.Ordinal)) throw new Exception("a fixture used the lock " + inside);
+                if (Agent.StateLockName != installed) throw new Exception("the lock name was not restored");
+                return null;
+            });
             test("agent: a manual block or unblock ends the agent's timer, so its expiry never lifts it", () => Isolated(dir =>
             {
                 var s = new AlertSettings { BlockThreshold = 10 };
@@ -310,20 +354,38 @@ namespace OpenSSHServerPNManager
             test("monthly report: it states gaps, a late start and archive files it could not read", () =>
             {
                 var from = new DateTime(2026, 9, 1); var to = new DateTime(2026, 10, 1);
-                var j = new TransferJournalState { NotifyFromUtc = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc) };
+                var j = new TransferJournalState { NotifyFromUtc = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc), StartedUtc = new DateTime(2026, 8, 1, 2, 0, 0, DateTimeKind.Utc) };
                 if (Agent.ReportCaveats(j, from, to, new string[0]).Count != 0) throw new Exception("a complete month got a caveat");
                 j.Gap = "The OpenSSH event log overwrote unprocessed events (records 5 through 9)."; j.GapUtc = from.ToUniversalTime().AddDays(3);
                 var c = Agent.ReportCaveats(j, from, to, new string[0]);
                 if (c.Count != 1 || !c[0].Contains("records 5 through 9")) throw new Exception("a gap in the month was not stated");
                 j.GapUtc = from.ToUniversalTime().AddDays(-3);
                 if (Agent.ReportCaveats(j, from, to, new string[0]).Count != 0) throw new Exception("a gap before the month was stated");
-                j.NotifyFromUtc = from.ToUniversalTime().AddDays(10);
+                j.StartedUtc = from.ToUniversalTime().AddDays(10);
                 c = Agent.ReportCaveats(j, from, to, new[] { "Reading transfers-2026-09.csv: in use" });
                 if (c.Count != 2 || !c[0].Contains("began collecting") || !c[1].Contains("transfers-2026-09.csv")) throw new Exception("caveats: " + string.Join(" | ", c));
                 var html = Transfers.ReportHtml(new List<TransferRecord>(), from, to, "SRV", null, new[] { "gap <b>&" });
                 if (!html.Contains("<p class=warn>gap &lt;b&gt;&amp;</p>")) throw new Exception("the caveat is not in the report");
                 return null;
             });
+            test("monthly report: an upgrade from a version that archived transfers already states no late start", () => Isolated(dir =>
+            {
+                var now = new DateTime(2026, 10, 15, 12, 0, 0);
+                Func<AgentState, List<string>> octoberCaveats = st =>
+                {
+                    Agent.CollectTransfers(new AlertSettings { OnUploads = false }, st, now, new EmptyLog());
+                    st.Save();
+                    return Agent.ReportCaveats(AgentState.Load().Journal, new DateTime(2026, 10, 1), new DateTime(2026, 11, 1), null);
+                };
+                // Manager 2.2 left these after a night: its archive holds the month's transfers since before this run.
+                var upgraded = new AgentState { LastRecordId = 4711, ArchivedUntil = new DateTime(2026, 10, 15) };
+                var c = octoberCaveats(upgraded);
+                if (c.Count != 0 || upgraded.Journal.StartedUtc.HasValue || !upgraded.Journal.NotifyFromUtc.HasValue) throw new Exception("an upgrade was stated as a late start: " + string.Join(" | ", c));
+                if (octoberCaveats(new AgentState { ReportedMonth = "2026-09" }).Count != 0) throw new Exception("an upgrade with a report sent was stated as a late start");
+                c = octoberCaveats(new AgentState());
+                if (c.Count != 1 || !c[0].Contains("began collecting transfers " + now.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture))) throw new Exception("a first installation's start was not stated: " + string.Join(" | ", c));
+                return null;
+            }));
             test("failed logins: link-local addresses with a zone count, the values' fallback text is read, rejected keys are not counted", () =>
             {
                 string user;
@@ -431,14 +493,18 @@ namespace OpenSSHServerPNManager
             });
         }
 
-        /// <summary>Agent storage (state, log, archive) in a scratch folder of its own, as AuditAgentTests does.</summary>
+        /// <summary>
+        /// Agent storage (state, log, archive) in a scratch folder of its own, as AuditAgentTests does, and a state lock of its own:
+        /// the installed agent's lock admits only SYSTEM and elevated administrators, and its jobs must not wait for a test.
+        /// </summary>
         private static string Isolated(Func<string, string> body)
         {
-            var previous = Ssh.ConfigDirOverride;
+            var previous = Ssh.ConfigDirOverride; var previousLock = Agent.StateLockName;
             var directory = Path.Combine(Path.GetTempPath(), "pn-agent-followup-" + Guid.NewGuid().ToString("N"));
             try
             {
                 Ssh.ConfigDirOverride = directory;
+                Agent.StateLockName = "Local\\pn-agent-test-" + Guid.NewGuid().ToString("N");
                 using (new AuditAgentTests.ScratchStorage(directory))
                 {
                     // Agent.Note would otherwise create the folder with administrator-only permissions.
@@ -446,7 +512,15 @@ namespace OpenSSHServerPNManager
                     return body(directory);
                 }
             }
-            finally { Ssh.ConfigDirOverride = previous; if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+            finally { Ssh.ConfigDirOverride = previous; Agent.StateLockName = previousLock; if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+        }
+
+        /// <summary>An OpenSSH event log with nothing in it, for TransferJournal.Read.</summary>
+        private sealed class EmptyLog : TransferJournal.EventSource
+        {
+            public TransferJournal.Snapshot Inspect(long checkpoint) { return new TransferJournal.Snapshot { Generation = "fixture" }; }
+            public TransferJournal.Batch Read(long after, TransferJournal.Snapshot snapshot, DateTime now) { return new TransferJournal.Batch(); }
+            public bool Verify(TransferJournal.Snapshot snapshot, TransferJournal.Batch batch) { return true; }
         }
 
         /// <summary>Reads one HTTP request and answers it with the status, the extra header lines and no body.</summary>
