@@ -143,10 +143,21 @@ namespace OpenSSHServerPNManager
         [DllImport("kernel32.dll", EntryPoint = "MoveFileExW", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool MoveFileEx(string source, string destination, uint flags);
 
-        /// <summary>Same-directory rename over the destination (or to a new name), with no copy/delete fallback.</summary>
+        /// <summary>
+        /// Same-directory rename over the destination (or to a new name), with no copy/delete fallback. Any open handle on
+        /// the destination refuses the rename, even one that shares delete; sshd opens authorized_keys for every key login,
+        /// so a refusal while the destination exists is retried for about 3 s.
+        /// </summary>
         internal static void RenameReplacing(string source, string destination)
         {
-            if (!MoveFileEx(source, destination, 1 | 8)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            int start = Environment.TickCount;
+            while (!MoveFileEx(source, destination, 1 | 8))
+            {
+                int error = Marshal.GetLastWin32Error();
+                if ((error == 5 || error == 32) && unchecked(Environment.TickCount - start) < 3000 && File.Exists(destination)) { Thread.Sleep(100); continue; }
+                var reason = new Win32Exception(error);
+                throw new IOException("Could not replace " + destination + ": " + reason.Message.TrimEnd('.', ' ') + "." + (error == 5 ? " It may be open in another program; try again." : ""), reason);
+            }
         }
 
         private static void CopyExactSecurity(string path, FileSecurity security)

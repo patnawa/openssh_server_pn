@@ -230,13 +230,31 @@ namespace OpenSSHServerPNManager
             }
         }
 
-        /// <summary>True when the private key needs a passphrase; throws when the file is not a readable private key.</summary>
-        public static bool IsEncrypted(string privatePath)
+        /// <summary>
+        /// True when the private key needs a passphrase; throws when the file is not a readable private key. shownPath names
+        /// the file in messages when privatePath is a private copy of it.
+        /// </summary>
+        public static bool IsEncrypted(string privatePath, string shownPath = null)
         {
             var r = Keygen("-y -P \"\" -f " + Proc.Quote(privatePath), null, 30000);
             if (r.Ok) return false;
-            if (r.Output.IndexOf("passphrase", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            throw new ConfigException("Not a usable private key:\n" + privatePath + "\n\n" + r.Output);
+            if (SaysWrongPassphrase(r.Output)) return true;
+            throw new ConfigException("Not a usable private key:\n" + (shownPath ?? privatePath) + "\n\n" + Shown(r.Output, privatePath, shownPath));
+        }
+
+        /// <summary>
+        /// True when ssh-keygen failed for a missing or wrong passphrase (its message for OpenSSH and PEM keys alike). The word
+        /// "passphrase" alone is not enough: every load error names the file, and its path may contain that word.
+        /// </summary>
+        internal static bool SaysWrongPassphrase(string output)
+        {
+            return Regex.IsMatch(output ?? "", @":\s*incorrect passphrase supplied to decrypt private key\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+        }
+
+        /// <summary>ssh-keygen output about a private copy, with the copy's path (also as ssh-keygen prints it, backslashes doubled) replaced by the original's.</summary>
+        private static string Shown(string output, string copy, string shownPath)
+        {
+            return shownPath == null ? output : output.Replace(copy.Replace("\\", "\\\\"), shownPath).Replace(copy, shownPath);
         }
 
         // ---------------- Loading, changing the passphrase, converting and exporting keys ----------------
@@ -278,12 +296,17 @@ namespace OpenSSHServerPNManager
             }
             else if (Regex.IsMatch(text, @"-----BEGIN [A-Z ]*PRIVATE KEY-----"))
             {
-                // RSA, EC and PKCS#8 files in PEM encoding, as older ssh-keygen versions and other programs write them; ssh-keygen reads them.
-                info.Format = "PEM"; info.Encrypted = IsEncrypted(path);
-                // A PEM file stores no public key in the clear: it is worked out from the key itself, never taken from a .pub
-                // file next to it, which could belong to another key.
-                if (info.Encrypted && string.IsNullOrEmpty(passphrase)) throw new WrongPassphraseException("The key is in the older PEM format and protected by a passphrase: enter it to read the key.");
-                blob = Convert.FromBase64String(Keys.Blob(DerivePublic(path, info.Encrypted ? passphrase : null)));
+                // RSA, EC and PKCS#8 files in PEM encoding, as older ssh-keygen versions and other programs write them; ssh-keygen
+                // reads them, from a private copy: it refuses a key file that others can read (a USB stick, a shared folder).
+                info.Format = "PEM";
+                blob = WithPrivateCopy(data, copy =>
+                {
+                    info.Encrypted = IsEncrypted(copy, path);
+                    // A PEM file stores no public key in the clear: it is worked out from the key itself, never taken from a .pub
+                    // file next to it, which could belong to another key.
+                    if (info.Encrypted && string.IsNullOrEmpty(passphrase)) throw new WrongPassphraseException("The key is in the older PEM format and protected by a passphrase: enter it to read the key.");
+                    return Convert.FromBase64String(Keys.Blob(DerivePublic(copy, info.Encrypted ? passphrase : null, path)));
+                });
                 info.Comment = CommentOfPub(path, blob);
             }
             else if (Keys.LooksLikePublicKey(text.Trim())) throw new ConfigException("This is a public key:\n" + path + "\n\nChoose the private key file, which has the same name without .pub.");
@@ -317,13 +340,13 @@ namespace OpenSSHServerPNManager
         }
 
         /// <summary>The public key line that ssh-keygen -y works out from a private key; a wrong passphrase gives WrongPassphraseException.</summary>
-        public static string DerivePublic(string privatePath, string passphrase)
+        public static string DerivePublic(string privatePath, string passphrase, string shownPath = null)
         {
             var r = Keygen("-y -f " + Proc.Quote(privatePath), passphrase, 30000);
             var line = r.StdOut.Split('\n').Select(l => l.Trim()).FirstOrDefault(Keys.LooksLikePublicKey);
             if (r.Ok && line != null) return line;
-            if (r.Output.IndexOf("passphrase", StringComparison.OrdinalIgnoreCase) >= 0) throw new WrongPassphraseException(string.IsNullOrEmpty(passphrase) ? "The key is protected by a passphrase: enter it." : "Wrong passphrase.");
-            throw new ConfigException("ssh-keygen cannot read the private key:\n" + privatePath + "\n\n" + (r.TimedOut ? "timed out" : r.Output));
+            if (SaysWrongPassphrase(r.Output)) throw new WrongPassphraseException(string.IsNullOrEmpty(passphrase) ? "The key is protected by a passphrase: enter it." : "Wrong passphrase.");
+            throw new ConfigException("ssh-keygen cannot read the private key:\n" + (shownPath ?? privatePath) + "\n\n" + (r.TimedOut ? "timed out" : Shown(r.Output, privatePath, shownPath)));
         }
 
         /// <summary>
@@ -352,6 +375,7 @@ namespace OpenSSHServerPNManager
                 try { snapshot.Restore(); } catch (Exception ex) { Log.Error("Could not put back " + path, ex, false); }
                 throw;
             }
+            finally { snapshot.Forget(); }
         }
 
         /// <summary>
@@ -370,18 +394,27 @@ namespace OpenSSHServerPNManager
                 if (KeyFormats.PrivateFieldCount(f.Type) < 0) throw new ConfigException("Keys of type " + f.Type + " (" + KeyFormats.Describe(f.PublicBlob) + ") cannot be converted.");
                 if (f.CanDecrypt) return f.Decrypt(passphrase);
             }
+            return WithPrivateCopy(data, copy =>
+            {
+                var r = Keygen("-p -f " + Proc.Quote(copy), passphrase ?? "", 60000, passphrase ?? "");
+                if (!r.Ok)
+                {
+                    if (SaysWrongPassphrase(r.Output)) throw new WrongPassphraseException(string.IsNullOrEmpty(passphrase) ? "The key is protected by a passphrase: enter it." : "Wrong passphrase.");
+                    throw new ConfigException("ssh-keygen cannot read the private key:\n" + path + "\n\n" + Shown(r.Output, copy, path));
+                }
+                return OpenSshKeyFile.Parse(File.ReadAllText(copy)).Decrypt(passphrase);
+            });
+        }
+
+        /// <summary>Runs body on a copy of a private key file, in a folder only this account can open; the copy is wiped and deleted afterwards.</summary>
+        private static T WithPrivateCopy<T>(byte[] content, Func<string, T> body)
+        {
             var dir = PrivateTempFolder();
             var copy = Path.Combine(dir, "key");
             try
             {
-                WritePrivateFile(copy, data);
-                var r = Keygen("-p -f " + Proc.Quote(copy), passphrase ?? "", 60000, passphrase ?? "");
-                if (!r.Ok)
-                {
-                    if (r.Output.IndexOf("passphrase", StringComparison.OrdinalIgnoreCase) >= 0) throw new WrongPassphraseException(string.IsNullOrEmpty(passphrase) ? "The key is protected by a passphrase: enter it." : "Wrong passphrase.");
-                    throw new ConfigException("ssh-keygen cannot read the private key:\n" + path + "\n\n" + r.Output);
-                }
-                return OpenSshKeyFile.Parse(File.ReadAllText(copy)).Decrypt(passphrase);
+                WritePrivateFile(copy, content);
+                return body(copy);
             }
             finally
             {
@@ -449,20 +482,13 @@ namespace OpenSSHServerPNManager
         /// </summary>
         private static byte[] CheckedOpenSshFile(byte[] content, string publicLine, string passphrase, bool rewrite, string newPassphrase)
         {
-            var dir = PrivateTempFolder(); var p = Path.Combine(dir, "key");
-            try
+            return WithPrivateCopy(content, p =>
             {
-                WritePrivateFile(p, content);
                 if (rewrite) { ChangePassphrase(p, passphrase, newPassphrase); passphrase = newPassphrase; }
                 if (Keys.Blob(DerivePublic(p, passphrase)) != Keys.Blob(publicLine)) throw new Exception("Verification failed: ssh-keygen reads another public key from the new file.");
                 if (IsEncrypted(p) != !string.IsNullOrEmpty(passphrase)) throw new Exception("Verification failed: the new file " + (string.IsNullOrEmpty(passphrase) ? "needs a passphrase." : "opens without a passphrase."));
                 return File.ReadAllBytes(p);
-            }
-            finally
-            {
-                try { if (File.Exists(p)) File.WriteAllBytes(p, new byte[new FileInfo(p).Length]); } catch { }
-                try { Directory.Delete(dir, true); } catch { }
-            }
+            });
         }
 
         /// <summary>Writes a checked OpenSSH private key and its .pub file, moving files already there aside.</summary>
@@ -554,6 +580,67 @@ namespace OpenSSHServerPNManager
         }
 
         /// <summary>
+        /// A public key in the RFC 4716 (SSH2) format with the key's comment: base64 lines of 70 characters, and no line over
+        /// 72 bytes, so a long comment goes on continuation lines (ending in a backslash). The format has no escapes: quotes,
+        /// backslashes and control characters are left out of the comment.
+        /// </summary>
+        internal static string Rfc4716(string publicLine, string comment)
+        {
+            var b64 = Convert.ToBase64String(Convert.FromBase64String(Keys.Blob(publicLine)));
+            var sb = new StringBuilder("---- BEGIN SSH2 PUBLIC KEY ----\n");
+            var c = new string((comment ?? "").Where(ch => ch != '"' && ch != '\\' && !char.IsControl(ch)).ToArray()).Trim();
+            c = c.Substring(0, Utf8Fit(c, 0, 1022)); // a header value has at most 1024 bytes, the quotes included
+            if (c.Length > 0) foreach (var l in HeaderLines("Comment: \"" + c + "\"")) sb.Append(l).Append('\n');
+            for (int i = 0; i < b64.Length; i += 70) sb.Append(b64, i, Math.Min(70, b64.Length - i)).Append('\n');
+            return sb.Append("---- END SSH2 PUBLIC KEY ----\n").ToString();
+        }
+
+        /// <summary>
+        /// One RFC 4716 header as lines of at most 72 bytes. ssh-keygen -i skips continuation lines only while they look like
+        /// no header themselves: none holds ": " or starts with "----". A dash run too long for any line ends the comment.
+        /// The first line is a header to it, so it ends before any " END " (which would end the key there) and before the
+        /// begin line of an SSH2 private key (which would make it read one).
+        /// </summary>
+        private static List<string> HeaderLines(string header)
+        {
+            var lines = new List<string>();
+            int stop = header.Length;
+            foreach (var marker in new[] { " END ", "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----" })
+            {
+                int at = header.IndexOf(marker, StringComparison.Ordinal);
+                if (at >= 0 && at < stop) stop = at;
+            }
+            for (int start = 0; ; )
+            {
+                int end = Utf8Fit(header, start, 72);
+                if (end == header.Length && (lines.Count == 0 ? stop == header.Length : header.IndexOf(": ", start, StringComparison.Ordinal) < 0)) { lines.Add(header.Substring(start)); return lines; }
+                end = Utf8Fit(header, start, 71); // room for the backslash
+                if (lines.Count == 0 && stop < end) end = stop;
+                int colon = lines.Count == 0 ? -1 : header.IndexOf(": ", start, end - start, StringComparison.Ordinal);
+                if (colon >= 0 && colon + 1 < end) end = colon + 1;
+                while (end > start + 1 && string.CompareOrdinal(header, end, "----", 0, 4) == 0) end--;
+                if (char.IsLowSurrogate(header[end]) && end > start && char.IsHighSurrogate(header[end - 1])) end--;
+                if (end <= start || string.CompareOrdinal(header, end, "----", 0, 4) == 0) { lines.Add(header.Substring(start, end - start) + "\""); return lines; }
+                lines.Add(header.Substring(start, end - start) + "\\");
+                start = end;
+            }
+        }
+
+        /// <summary>The end of the longest piece of s from start with at most maxBytes in UTF-8, never splitting a surrogate pair.</summary>
+        private static int Utf8Fit(string s, int start, int maxBytes)
+        {
+            int end = start, bytes = 0;
+            while (end < s.Length)
+            {
+                int n = char.IsHighSurrogate(s[end]) && end + 1 < s.Length && char.IsLowSurrogate(s[end + 1]) ? 2 : 1;
+                int b = Encoding.UTF8.GetByteCount(s.ToCharArray(end, n));
+                if (bytes + b > maxBytes) break;
+                bytes += b; end += n;
+            }
+            return end;
+        }
+
+        /// <summary>
         /// Writes a copy of a key in another format. For the private formats, passphrase opens the key and newPassphrase
         /// (null or empty: none) protects the copy; every private copy is checked before it is written (a .ppk file by
         /// reading it back, an OpenSSH file with ssh-keygen). Files already at the target are moved aside.
@@ -574,16 +661,10 @@ namespace OpenSSHServerPNManager
                     return w;
                 case KeyExportFormat.Rfc4716Public:
                 {
-                    var tmp = Path.Combine(Path.GetTempPath(), "osm-pub-" + Guid.NewGuid().ToString("N") + ".pub");
-                    try
-                    {
-                        File.WriteAllText(tmp, key.PublicLine + "\n", new UTF8Encoding(false));
-                        var r = Proc.Run(Ssh.Exe("ssh-keygen.exe"), "-e -f " + Proc.Quote(tmp), 30000);
-                        if (!r.Ok || !r.StdOut.Contains("---- BEGIN SSH2 PUBLIC KEY ----")) throw new ConfigException("ssh-keygen could not write the key in RFC 4716 format:\n\n" + r.Output);
-                        w.MovedAside = ReplacingFiles(now, () => File.WriteAllText(target, r.StdOut.Replace("\r\n", "\n"), new UTF8Encoding(false)), target);
-                        return w;
-                    }
-                    finally { try { File.Delete(tmp); } catch { } }
+                    // Written here: ssh-keygen -e puts "converted by account@host" in place of the key's own comment.
+                    var text = Rfc4716(key.PublicLine, key.Comment);
+                    w.MovedAside = ReplacingFiles(now, () => File.WriteAllText(target, text, new UTF8Encoding(false)), target);
+                    return w;
                 }
                 case KeyExportFormat.PuttyV2:
                 case KeyExportFormat.PuttyV3:
@@ -857,5 +938,7 @@ namespace OpenSSHServerPNManager
             _acl.SetAccessRuleProtection(_acl.AreAccessRulesProtected, true);
             File.SetAccessControl(Path, _acl);
         }
+        /// <summary>Wipes the kept bytes (a private key, for ChangePassphrase) once they can no longer be needed.</summary>
+        public void Forget() { if (_bytes != null) Array.Clear(_bytes, 0, _bytes.Length); }
     }
 }
