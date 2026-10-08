@@ -220,8 +220,8 @@ namespace OpenSSHServerPNManager
             return l;
         }
 
-        /// <summary>The transfers of a period: the event log, and the archive for what the log no longer has.</summary>
-        public static List<TransferRecord> Read(DateTime from, DateTime to, CancellationToken cancel)
+        /// <summary>The transfers of a period: the event log, and the archive for what the log no longer has (what it could not read goes to problems).</summary>
+        public static List<TransferRecord> Read(DateTime from, DateTime to, CancellationToken cancel, List<string> problems = null)
         {
             // A session/open may predate the selected range. Parse retained context before filtering, and prefer
             // the durable archive when rollover removed context that was available when the journal consumed it.
@@ -236,7 +236,7 @@ namespace OpenSSHServerPNManager
             catch (Exception ex) { Log.Error("Reading the saved transfer context", ex, false); }
             var fromLog = ParseForRange(events, from, to, journal, snapshot);
             cancel.ThrowIfCancellationRequested();
-            var records = Merge(TransferArchive.Read(from, to), fromLog);
+            var records = Merge(TransferArchive.Read(from, to, problems), fromLog);
             cancel.ThrowIfCancellationRequested();
             return records;
         }
@@ -297,19 +297,21 @@ namespace OpenSSHServerPNManager
 
         /// <summary>
         /// The transfer report of a period as an HTML page (also the body of the monthly e-mail): totals per account with
-        /// its company, the busiest days, and where the figures come from. Every name and path is HTML-encoded.
+        /// its company, the busiest days, and where the figures come from. Every name and path is HTML-encoded. caveats: what the
+        /// figures may lack (Agent.ReportCaveats), shown under the totals.
         /// </summary>
-        public static string ReportHtml(List<TransferRecord> records, DateTime from, DateTime to, string server, IDictionary<string, string> companies)
+        public static string ReportHtml(List<TransferRecord> records, DateTime from, DateTime to, string server, IDictionary<string, string> companies, IList<string> caveats = null)
         {
             var totals = Totals(records);
             var sb = new StringBuilder();
             var period = from.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + " to " + to.AddSeconds(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             sb.Append("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>SFTP transfers ").Append(H(server)).Append(", ").Append(H(period)).Append("</title>");
             sb.Append("<style>body{font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1b1b1b;margin:24px}h1{font-size:20px}h2{font-size:16px;margin-top:24px}" +
-                      "table{border-collapse:collapse}th,td{border:1px solid #ccc;padding:4px 8px;text-align:left}td.n{text-align:right}th{background:#f0f0f0}p.note{color:#666}</style></head><body>");
+                      "table{border-collapse:collapse}th,td{border:1px solid #ccc;padding:4px 8px;text-align:left}td.n{text-align:right}th{background:#f0f0f0}p.note{color:#666}p.warn{color:#a4262c}</style></head><body>");
             sb.Append("<h1>SFTP transfers of ").Append(H(server)).Append("</h1><p>").Append(H(period)).Append(": ");
             sb.Append(totals.Sum(t => t.Uploads)).Append(" file(s) uploaded (").Append(H(Ui.Bytes(totals.Sum(t => t.UploadBytes)))).Append("), ");
             sb.Append(totals.Sum(t => t.Downloads)).Append(" downloaded (").Append(H(Ui.Bytes(totals.Sum(t => t.DownloadBytes)))).Append("), by ").Append(totals.Count).Append(" account(s).</p>");
+            foreach (var c in caveats ?? new string[0]) sb.Append("<p class=warn>").Append(H(c)).Append("</p>");
             sb.Append("<h2>Per account</h2><table><tr><th>Account</th><th>Company</th><th>Uploads</th><th>Uploaded</th><th>Downloads</th><th>Downloaded</th><th>Other changes</th><th>Refused</th><th>Addresses</th><th>Last activity</th></tr>");
             foreach (var t in totals)
             {
@@ -412,7 +414,8 @@ namespace OpenSSHServerPNManager
         public const int KeepDays = 365;
         public static string FileOf(DateTime month) { return Path.Combine(Dir, "transfers-" + month.ToString("yyyy-MM", CultureInfo.InvariantCulture) + ".csv"); }
 
-        public static List<TransferRecord> Read(DateTime from, DateTime to)
+        /// <summary>The archived transfers of a period. A file or line that cannot be read is logged and, when given, added to problems.</summary>
+        public static List<TransferRecord> Read(DateTime from, DateTime to, List<string> problems = null)
         {
             var l = new List<TransferRecord>();
             for (var m = new DateTime(from.Year, from.Month, 1); m < to; m = m.AddMonths(1))
@@ -421,13 +424,22 @@ namespace OpenSSHServerPNManager
                 if (!File.Exists(f)) continue;
                 try
                 {
-                    foreach (var line in File.ReadAllLines(f, Encoding.UTF8).Skip(1))
+                    // Never shared for delete, as the agent replaces the file (Ini.ReadLines); shared for writing, so a
+                    // spreadsheet that has the file open does not keep it from the report.
+                    int bad = 0;
+                    foreach (var line in Ini.ReadLines(f, FileShare.ReadWrite).Skip(1).Where(line => line.Length > 0))
                     {
                         var r = Transfers.FromCsv(line);
-                        if (r != null && r.Time >= from && r.Time < to) l.Add(r);
+                        if (r == null) bad++;
+                        else if (r.Time >= from && r.Time < to) l.Add(r);
                     }
+                    if (bad > 0 && problems != null) problems.Add(bad + " line(s) of " + f + " that are not transfer records");
                 }
-                catch (Exception ex) { Log.Error("Reading " + f, ex, false); }
+                catch (Exception ex)
+                {
+                    Log.Error("Reading " + f, ex, false);
+                    if (problems != null) problems.Add("Reading " + f + ": " + ex.Message);
+                }
             }
             return l;
         }

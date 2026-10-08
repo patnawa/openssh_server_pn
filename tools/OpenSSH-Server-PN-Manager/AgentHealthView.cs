@@ -32,7 +32,8 @@ namespace OpenSSHServerPNManager
                 "Journal checked: " + age(health.CheckpointUtc) + "; record " + health.CheckpointRecordId + "; backlog " + health.Backlog,
                 "Last event: " + age(health.LastEventUtc),
                 "Delivery queue: " + health.PendingNotifications + " pending (" + counts(health.PendingByDestination) + "), " +
-                    health.FailedNotifications + " failed (" + counts(health.FailedByDestination) + "), " + health.ExhaustedNotifications + " awaiting explicit retry"
+                    health.FailedNotifications + " failed (" + counts(health.FailedByDestination) + "), " + health.ExhaustedNotifications + " awaiting explicit retry" +
+                    (health.DiscardedNotifications > 0 ? ", " + health.DiscardedNotifications + " given up (kept " + (int)NotificationOutbox.ExhaustedRetention.TotalDays + " days, " + NotificationOutbox.MaxExhaustedPerDestination + " per destination)" : "")
             };
             if (health.LastWatchError.Length > 0) lines.Add("Watch failed: " + health.LastWatchError);
             if (health.LastDailyError.Length > 0) lines.Add("Daily run failed: " + health.LastDailyError);

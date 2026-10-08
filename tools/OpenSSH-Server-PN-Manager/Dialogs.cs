@@ -485,9 +485,9 @@ namespace OpenSSHServerPNManager
             Controls.Add(root);
             CancelButton = close;
             block.Click += async (s, e) => await GuardAsync(Block);
-            unblock.Click += (s, e) => Guard(Unblock);
+            unblock.Click += async (s, e) => await GuardAsync(Unblock);
             _sources.KeyDown += async (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete || (e.Control && e.KeyCode == System.Windows.Forms.Keys.B)) { e.Handled = true; await GuardAsync(Block); } };
-            _blocked.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Guard(Unblock); } };
+            _blocked.KeyDown += async (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; await GuardAsync(Unblock); } };
             Load += (s, e) => Guard(FillBlocked);
             FormClosing += (s, e) => { if (_actionRunning) e.Cancel = true; };
         }
@@ -527,29 +527,54 @@ namespace OpenSSHServerPNManager
             _connected.Clear(); _connected.AddRange(peers);
             var refused = chosen.Select(Firewall.NotBlockable).Where(x => x != null).ToList();
             chosen = chosen.Where(a => Firewall.NotBlockable(a) == null).ToList();
-            var connected = chosen.Where(a => _connected.Contains(a, StringComparer.OrdinalIgnoreCase)).ToList();
+            var connected = chosen.Where(a => _connected.Select(Firewall.WithoutZone).Contains(a, StringComparer.OrdinalIgnoreCase)).ToList();
             var text = "Block " + string.Join(", ", chosen) + " from SSH (port " + _ports + ")?" +
                        (connected.Count > 0 ? "\n\nWarning: " + string.Join(", ", connected) + " has an SSH connection open right now. If that is you, you lock yourself out." : "") +
                        (refused.Count > 0 ? "\n\nNot blocked: " + string.Join("; ", refused) + "." : "");
             if (chosen.Count == 0) { MessageBox.Show(this, "Nothing to block: " + string.Join("; ", refused) + ".", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
             if (MessageBox.Show(this, text, Program.AppName, MessageBoxButtons.YesNo, connected.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Question, connected.Count > 0 ? MessageBoxDefaultButton.Button2 : MessageBoxDefaultButton.Button1) != DialogResult.Yes) return;
-            await StaOperation.Run(() =>
-            {
-                var list = Firewall.BlockedAddresses();
-                foreach (var a in chosen) if (!list.Contains(a)) list.Add(a);
-                Firewall.SetBlockedAddresses(list, state.FirewallPorts); return true;
-            });
+            var warning = await StaOperation.Run(() => ChangeBlocks(chosen, () => Firewall.AddBlockedAddresses(chosen, state.FirewallPorts)));
             Log.Info("Blocked from SSH: " + string.Join(", ", chosen));
             FillBlocked();
+            if (warning != null)
+            {
+                Log.Info(warning);
+                if (!Program.Unattended) MessageBox.Show(this, "Blocked. " + warning + "\n\nIf the background agent had blocked one of these addresses for a time, it may still unblock it when that time is up: block it again later to keep it blocked.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
-        private void Unblock()
+        private async Task Unblock()
         {
             var chosen = _blocked.SelectedItems.Cast<ListViewItem>().Select(i => (string)i.Tag).ToList();
             if (chosen.Count == 0) { _note.Text = "Select one or more blocked addresses first."; return; }
-            Firewall.RemoveBlockedAddresses(chosen);
-            Log.Info("Unblocked from SSH: " + string.Join(", ", chosen));
+            var warning = await StaOperation.Run(() => ChangeBlocks(chosen, () => Firewall.RemoveBlockedAddresses(chosen)));
+            Log.Info("Unblocked from SSH: " + string.Join(", ", chosen) + (warning == null ? "" : " (" + warning + ")"));
             FillBlocked();
+        }
+
+        /// <summary>
+        /// Changes the block rule under the background agent's state lock, and ends the agent's timers for these addresses: its
+        /// expiry must never lift a block made here, nor its own write drop one. Returns null, or why the agent's state could not
+        /// be updated (the firewall is changed all the same).
+        /// </summary>
+        internal static string ChangeBlocks(IList<string> addresses, Action change)
+        {
+            bool entered = false, changed = false;
+            string problem;
+            try
+            {
+                if (Agent.WithStateLock(Agent.StateLockName, 30000, () =>
+                {
+                    entered = true; change(); changed = true;
+                    var st = AgentState.Load();
+                    if (Agent.ClearTimers(st, addresses) > 0) st.Save();
+                })) return null;
+                problem = "The background agent is busy.";
+            }
+            catch (Exception ex) when (changed) { return "The background agent's state could not be updated: " + ex.Message; }
+            catch (UnauthorizedAccessException ex) when (!entered) { problem = "The background agent's lock cannot be used: " + ex.Message; }
+            change();
+            return problem;
         }
     }
 
