@@ -53,6 +53,23 @@ namespace OpenSSHServerPNManager
     }
 
     /// <summary>
+    /// What a window that asked to restore its change found: it restored it, the recovery task (or another window) had
+    /// already, the change was resolved another way (kept, cancelled or replaced), or a restore is running elsewhere.
+    /// </summary>
+    internal enum RestoreOutcome { Restored, RestoredElsewhere, ResolvedElsewhere, InProgressElsewhere }
+
+    internal sealed class RestoreResult
+    {
+        public RestoreOutcome Outcome;
+        /// <summary>
+        /// The backup of the latest save when an older file came back: what was saved without a restart since sshd started
+        /// (Prepare keeps the file the running sshd loaded as the target) is no longer in sshd_config, only in this backup.
+        /// </summary>
+        public string SavedMeanwhile;
+        public bool Restored { get { return Outcome == RestoreOutcome.Restored || Outcome == RestoreOutcome.RestoredElsewhere; } }
+    }
+
+    /// <summary>
     /// A save or restart refused while an earlier change awaits confirmation or recovery. Not a ConfigChangedException:
     /// "save anyway" cannot get past it.
     /// </summary>
@@ -348,12 +365,47 @@ namespace OpenSSHServerPNManager
             });
         }
 
-        public bool Recover(DateTime nowUtc, bool force = false)
+        public bool Recover(DateTime nowUtc, bool force = false) { return RecoverPending(nowUtc, force, null); }
+
+        /// <summary>
+        /// A window gives up on its own change (Restore, no answer, or a failed step) and restores it now, unless the recovery
+        /// task or another window got there first; the record then tells which. A lock that stays taken is a restore in
+        /// progress elsewhere (a service restart can take long), waited for a while and then reported as such, never as a
+        /// failed restore. Only the record with this id is restored.
+        /// </summary>
+        internal RestoreResult RestoreNow(string id, DateTime nowUtc)
+        {
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    if (RecoverPending(nowUtc, true, id)) return new RestoreResult { Outcome = RestoreOutcome.Restored, SavedMeanwhile = SavedMeanwhile(Read(), id) };
+                    break;
+                }
+                catch (ConfigurationBusyException) { if (attempt >= 6) return new RestoreResult { Outcome = RestoreOutcome.InProgressElsewhere }; }
+            }
+            var r = Read(); string value;
+            if (r.TryGetValue("id", out value) && value == id && r.TryGetValue("status", out value) && value == "restored")
+                return new RestoreResult { Outcome = RestoreOutcome.RestoredElsewhere, SavedMeanwhile = SavedMeanwhile(r, id) };
+            return new RestoreResult { Outcome = RestoreOutcome.ResolvedElsewhere };
+        }
+
+        /// <summary>The backup of the latest save, when the restored file is older (a continued save-only record); else null.</summary>
+        private static string SavedMeanwhile(Dictionary<string, string> r, string id)
+        {
+            string value, backup, before;
+            if (!r.TryGetValue("id", out value) || value != id || !r.TryGetValue("previous", out value) || value != "1") return null;
+            if (!r.TryGetValue("backup.path", out backup) || backup.Length == 0 || !r.TryGetValue("before", out before)) return null;
+            try { return File.Exists(backup) && SshdConfig.FileHash(backup) != before ? backup : null; }
+            catch (Exception) { return null; }
+        }
+
+        private bool RecoverPending(DateTime nowUtc, bool force, string id)
         {
             return ConfigurationTransaction.Locked(_live, () =>
             {
                 var r = Read();
-                if (!r.ContainsKey("status") || r["status"] != "pending") return false;
+                if (!r.ContainsKey("status") || r["status"] != "pending" || (id != null && r["id"] != id)) return false;
                 if (!force && nowUtc.ToUniversalTime() < DateTime.ParseExact(r["deadline"], "O", CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)) return false;
                 bool existed = r["previous"] == "1";
                 string beforeHash = existed ? r["before"] : "";
@@ -422,22 +474,13 @@ namespace OpenSSHServerPNManager
             });
         }
 
-        /// <summary>
-        /// Records a failed run of the recovery task. True only when this error text was not reported before, so that the
-        /// logs get one entry per problem instead of one every minute.
-        /// </summary>
-        internal bool ReportFailure(string error)
+        /// <summary>Records a failed run of the recovery task in a pending record, so that the manager shows an error found before Recover ran (the service definition) too.</summary>
+        internal void ReportFailure(string error)
         {
-            return ConfigurationTransaction.Locked(_live, () =>
+            ConfigurationTransaction.Locked(_live, () =>
             {
-                var r = Read();
-                if (!r.ContainsKey("status")) return true;
-                string reported;
-                if (r.TryGetValue("error.reported", out reported) && reported == error) return false;
-                r["error.reported"] = error;
-                // An error found before Recover ran (the service definition) is shown by the manager too.
-                if (r["status"] == "pending") r["error"] = error;
-                Write(r);
+                var r = Read(); string recorded;
+                if (r.ContainsKey("status") && r["status"] == "pending" && (!r.TryGetValue("error", out recorded) || recorded != error)) { r["error"] = error; Write(r); }
                 return true;
             });
         }
@@ -583,31 +626,58 @@ namespace OpenSSHServerPNManager
 
         public static int Run()
         {
-            ConfigurationRecoveryTransaction txn = null;
-            try
-            {
-                txn = OpenForPath(Ssh.ConfigPath);
-                var error = ServerState.ServiceDefinitionError();
-                if (error != null) throw new ConfigException(error);
-                if (txn.Recover(DateTime.UtcNow))
-                {
-                    Log.Info("Unconfirmed server settings restored by the recovery task.");
-                    Agent.Note("Configuration recovery: unconfirmed server settings were restored and sshd restarted.");
-                }
-                return 0;
-            }
-            catch (Exception ex)
-            {
-                // Logged once per distinct error: the task runs every minute until it succeeds or an administrator resolves it.
-                bool first = true;
-                try { if (txn != null) first = txn.ReportFailure(ex.Message); } catch (Exception) { }
-                if (first)
+            return Run(() => OpenForPath(Ssh.ConfigPath), () => ServerState.ServiceDefinitionError(), Path.Combine(Path.GetDirectoryName(Log.Path), "recovery-failure.txt"),
+                ex =>
                 {
                     Log.Error("Configuration recovery failed; the task will retry", ex, false);
                     Agent.Note("Configuration recovery failed; the task retries every minute and logs again only when the error changes. Open the manager to restore the previous settings or keep the files as they are. " + ex.Message);
-                }
+                },
+                () =>
+                {
+                    Log.Info("Unconfirmed server settings restored by the recovery task.");
+                    Agent.Note("Configuration recovery: unconfirmed server settings were restored and sshd restarted.");
+                });
+        }
+
+        /// <summary>
+        /// One run of the recovery task. The task runs every minute until it succeeds or an administrator resolves the change,
+        /// so a failure is reported only when its text differs from the last one reported (failureState, in the running
+        /// account's own log folder): also when the recovery storage cannot be opened or the journal read. A configuration
+        /// lock held elsewhere is a window restoring or keeping the change, not a failure; the next run looks again.
+        /// </summary>
+        internal static int Run(Func<ConfigurationRecoveryTransaction> open, Func<string> serviceError, string failureState, Action<Exception> failed, Action restored)
+        {
+            ConfigurationRecoveryTransaction txn = null;
+            try
+            {
+                txn = open();
+                var error = serviceError();
+                if (error != null) throw new ConfigException(error);
+                bool done = txn.Recover(DateTime.UtcNow);
+                NewFailure(failureState, "");
+                if (done) restored();
+                return 0;
+            }
+            catch (ConfigurationBusyException) { return 0; }
+            catch (Exception ex)
+            {
+                try { if (txn != null) txn.ReportFailure(ex.Message); } catch (Exception) { }
+                if (NewFailure(failureState, ex.Message)) failed(ex);
                 return 1;
             }
+        }
+
+        /// <summary>True when error differs from the last failure kept in stateFile, which then keeps it; "" (a run without failure) forgets it.</summary>
+        internal static bool NewFailure(string stateFile, string error)
+        {
+            try
+            {
+                if (File.Exists(stateFile) && File.ReadAllText(stateFile, Encoding.UTF8) == error) return false;
+                if (error.Length == 0) { File.Delete(stateFile); return false; }
+                File.WriteAllText(stateFile, error, new UTF8Encoding(false));
+            }
+            catch (Exception) { }
+            return error.Length > 0;
         }
 
         internal static string TaskXml(string exe, DateTime dueUtc)

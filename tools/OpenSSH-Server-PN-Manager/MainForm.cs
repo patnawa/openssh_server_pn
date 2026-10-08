@@ -701,7 +701,8 @@ namespace OpenSSHServerPNManager
         /// <summary>
         /// Restart from the Dashboard or the tray (ask), or Save and restart with nothing to save. When sshd does not run the
         /// saved file yet (a save-only change, or an edit after sshd started), it goes through RestartWithRollback like a
-        /// save does, so settings that lock you out come back by themselves. Otherwise a plain restart changes nothing.
+        /// save does, so settings that lock you out come back by themselves, and the firewall is offered the ports of that
+        /// file. Otherwise a plain restart changes nothing. When recovery cannot be armed, a plain restart is offered.
         /// </summary>
         private async Task RestartApplyingSaved(bool ask)
         {
@@ -710,17 +711,37 @@ namespace OpenSSHServerPNManager
             if (rollback == null)
             {
                 if (ask && MessageBox.Show(this, "Restart the SSH server? sshd reads sshd_config again; new connections are refused for a moment." + sessions, Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-                _expectedStateChange = DateTime.UtcNow;
-                await BgAsync("Restarting sshd...", () => { Services.Restart("sshd"); Thread.Sleep(800); });
-                _expectedStateChange = DateTime.UtcNow;
-                await RefreshDashboard();
-                Status("sshd restart completed");
+                await PlainRestart();
                 return;
             }
             if (ask && MessageBox.Show(this, "Restart the SSH server? sshd_config was saved after sshd started, so sshd starts with settings it has not run yet.\n\nAfter the restart you are asked to keep them. Without an answer, or with Restore, " +
                     (rollback.FromRecord ? "the settings sshd runs now come back." : "the newest backup (" + Path.GetFileName(rollback.Backup) + ") comes back: the manager has no record of the exact settings sshd runs now.") + sessions,
                     Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-            await RestartWithRollback(rollback.Backup, null, null, null, !rollback.FromRecord);
+            // A port saved earlier without a restart takes effect now.
+            var firewallBack = await OpenFirewallForPort(false);
+            try
+            {
+                await RestartWithRollback(rollback.Backup, firewallBack == null ? null : firewallBack.Undo,
+                    firewallBack == null ? null : firewallBack.Apply, firewallBack == null ? null : firewallBack.Keep, !rollback.FromRecord);
+            }
+            catch (RecoveryNotArmedException ex)
+            {
+                // Nothing was changed. Before automatic rollback this button restarted sshd as it is, and it still can.
+                if (MessageBox.Show(this, "Automatic rollback is unavailable: " + ex.Reason + "\n\nRestart sshd without it? sshd starts with the saved settings, and nothing brings back the previous ones if they lock you out.",
+                        Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                { Status("sshd was not restarted: automatic rollback is unavailable"); return; }
+                if (firewallBack != null) await firewallBack.Apply();
+                await PlainRestart();
+            }
+        }
+
+        private async Task PlainRestart()
+        {
+            _expectedStateChange = DateTime.UtcNow;
+            await BgAsync("Restarting sshd...", () => { Services.Restart("sshd"); Thread.Sleep(800); });
+            _expectedStateChange = DateTime.UtcNow;
+            await RefreshDashboard();
+            Status("sshd restart completed");
         }
 
         private async Task TestLiveConfig()
@@ -1141,7 +1162,7 @@ namespace OpenSSHServerPNManager
             // The registry value is written only when it changed (HKLM\SOFTWARE\OpenSSH\DefaultShell applies to new sessions at once).
             if (shellChanged || optionChanged) await SaveDefaultShell(shell, shellOption, true);
             ReportOverridden(changed);
-            var firewallBack = EndpointsChanged(before, cand) ? await OpenFirewallForPort() : null;
+            var firewallBack = ChecksFirewall(before, cand, restart) ? await OpenFirewallForPort(EndpointsChanged(before, cand)) : null;
             if (restart)
             {
                 await RestartWithRollback(backup, firewallBack == null ? null : firewallBack.Undo,
@@ -1180,6 +1201,9 @@ namespace OpenSSHServerPNManager
             return endpoints(before) != endpoints(after);
         }
 
+        /// <summary>Whether a Settings save checks the firewall: it changes the ports, or it restarts sshd, which also applies a port saved earlier without a restart.</summary>
+        internal static bool ChecksFirewall(SshdConfig before, SshdConfig after, bool restart) { return restart || EndpointsChanged(before, after); }
+
         /// <summary>A change to the firewall rule that goes with a change of sshd's port: undone with the settings, or finished when they are kept.</summary>
         private sealed class FirewallChange { public Func<Task> Apply; public Action Undo; public Func<Task> Keep; }
 
@@ -1187,9 +1211,10 @@ namespace OpenSSHServerPNManager
         /// When the firewall rule does not admit the port sshd will listen on, asks to add it. The rule keeps its old ports
         /// meanwhile, so sshd stays reachable whether the new settings are kept or not. Returns how to undo the change (a
         /// restart that is rolled back) and how to finish it (the new settings are kept: a rule that had a single port then
-        /// drops the old one when sshd no longer uses it), or null when nothing changed.
+        /// drops the old one when sshd no longer uses it), or null when nothing changed. A rule that cannot be checked is a
+        /// warning when this save changed the ports (portChanged), and only logged for a restart of ports saved earlier.
         /// </summary>
-        private async Task<FirewallChange> OpenFirewallForPort()
+        private async Task<FirewallChange> OpenFirewallForPort(bool portChanged)
         {
             if (Program.Unattended) return null;
             ServerStateSnapshot state = null; FirewallRule fw = null; string notChecked = null;
@@ -1204,8 +1229,8 @@ namespace OpenSSHServerPNManager
             // The file is saved already: a firewall that cannot be checked is a warning, and a requested restart still runs.
             if (notChecked != null)
             {
-                Log.Info("Firewall rule not checked after a port change: " + notChecked);
-                MessageBox.Show(this, "Settings were saved, but the firewall rule was not checked for the new port: " + notChecked +
+                Log.Info("Firewall rule not checked " + (portChanged ? "after a port change: " : "before a restart: ") + notChecked);
+                if (portChanged) MessageBox.Show(this, "Settings were saved, but the firewall rule was not checked for the new port: " + notChecked +
                     "\n\nCheck the Firewall tab: other computers can connect only on the ports it allows.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return null;
             }
@@ -1335,15 +1360,16 @@ namespace OpenSSHServerPNManager
                 Program.AppName, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button3);
             if (answer == DialogResult.Yes)
             {
-                Exception failure = null; bool restored = false;
-                try { restored = await BgAsync("Restoring the previous settings...", () => ConfigurationRecovery.Open().Recover(DateTime.UtcNow, true)); }
+                Exception failure = null; RestoreResult result = null;
+                try { result = await BgAsync("Restoring the previous settings...", () => ConfigurationRecovery.Open().RestoreNow(info.Id, DateTime.UtcNow)); }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { failure = ex; }
                 await ReloadAfterRecovery();
                 if (failure != null) throw new ConfigException("The previous settings could not be restored: " + failure.Message);
-                if (!restored) { Status("The earlier change was already resolved elsewhere"); return RecoveryResolution.Cleared; }
-                Log.Info("Pending configuration recovery completed from the manager");
-                Status("The previous settings were restored and sshd restarted");
+                if (result.Outcome == RestoreOutcome.InProgressElsewhere) throw new ConfigException(RestoreText(result));
+                if (!result.Restored) { Status(RestoreText(result)); return RecoveryResolution.Cleared; }
+                if (result.Outcome == RestoreOutcome.Restored) Log.Info("Pending configuration recovery completed from the manager");
+                ShowRestored(result);
                 return RecoveryResolution.Restored;
             }
             if (answer != DialogResult.No) return RecoveryResolution.None;
@@ -1484,12 +1510,17 @@ namespace OpenSSHServerPNManager
                     recoveryId = await BgAsync("Arming configuration recovery...", () => freshRecord ? armed.ArmFresh(backup, Firewall.CaptureForRecovery(), due) : armed.Arm(backup, Firewall.CaptureForRecovery(), due));
                 }
                 catch (OperationCanceledException) { throw; }
-                catch (Exception ex) { throw new ConfigException("sshd_config is saved, but sshd was NOT restarted, so the saved settings are not in effect yet: configuration recovery could not be armed.\n\n" + ex.Message); }
+                catch (Exception ex)
+                {
+                    var message = "sshd_config is saved, but sshd was NOT restarted, so the saved settings are not in effect yet: configuration recovery could not be armed.\n\n" + ex.Message;
+                    if (!RestartWithoutRecoveryAllowed(ex)) throw new ConfigException(message);
+                    throw new RecoveryNotArmedException(message, ex.Message);
+                }
             }
             if (apply != null)
             {
                 if (recovery == null) await apply();
-                else await AfterArm(recovery, apply, "The firewall could not be prepared for the new settings, so they were not applied.");
+                else await AfterArm(recovery, recoveryId, apply, "The firewall could not be prepared for the new settings, so they were not applied.");
             }
             _expectedStateChange = DateTime.UtcNow;
             var failure = await BgAsync("Restarting sshd...", () => { try { Services.Restart("sshd"); return (Exception)null; } catch (Exception ex) { return ex; } });
@@ -1498,7 +1529,7 @@ namespace OpenSSHServerPNManager
             {
                 if (recovery != null)
                 {
-                    var error = await RestoredAfter(recovery, work => BgAsync("Restoring the previous settings...", work), "sshd did not start with the new settings.", failure);
+                    var error = await RestoredAfter(recovery, recoveryId, work => BgAsync("Restoring the previous settings...", work), "sshd did not start with the new settings.", failure);
                     await ReloadAfterRecovery();
                     throw error;
                 }
@@ -1527,7 +1558,7 @@ namespace OpenSSHServerPNManager
             const string notKept = "The new settings could not be finalized, so they were NOT kept.";
             if (Program.Unattended || !Prefs.ConfirmAfterRestart)
             {
-                if (recovery != null) await AfterArm(recovery, () => recovery.ConfirmAsync(recoveryId, keep), notKept);
+                if (recovery != null) await AfterArm(recovery, recoveryId, () => recovery.ConfirmAsync(recoveryId, keep), notKept);
                 else if (keep != null) await keep();
                 return true;
             }
@@ -1538,20 +1569,20 @@ namespace OpenSSHServerPNManager
                 answer = d.ShowDialog(this);
             if (answer == DialogResult.OK)
             {
-                if (recovery != null) await AfterArm(recovery, () => recovery.ConfirmAsync(recoveryId, keep), notKept);
+                if (recovery != null) await AfterArm(recovery, recoveryId, () => recovery.ConfirmAsync(recoveryId, keep), notKept);
                 else if (keep != null) await keep();
                 Status("New settings kept. " + check.Summary); Log.Info("New settings kept after the restart"); return true;
             }
             if (recovery != null)
             {
-                Exception restoreError = null; bool restored = false;
-                try { restored = await BgAsync("Restoring the previous settings...", () => recovery.Recover(DateTime.UtcNow, true)); }
+                Exception restoreError = null; RestoreResult result = null;
+                try { result = await BgAsync("Restoring the previous settings...", () => recovery.RestoreNow(recoveryId, DateTime.UtcNow)); }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { restoreError = ex; }
                 await ReloadAfterRecovery();
                 if (restoreError != null) throw new ConfigException("The new settings were not kept, but restoring the previous settings failed, so the recovery task keeps trying every minute: " + restoreError.Message);
-                if (!restored) throw new ConfigException("The new settings were not kept here, but the change was already restored or kept elsewhere (another window or the recovery task). The window shows the file as it is now.");
-                Status("The previous settings were restored and sshd restarted.");
+                if (!result.Restored) throw new ConfigException("The new settings were not kept here. " + RestoreText(result));
+                ShowRestored(result);
                 return false;
             }
             Exception startError = null; string replaced = null;
@@ -1571,11 +1602,28 @@ namespace OpenSSHServerPNManager
             return false;
         }
 
+        /// <summary>Recovery could not be armed for a restart, and nothing was changed: a restart without it may be offered.</summary>
+        private sealed class RecoveryNotArmedException : ConfigException
+        {
+            public readonly string Reason;
+            public RecoveryNotArmedException(string message, string reason) : base(message) { Reason = reason; }
+        }
+
+        /// <summary>
+        /// Whether a restart without recovery may be offered after arming failed: only when recovery itself is unavailable
+        /// (service definition, storage, firewall capture, task), never when the journal refused the restart because another
+        /// change is pending or another operation runs, or the file changed meanwhile.
+        /// </summary>
+        internal static bool RestartWithoutRecoveryAllowed(Exception armingFailure)
+        {
+            return !(armingFailure is PendingRecoveryException || armingFailure is ConfigChangedException || armingFailure is ConfigurationBusyException);
+        }
+
         /// <summary>A step after recovery was armed; when it fails, the previous settings are restored at once and the window reloaded.</summary>
-        private async Task AfterArm(ConfigurationRecoveryTransaction recovery, Func<Task> step, string failed)
+        private async Task AfterArm(ConfigurationRecoveryTransaction recovery, string id, Func<Task> step, string failed)
         {
             ConfigException error = null;
-            try { await RecoverOnFailure(recovery, step, work => BgAsync("Restoring the previous settings...", work), failed); }
+            try { await RecoverOnFailure(recovery, id, step, work => BgAsync("Restoring the previous settings...", work), failed); }
             catch (ConfigException ex) { error = ex; }
             if (error == null) return;
             try { await ReloadAfterRecovery(); }
@@ -1589,23 +1637,49 @@ namespace OpenSSHServerPNManager
         /// cancellation, the previous settings are restored at once instead of staying armed behind a message that suggests
         /// the new ones are in effect; the ConfigException says what became of them.
         /// </summary>
-        internal static async Task RecoverOnFailure(ConfigurationRecoveryTransaction recovery, Func<Task> step, Func<Func<bool>, Task<bool>> background, string failed)
+        internal static async Task RecoverOnFailure(ConfigurationRecoveryTransaction recovery, string id, Func<Task> step, Func<Func<RestoreResult>, Task<RestoreResult>> background, string failed)
         {
             Exception failure;
             try { await step(); return; }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { failure = ex; }
-            throw await RestoredAfter(recovery, background, failed, failure);
+            throw await RestoredAfter(recovery, id, background, failed, failure);
         }
 
         /// <summary>Restores the previous settings now, after a failure, and returns the exception that says how that went.</summary>
-        internal static async Task<ConfigException> RestoredAfter(ConfigurationRecoveryTransaction recovery, Func<Func<bool>, Task<bool>> background, string failed, Exception failure)
+        internal static async Task<ConfigException> RestoredAfter(ConfigurationRecoveryTransaction recovery, string id, Func<Func<RestoreResult>, Task<RestoreResult>> background, string failed, Exception failure)
         {
-            bool restored;
-            try { restored = await background(() => recovery.Recover(DateTime.UtcNow, true)); }
+            RestoreResult result;
+            try { result = await background(() => recovery.RestoreNow(id, DateTime.UtcNow)); }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { return new ConfigException(failed + " Restoring the previous settings failed as well, so the recovery task keeps trying every minute: " + ex.Message + "\n\n" + failure.Message); }
-            return new ConfigException(failed + (restored ? " The previous settings were restored." : " The change was already restored or kept elsewhere; the window shows the file as it is now.") + "\n\n" + failure.Message);
+            return new ConfigException(failed + " " + RestoreText(result) + "\n\n" + failure.Message);
+        }
+
+        /// <summary>What became of the previous settings after a window asked to restore them, in words that match the outcome.</summary>
+        internal static string RestoreText(RestoreResult result)
+        {
+            switch (result.Outcome)
+            {
+                case RestoreOutcome.InProgressElsewhere:
+                    return "Another process is restoring the previous settings right now (normally the recovery task, at the deadline). Look at the Dashboard in a moment, or reload, to see the result.";
+                case RestoreOutcome.ResolvedElsewhere:
+                    return "The change was already resolved elsewhere (kept, cancelled or followed by another change in another manager window); the window shows the file as it is now.";
+            }
+            var text = result.Outcome == RestoreOutcome.RestoredElsewhere
+                ? "The recovery task (or another manager window) got there first: the previous settings were restored and sshd restarted."
+                : "The previous settings were restored and sshd restarted.";
+            if (result.SavedMeanwhile != null)
+                text += " These are the settings sshd ran before this restart: the file saved without a restart in between, which sshd never ran, is no longer in sshd_config and is kept as " +
+                        Path.GetFileName(result.SavedMeanwhile) + " (Settings tab, Backups).";
+            return text;
+        }
+
+        /// <summary>A restore that went through: the status line, and a message when a file saved without a restart was set aside.</summary>
+        private void ShowRestored(RestoreResult result)
+        {
+            Status(result.Outcome == RestoreOutcome.RestoredElsewhere ? "The previous settings were restored (by the recovery task or another window) and sshd restarted" : "The previous settings were restored and sshd restarted");
+            if (result.SavedMeanwhile != null && !Program.Unattended) MessageBox.Show(this, RestoreText(result), Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         /// <summary>Reload on the Settings tab (discardRaw false) or on the text tab (discardSettings false): the tab's own edits are discarded.</summary>

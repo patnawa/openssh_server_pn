@@ -10,9 +10,18 @@ using System.Threading;
 
 namespace OpenSSHServerPNManager
 {
+    /// <summary>
+    /// The configuration lock stayed taken by another process, so nothing was done. While a change awaits recovery that is
+    /// normally a restore in progress (the recovery task, or a window), not a failure of one.
+    /// </summary>
+    internal sealed class ConfigurationBusyException : ConfigException { public ConfigurationBusyException(string m) : base(m) { } }
+
     /// <summary>Validation, conflict detection, backup and atomic commit share one transaction for every server editor.</summary>
     internal static class ConfigurationTransaction
     {
+        /// <summary>How long Locked waits for another configuration operation (tests shorten it).</summary>
+        internal static int LockWaitMilliseconds = 15000;
+
         internal static T Locked<T>(string path, Func<T> action)
         {
             string name;
@@ -28,8 +37,8 @@ namespace OpenSSHServerPNManager
                 bool acquired = false;
                 try
                 {
-                    try { acquired = mutex.WaitOne(15000); } catch (AbandonedMutexException) { acquired = true; }
-                    if (!acquired) throw new ConfigException("Another configuration operation is still running. Try again when it finishes.");
+                    try { acquired = mutex.WaitOne(LockWaitMilliseconds); } catch (AbandonedMutexException) { acquired = true; }
+                    if (!acquired) throw new ConfigurationBusyException("Another configuration operation is still running. Try again when it finishes.");
                     return action();
                 }
                 finally { if (acquired) mutex.ReleaseMutex(); }

@@ -69,6 +69,21 @@ namespace OpenSSHServerPNManager
             finally { install.SetValue(null, oldInstall); Ssh.ConfigDirOverride = oldConfig; Program.Unattended = oldUnattended; }
         }
 
+        /// <summary>Runs body while another thread holds the configuration lock of live, with lock waits shortened to 100 ms.</summary>
+        private static void WhileLocked(string live, Action body)
+        {
+            var held = new System.Threading.ManualResetEventSlim(); var release = new System.Threading.ManualResetEventSlim();
+            var holder = Task.Factory.StartNew(() => ConfigurationTransaction.Locked(live, () => { held.Set(); release.Wait(); return true; }), TaskCreationOptions.LongRunning);
+            var wait = ConfigurationTransaction.LockWaitMilliseconds;
+            try
+            {
+                if (!held.Wait(20000)) throw new Exception("The lock holder did not start");
+                ConfigurationTransaction.LockWaitMilliseconds = 100;
+                body();
+            }
+            finally { ConfigurationTransaction.LockWaitMilliseconds = wait; release.Set(); holder.Wait(20000); }
+        }
+
         internal static void Run(Action<string, Func<string>> test, string tmpDir)
         {
             test("recovery task: the start time is rounded up, so the first run at the deadline restores", () =>
@@ -177,38 +192,116 @@ namespace OpenSSHServerPNManager
                 try { txn.SetAsideDamaged(); throw new Exception("A readable record was set aside"); } catch (ConfigException) { }
                 return null;
             });
-            test("recovery task: a repeated failure is logged once per distinct error", () =>
+            test("recovery task: a repeated failure is logged once per distinct error, also without a readable journal", () =>
             {
-                var f = new Fixture(tmpDir); var host = new Host(); var txn = f.Open(host); txn.Arm(f.Backup, null, f.Due);
-                if (!txn.ReportFailure("The SSH service runs a different executable")) throw new Exception("The first failure was not logged");
-                if (txn.ReportFailure("The SSH service runs a different executable")) throw new Exception("The same failure is logged every minute");
-                if (!txn.ReportFailure("restart interrupted")) throw new Exception("A new error was not logged");
+                var f = new Fixture(tmpDir); var host = new Host(); var state = Path.Combine(f.Root, "recovery-failure.txt");
+                int reported = 0, restored = 0;
+                Func<Func<ConfigurationRecoveryTransaction>, string, int> run = (open, serviceError) => ConfigurationRecovery.Run(open, () => serviceError, state, ex => reported++, () => restored++);
+                Func<ConfigurationRecoveryTransaction> fixture = () => f.Open(host);
+                // The storage cannot be opened (an ancestor ACL): no journal to remember the error in.
+                for (int i = 0; i < 3; i++) if (run(() => { throw new ConfigException("A recovery storage ancestor can be replaced or controlled by an untrusted account: C:\\ProgramData"); }, null) != 1) throw new Exception("An unopened storage counted as success");
+                if (reported != 1) throw new Exception("An unopened storage was logged " + reported + " times in three runs");
+                // An unreadable journal.
+                var txn = f.Open(host); var due = DateTime.UtcNow.AddMinutes(-1); txn.Arm(f.Backup, null, due);
+                File.WriteAllText(Path.Combine(f.Dir, "pending.ini"), "status=!!not base64!!\n");
+                for (int i = 0; i < 3; i++) run(fixture, null);
+                if (reported != 2) throw new Exception("A damaged journal was logged " + (reported - 1) + " times in three runs");
+                txn.SetAsideDamaged();
+                // An error found before Recover ran is logged once and shown by the manager.
+                File.WriteAllText(f.Live, "new settings"); txn.Arm(f.Backup, null, due);
+                const string definition = "The SSH service runs a different executable";
+                for (int i = 0; i < 3; i++) run(fixture, definition);
                 var info = ConfigurationRecovery.PendingInfo(f.Live);
-                if (info == null || info.Error != "restart interrupted") throw new Exception("The manager does not see an error found before Recover ran");
+                if (reported != 3 || info == null || info.Error != definition) throw new Exception("The service definition error was logged " + (reported - 2) + " times or not recorded");
+                // A configuration lock held elsewhere (a window restoring) is no failure.
+                WhileLocked(f.Live, () => { if (run(fixture, null) != 0) throw new Exception("A busy lock counted as a failure"); });
+                if (reported != 3 || !txn.Pending) throw new Exception("A busy lock was logged or recovered");
+                // Success forgets the error, so that it is logged again when it comes back.
+                if (run(fixture, null) != 0 || restored != 1 || txn.Pending || File.Exists(state)) throw new Exception("The recovery did not complete or its last error was kept");
+                File.WriteAllText(f.Live, "new settings"); txn.Arm(f.Backup, null, due);
+                run(fixture, definition);
+                if (reported != 4) throw new Exception("A failure that came back after a success was not logged");
                 return null;
             });
             test("restart with rollback: a failure after arming restores at once and says so", () =>
             {
                 AsyncUiTest.Wait(async () =>
                 {
-                    Func<Func<bool>, Task<bool>> inline = work => Task.FromResult(work());
+                    Func<Func<RestoreResult>, Task<RestoreResult>> inline = work => Task.FromResult(work());
                     var f = new Fixture(tmpDir); var host = new Host(); var txn = f.Open(host);
-                    txn.Arm(f.Backup, new FirewallRule { Name = "test", Enabled = true, Profiles = 3, Ports = "22" }, f.Due);
-                    try { await MainForm.RecoverOnFailure(txn, async () => { await Task.Delay(1); throw new IOException("firewall apply failed"); }, inline, "The firewall could not be prepared."); throw new Exception("The failed step was ignored"); }
+                    var id = txn.Arm(f.Backup, new FirewallRule { Name = "test", Enabled = true, Profiles = 3, Ports = "22" }, f.Due);
+                    try { await MainForm.RecoverOnFailure(txn, id, async () => { await Task.Delay(1); throw new IOException("firewall apply failed"); }, inline, "The firewall could not be prepared."); throw new Exception("The failed step was ignored"); }
                     catch (ConfigException ex) { if (!ex.Message.Contains("previous settings were restored") || !ex.Message.Contains("firewall apply failed")) throw new Exception("Untruthful message: " + ex.Message); }
                     if (txn.Pending || !File.ReadAllBytes(f.Live).SequenceEqual(f.Before) || host.Restarts != 1 || host.Firewall == null || host.Firewall.Ports != "22") throw new Exception("The previous settings were not restored at once");
                     ConfigurationRecovery.RequireNoPending(f.Live);
                     // Keep fails after the person clicked Keep: not kept, restored now, not a minute later by the task.
-                    f = new Fixture(tmpDir); host = new Host(); txn = f.Open(host); var id = txn.Arm(f.Backup, null, f.Due); var keeping = txn;
-                    try { await MainForm.RecoverOnFailure(txn, () => keeping.ConfirmAsync(id, async () => { await Task.Delay(1); throw new ConfigException("listeners could not be verified"); }), inline, "The new settings could not be finalized, so they were NOT kept."); throw new Exception("The failed Keep was ignored"); }
+                    f = new Fixture(tmpDir); host = new Host(); txn = f.Open(host); id = txn.Arm(f.Backup, null, f.Due); var keeping = txn; var keptId = id;
+                    try { await MainForm.RecoverOnFailure(txn, id, () => keeping.ConfirmAsync(keptId, async () => { await Task.Delay(1); throw new ConfigException("listeners could not be verified"); }), inline, "The new settings could not be finalized, so they were NOT kept."); throw new Exception("The failed Keep was ignored"); }
                     catch (ConfigException ex) { if (!ex.Message.Contains("NOT kept") || !ex.Message.Contains("previous settings were restored")) throw new Exception("Untruthful message: " + ex.Message); }
                     if (txn.Pending || !File.ReadAllBytes(f.Live).SequenceEqual(f.Before)) throw new Exception("A failed Keep left the new settings armed");
                     // A closed window leaves recovery to the task.
-                    f = new Fixture(tmpDir); host = new Host(); txn = f.Open(host); txn.Arm(f.Backup, null, f.Due);
-                    try { await MainForm.RecoverOnFailure(txn, () => { throw new OperationCanceledException(); }, inline, "x"); throw new Exception("Cancellation was swallowed"); }
+                    f = new Fixture(tmpDir); host = new Host(); txn = f.Open(host); id = txn.Arm(f.Backup, null, f.Due);
+                    try { await MainForm.RecoverOnFailure(txn, id, () => { throw new OperationCanceledException(); }, inline, "x"); throw new Exception("Cancellation was swallowed"); }
                     catch (OperationCanceledException) { }
                     if (!txn.Pending || host.Restarts != 0) throw new Exception("A cancelled step restored the settings");
                 });
+                return null;
+            });
+            test("restart with rollback: a restore the recovery task got to first is reported as restored, a held lock as a restore in progress", () =>
+            {
+                // The Keep dialog timed out at the deadline and the task restored first.
+                var f = new Fixture(tmpDir); var host = new Host(); var txn = f.Open(host); var id = txn.Arm(f.Backup, null, f.Due);
+                txn.Recover(f.Due);
+                var result = txn.RestoreNow(id, DateTime.UtcNow); var text = MainForm.RestoreText(result);
+                if (result.Outcome != RestoreOutcome.RestoredElsewhere || !result.Restored || !text.Contains("previous settings were restored") || text.Contains("kept")) throw new Exception("A restore by the task reads as: " + text);
+                // A failed step after arming, with the task first: restored, not "restored or kept elsewhere".
+                f = new Fixture(tmpDir); txn = f.Open(host); id = txn.Arm(f.Backup, null, f.Due); var first = txn;
+                ConfigException error = null;
+                AsyncUiTest.Wait(async () =>
+                {
+                    try { await MainForm.RecoverOnFailure(first, id, async () => { await Task.Delay(1); first.Recover(f.Due); throw new IOException("listeners could not be verified"); }, work => Task.FromResult(work()), "The new settings were NOT kept."); }
+                    catch (ConfigException ex) { error = ex; }
+                });
+                if (error == null || !error.Message.Contains("previous settings were restored") || error.Message.Contains("kept elsewhere")) throw new Exception("Ambiguous message: " + (error == null ? "none" : error.Message));
+                // The task holds the lock while it restores: in progress, not a failed restore, and nothing is touched meanwhile.
+                f = new Fixture(tmpDir); host = new Host(); txn = f.Open(host); id = txn.Arm(f.Backup, null, f.Due); var busy = txn; var busyId = id;
+                WhileLocked(f.Live, () => result = busy.RestoreNow(busyId, DateTime.UtcNow));
+                if (result.Outcome != RestoreOutcome.InProgressElsewhere || result.Restored || !txn.Pending || host.Restarts != 0) throw new Exception("A held lock was reported as " + result.Outcome);
+                if (!MainForm.RestoreText(result).Contains("restoring")) throw new Exception(MainForm.RestoreText(result));
+                // Another change's record is never restored in place of this one.
+                if (txn.RestoreNow("another-id", DateTime.UtcNow).Outcome != RestoreOutcome.ResolvedElsewhere || !txn.Pending) throw new Exception("A stale id restored the pending change");
+                result = txn.RestoreNow(id, DateTime.UtcNow);
+                if (result.Outcome != RestoreOutcome.Restored || txn.Pending || !File.ReadAllBytes(f.Live).SequenceEqual(f.Before) || result.SavedMeanwhile != null) throw new Exception("The window's restore did not run");
+                return null;
+            });
+            test("restart with rollback: a rollback past a file saved without a restart says where that file is kept", () =>
+            {
+                var f = new Fixture(tmpDir); File.WriteAllText(f.Live, "Port 22\n"); var host = new Host { Identity = "100@1" }; var txn = f.Open(host);
+                Save(f, txn, "Port 2200\n"); var backup = Save(f, txn, "Port 2300\n");
+                var result = txn.RestoreNow(txn.Arm(backup, null, f.Due), DateTime.UtcNow);
+                if (File.ReadAllText(f.Live) != "Port 22\n" || result.SavedMeanwhile == null || Path.GetFullPath(result.SavedMeanwhile) != Path.GetFullPath(backup) || File.ReadAllText(backup) != "Port 2200\n")
+                    throw new Exception("The file saved without a restart is not reported: " + result.SavedMeanwhile);
+                var text = MainForm.RestoreText(result);
+                if (!text.Contains(Path.GetFileName(backup)) || !text.Contains("never ran")) throw new Exception(text);
+                // Restored by the task: the same note.
+                f = new Fixture(tmpDir); File.WriteAllText(f.Live, "Port 22\n"); txn = f.Open(host);
+                Save(f, txn, "Port 2200\n"); backup = Save(f, txn, "Port 2300\n");
+                var id = txn.Arm(backup, null, f.Due); txn.Recover(f.Due);
+                result = txn.RestoreNow(id, DateTime.UtcNow);
+                if (result.Outcome != RestoreOutcome.RestoredElsewhere || result.SavedMeanwhile == null) throw new Exception("The task's restore lost the note");
+                // A single save restores the backup it took: nothing else to say.
+                f = new Fixture(tmpDir); File.WriteAllText(f.Live, "Port 22\n"); txn = f.Open(host);
+                backup = Save(f, txn, "Port 2200\n");
+                result = txn.RestoreNow(txn.Arm(backup, null, f.Due), DateTime.UtcNow);
+                if (result.SavedMeanwhile != null || MainForm.RestoreText(result).Contains("kept as")) throw new Exception("A plain rollback mentions a set-aside file");
+                return null;
+            });
+            test("restart: a restart without recovery is offered only when recovery itself is unavailable", () =>
+            {
+                if (!MainForm.RestartWithoutRecoveryAllowed(new ConfigException("The SSH service has an unsupported runtime option (-p).")) || !MainForm.RestartWithoutRecoveryAllowed(new IOException("schtasks failed")))
+                    throw new Exception("An unavailable recovery refuses the Restart button outright");
+                foreach (var refusal in new Exception[] { new PendingRecoveryException(new RecoveryRecordInfo()), new ConfigChangedException("changed"), new ConfigurationBusyException("busy") })
+                    if (MainForm.RestartWithoutRecoveryAllowed(refusal)) throw new Exception("A journal refusal offers a restart without recovery: " + refusal.GetType().Name);
                 return null;
             });
             test("restart: a plain restart arms recovery only when sshd does not run the saved file", () =>
@@ -304,7 +397,7 @@ namespace OpenSSHServerPNManager
                 });
                 return null;
             });
-            test("GUI settings: errors after the save never read as not saved, and only port changes touch the firewall", () =>
+            test("GUI settings: errors after the save never read as not saved, and only port changes or a restart check the firewall", () =>
             {
                 var status = MainForm.ConfigErrorStatus(new ConfigException("Settings were saved, but the firewall rule could not be updated: access denied\n\ndetails"));
                 if (status.IndexOf("not saved", StringComparison.OrdinalIgnoreCase) >= 0 || !status.Contains("Settings were saved") || status.Contains("details")) throw new Exception(status);
@@ -313,6 +406,9 @@ namespace OpenSSHServerPNManager
                 if (MainForm.EndpointsChanged(config("Port 22\nMaxAuthTries 3"), config("Port 22\nMaxAuthTries 4"))) throw new Exception("A save without a port change checks the firewall");
                 if (!MainForm.EndpointsChanged(config("Port 22"), config("Port 2222")) || !MainForm.EndpointsChanged(config("Port 22"), config("Port 22\nListenAddress 10.0.0.1:2222")))
                     throw new Exception("A port or listen address change skips the firewall");
+                // A port saved earlier without a restart (firewall declined then) takes effect with the next Save and restart.
+                if (!MainForm.ChecksFirewall(config("Port 2222\nMaxAuthTries 3"), config("Port 2222\nMaxAuthTries 4"), true)) throw new Exception("Save and restart skips the firewall offer");
+                if (MainForm.ChecksFirewall(config("Port 2222\nMaxAuthTries 3"), config("Port 2222\nMaxAuthTries 4"), false)) throw new Exception("A save-only change without a port change checks the firewall");
                 return null;
             });
             test("service path: an unquoted ImagePath with spaces is read as InstallDir reads it", () =>
