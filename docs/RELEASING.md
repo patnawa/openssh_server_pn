@@ -14,8 +14,8 @@ Actions variable and secret lists were empty; signing still requires an owner-su
 
 The owner requested distribution of the locally tested audit follow-up while signing and
 disposable-VM acceptance remain pending. It is available through the separate prerelease tags
-[`preview-v10.5.6.0`](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0)
-and [`preview-manager-v2.3.0`](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0).
+[`preview-v10.5.6.0-r2`](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r2)
+and [`preview-manager-v2.3.0-r2`](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r2).
 These releases are explicitly **unsigned previews for testing**, marked prerelease and not latest.
 The stable product release remains 10.5.5.0. They do not establish production readiness.
 
@@ -99,7 +99,7 @@ before pushing. On `main` the filter applies to the push itself.
    |---|---|
    | `OpenSSH-Win64-v<version>.msi`, `OpenSSH-Win32-v<version>.msi`, `OpenSSH-ARM64-v<version>.msi` | built by the workflow |
    | `OpenSSHServerPNManager.exe`, `OpenSSHServerPNManager.exe.config` | the exact tested `manager-tested` artifact also embedded in every MSI |
-   | `build-info.json` | pinned toolchain identities and unsigned deterministic build hashes; final signed hashes are in `SHA256SUMS.txt` |
+   | `build-info.json` | pinned toolchain identities, normalized compiler-input hashes and unsigned deterministic build hashes; final signed hashes are in `SHA256SUMS.txt` |
    | `OpenSSH-Server-PN-v<version>.cdx.json` | CycloneDX 1.5 SBOM (section 5) |
    | `SHA256SUMS.txt` | lower-case SHA-256, two spaces, file name; LF line endings (`sha256sum -c` reads it) |
 

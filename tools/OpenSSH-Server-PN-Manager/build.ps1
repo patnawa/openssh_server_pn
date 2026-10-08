@@ -30,9 +30,24 @@ try {
     }
     $compiler = if ($Csc) { (Resolve-Path -LiteralPath $Csc).Path } else { $restored['microsoft.net.compilers.toolset'] }
     $fw = if ($ReferenceDir) { (Resolve-Path -LiteralPath $ReferenceDir).Path } else { $restored['microsoft.netframework.referenceassemblies.net45'] }
-$src = @(Get-ChildItem -Path $PSScriptRoot -Filter *.cs | Sort-Object Name | ForEach-Object FullName)
-if ($src.Count -eq 0) { throw "No .cs files in $PSScriptRoot" }
-$manifest = Join-Path $PSScriptRoot 'app.manifest'
+$sourceFiles = @(Get-ChildItem -Path $PSScriptRoot -Filter *.cs | Sort-Object Name)
+if ($sourceFiles.Count -eq 0) { throw "No .cs files in $PSScriptRoot" }
+# Git checkout newline/BOM choices otherwise affect Roslyn's deterministic input hashes,
+# manifest bytes, and physical newlines inside multiline test-helper literals. Compile a
+# canonical UTF-8/LF copy, leaving the checkout untouched. Explicit \r/\n escapes are unchanged.
+$normalizedRoot = Join-Path $toolchain 'normalized-source'
+New-Item -ItemType Directory -Force -Path $normalizedRoot | Out-Null
+$encoding = New-Object Text.UTF8Encoding $false
+$src = @()
+$inputHashes = @()
+foreach ($file in @($sourceFiles) + @(Get-Item (Join-Path $PSScriptRoot 'app.manifest'))) {
+    $normalized = Join-Path $normalizedRoot $file.Name
+    $content = [IO.File]::ReadAllText($file.FullName).Replace("`r`n","`n").Replace("`r","`n")
+    [IO.File]::WriteAllText($normalized,$content,$encoding)
+    $inputHashes += [ordered]@{ name = $file.Name; sha256 = (Get-FileHash $normalized -Algorithm SHA256).Hash.ToLowerInvariant() }
+    if ($file.Extension -eq '.cs') { $src += $normalized }
+}
+$manifest = Join-Path $normalizedRoot 'app.manifest'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $out = Join-Path $OutDir 'OpenSSHServerPNManager.exe'
 
@@ -42,11 +57,17 @@ $refs = 'mscorlib.dll','System.dll','System.Core.dll','System.Drawing.dll','Syst
 $cscArgs = @('/nologo', '/noconfig', '/nostdlib+', '/target:winexe', '/platform:anycpu', '/optimize+', '/warn:3', '/nowarn:1591', '/warnaserror+',
           "/out:$out", "/win32manifest:$manifest") + $refs
 # The same source and compiler give the same bytes, so a published hash can be rebuilt and checked.
-$cscArgs += @('/deterministic+', "/pathmap:$PSScriptRoot=.")
+$cscArgs += @('/deterministic+', "/pathmap:$normalizedRoot=.")
 # The program icon (icon\app.ico, made by icon\render.py): the executable's icon in Explorer and on the taskbar (/win32icon), and a resource
 # the window loads with all its sizes, so the title bar gets the hand-made 16-24 px images (/resource).
-$icon = Join-Path $PSScriptRoot 'icon\app.ico'
-if (Test-Path $icon) { $cscArgs += @("/win32icon:$icon", "/resource:$icon,OpenSSHServerPNManager.app.ico") }
+$originalIcon = Join-Path $PSScriptRoot 'icon\app.ico'
+if (Test-Path $originalIcon) {
+    $icon = Join-Path $normalizedRoot 'icon/app.ico'
+    New-Item -ItemType Directory -Path (Split-Path $icon -Parent) | Out-Null
+    Copy-Item -LiteralPath $originalIcon -Destination $icon
+    $inputHashes += [ordered]@{ name = 'icon/app.ico'; sha256 = (Get-FileHash $icon -Algorithm SHA256).Hash.ToLowerInvariant() }
+    $cscArgs += @("/win32icon:$icon", "/resource:$icon,OpenSSHServerPNManager.app.ico")
+}
 else { Write-Warning "icon\app.ico not found: building without the program icon." }
 $cscArgs += $src
 
@@ -78,6 +99,8 @@ Write-Host "SHA256 $((Get-FileHash $out -Algorithm SHA256).Hash)"
 $metadata = [ordered]@{
     compilerVersion = ((& $compiler -version) -join ' ').Trim()
     pinnedToolchain = (-not $Csc -and -not $ReferenceDir)
+    sourceNormalization = 'UTF-8 without BOM; LF physical newlines; normalized source root mapped to .; binary icon unchanged'
+    inputs = $inputHashes
     toolchain = (Get-Content (Join-Path $PSScriptRoot 'build-toolchain.json') -Raw | ConvertFrom-Json)
     files = @('OpenSSHServerPNManager.exe','OpenSSHServerPNManager.exe.config' | ForEach-Object {
         [ordered]@{ name = $_; sha256 = (Get-FileHash (Join-Path $OutDir $_) -Algorithm SHA256).Hash.ToLowerInvariant() }

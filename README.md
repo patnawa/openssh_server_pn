@@ -21,8 +21,8 @@ This project is independent: it is not affiliated with Microsoft or the OpenBSD 
 ## Testing preview: 10.5.6.0 / Manager 2.3.0 (2026-10-08)
 
 Download the **unsigned, testing-only prereleases**:
-[product 10.5.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0)
-or [Manager 2.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0).
+[product 10.5.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r2)
+or [Manager 2.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r2).
 Keep `OpenSSHServerPNManager.exe.config` beside the manager executable and compare
 downloads with `SHA256SUMS.txt`. Stable **10.5.5.0 / Manager 2.2.1 remains unchanged**;
 these previews are not marked as the latest stable release.
@@ -30,7 +30,7 @@ these previews are not marked as the latest stable release.
 The October audit follow-up adds a normal-user client workspace, conflict-checked
 configuration and trust editing, durable restart recovery, incremental transfer
 history, delivery retries and health reporting, and stricter build/package release
-gates. The preview artifacts were built and tested locally: **158 manager unit tests
+gates. The preview artifacts were built and tested locally: **160 manager unit tests
 and 49 automated GUI checks passed**, along with native compilation and focused
 parser, installer-script and extracted-package checks. They do not carry
 GitHub-hosted build provenance or artifact attestations.
@@ -43,10 +43,10 @@ See the [audit](docs/AUDIT-2026-10-08.md),
 
 | Preview file | SHA-256 |
 |---|---|
-| `OpenSSH-Win64-v10.5.6.0.msi` | `7ED68D6064ADEA6AC8764CD8585CA22E94D3BB12527CF1E2C140EFD66D0C4E44` |
-| `OpenSSH-Win32-v10.5.6.0.msi` | `43A4FE361633A6AA2DE9B0F129502C83C17DC390C35F14173C25787EFD387D2C` |
-| `OpenSSH-ARM64-v10.5.6.0.msi` | `F84F18D117970C250D856336504E3388FB39715E92DC531827F985E9A4C1DCA1` |
-| `OpenSSHServerPNManager.exe` (2.3.0) | `6247598DA69E8EB0EA5648ABA315FA9457C9AEE766CC35A3230C8D98ADA46B74` |
+| `OpenSSH-Win64-v10.5.6.0.msi` | `95D8E7BD429FC4234E14E6B594FA9ABA2BB97B1252A21CD8BB2522C8C6088E98` |
+| `OpenSSH-Win32-v10.5.6.0.msi` | `3E45E1670CE195BD719457ABEB74DCD25B0C4FA2775F028C9513B6D4D5E6F542` |
+| `OpenSSH-ARM64-v10.5.6.0.msi` | `80D243E972D5A0E517CB140044593F199BB8E8EC9CACE5E41F2D9F9ED90B4466` |
+| `OpenSSHServerPNManager.exe` (2.3.0) | `C814421AC38FA6C0EE767F8E02568988B0EF511D241ADCBB0331DD9CD0D11F83` |
 
 ## Stable release: 10.5.5.0 / Manager 2.2.1 (2026-09-29)
 

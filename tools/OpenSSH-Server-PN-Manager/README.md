@@ -1,16 +1,16 @@
 # OpenSSH Server PN Manager
 
 Version **2.3.0 is an unsigned, testing-only preview** of the October audit follow-up.
-Download [preview-manager-v2.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0),
-or the [10.5.6.0 preview packages](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0).
+Download [preview-manager-v2.3.0-r2](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r2),
+or the [10.5.6.0 preview packages](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r2).
 Keep `OpenSSHServerPNManager.exe.config` beside the executable and compare its hash
 with `SHA256SUMS.txt`. Stable Manager 2.2.1 / product 10.5.5.0 remains unchanged;
 the previews are not marked as latest stable.
 
-The preview was built and tested locally: **158 unit tests and 49 automated GUI
+The preview was built and tested locally: **160 unit tests and 49 automated GUI
 checks passed**. It has no GitHub-hosted build provenance or artifact attestation.
 Manager executable SHA-256:
-`6247598DA69E8EB0EA5648ABA315FA9457C9AEE766CC35A3230C8D98ADA46B74`.
+`C814421AC38FA6C0EE767F8E02568988B0EF511D241ADCBB0331DD9CD0D11F83`.
 
 It adds a normal-user client
 workspace, grouped navigation, guarded configuration and trust-file edits, persistent
@@ -429,8 +429,11 @@ Requirements: Windows with a runtime that can execute the pinned Roslyn compiler
 network access for its first restore. `build.ps1` verifies the SHA-256 of Roslyn 4.14.0
 and .NET Framework 4.5 reference packages before extracting them. The resulting manager
 still targets .NET Framework 4.5. `-Csc` and `-ReferenceDir` are explicit local overrides
-and are recorded as unpinned in `build-info.json`. Warnings stop the build. The CI build
-script compares two independent builds, then tests and packages those exact bytes.
+and are recorded as unpinned in `build-info.json`. The compiler receives temporary UTF-8/LF
+copies of text inputs, preserving explicit escape sequences and the binary icon. Metadata
+records normalized input hashes. The build regressions compare different checkout paths,
+LF/no-BOM and CRLF/BOM inputs. Warnings stop the build. CI compares independent builds,
+then tests and packages those exact bytes.
 
 | File | Contents |
 |---|---|
@@ -461,8 +464,8 @@ script compares two independent builds, then tests and packages those exact byte
 | `icon\render.py` | The program icon: draws every size (16 to 256 px, small sizes by hand, pixel by pixel) and writes `icon\app.ico`, which `build.ps1` builds into the executable. Needs Python 3 with Pillow; running it again gives the same file |
 
 Download the testing preview from
-[preview-manager-v2.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0),
-also included in [preview-v10.5.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0).
+[preview-manager-v2.3.0-r2](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r2),
+also included in [preview-v10.5.6.0-r2](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r2).
 Keep the executable and its `.exe.config` in one folder and verify `SHA256SUMS.txt`.
 These locally built files are unsigned and carry no hosted build provenance or attestations.
 

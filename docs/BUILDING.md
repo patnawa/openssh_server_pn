@@ -179,8 +179,11 @@ The pinned compiler reports `4.14.0-3.25262.10 (8edf7bcd)`; this differs from th
 previous Visual Studio servicing compiler `4.14.0-3.26424.7`.
 The installed Visual Studio compiler and this machine's runtime assemblies do not determine output.
 
-`build-info.json` records toolchain identities and unsigned hashes. `Test-ManagerBuild.ps1` builds in
-two clean output folders, requires equal EXE/config/metadata hashes, and runs the resulting unit and
+Compilation uses temporary UTF-8/no-BOM copies of C# and manifest inputs with LF physical newlines;
+explicit `\r` and `\n` escape sequences and the binary icon are unchanged. The checkout is not rewritten.
+`build-info.json` records toolchain identities, normalized input hashes and unsigned output hashes.
+The build regressions compare LF/no-BOM and CRLF/BOM checkouts at different paths, including spaces.
+`Test-ManagerBuild.ps1` also builds in two clean output folders, requires equal EXE/config/metadata hashes, and runs the resulting unit and
 off-screen UI tests. UI reports and PNG evidence are written to the output's `ui/` folder.
 `-Csc` and `-ReferenceDir` are local overrides and set `pinnedToolchain=false`; release CI uses neither.
 Pass the tested output to WiX with `/p:ManagerBinDir=<absolute folder>`. The `bin/` default is a local

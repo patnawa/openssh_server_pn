@@ -69,13 +69,45 @@ namespace OpenSSHServerPNManager
             {
                 var p = Path.Combine(tmpDir, "atomic-security"); File.WriteAllText(p, "original");
                 var sections = System.Security.AccessControl.AccessControlSections.Owner | System.Security.AccessControl.AccessControlSections.Group | System.Security.AccessControl.AccessControlSections.Access;
-                string before = File.GetAccessControl(p, sections).GetSecurityDescriptorSddlForm(sections);
+                var before = File.GetAccessControl(p, sections);
                 ConfigurationTransaction.AtomicWrite(p, "replacement");
-                if (File.GetAccessControl(p, sections).GetSecurityDescriptorSddlForm(sections) != before) throw new Exception("Atomic replacement changed the destination owner or ACL");
+                var after = File.GetAccessControl(p, sections);
+                if (!ConfigurationTransaction.SameFileSecurity(before, after)) throw new Exception("Atomic replacement changed the destination owner or ACL. Before=" + before.GetSecurityDescriptorSddlForm(sections) + "; After=" + after.GetSecurityDescriptorSddlForm(sections));
                 bool rejected = false;
                 try { ConfigurationTransaction.AtomicBytes(p, Encoding.UTF8.GetBytes("unsafe"), null, temporary => { throw new UnauthorizedAccessException("cannot protect temporary file"); }); }
                 catch (IOException) { rejected = true; }
                 if (!rejected || File.ReadAllText(p) != "replacement") throw new Exception("Failed temporary-file protection still committed bytes");
+                return null;
+            });
+            test("configuration: atomic replacement preserves nondefault groups and elevated alternate ownership", () =>
+            {
+                var sections = System.Security.AccessControl.AccessControlSections.Owner | System.Security.AccessControl.AccessControlSections.Group | System.Security.AccessControl.AccessControlSections.Access;
+                using (var identity = System.Security.Principal.WindowsIdentity.GetCurrent())
+                {
+                    var owners = new List<System.Security.Principal.SecurityIdentifier> { identity.User };
+                    if (Elevation.IsAdministrator()) owners.Add(new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null));
+                    foreach (var owner in owners)
+                    foreach (bool protect in new[] { false, true })
+                    {
+                        var p = Path.Combine(tmpDir, "atomic-alternate-" + Guid.NewGuid().ToString("N")); File.WriteAllText(p, "original");
+                        var security = File.GetAccessControl(p, sections);
+                        security.SetOwner(owner); security.SetGroup(identity.User);
+                        security.SetAccessRuleProtection(protect, true); File.SetAccessControl(p, security);
+                        var before = File.GetAccessControl(p, sections);
+                        ConfigurationTransaction.AtomicWrite(p, "replacement");
+                        var after = File.GetAccessControl(p, sections);
+                        if (!ConfigurationTransaction.SameFileSecurity(before, after)) throw new Exception("Nondefault file security changed. Before=" + before.GetSecurityDescriptorSddlForm(sections) + "; After=" + after.GetSecurityDescriptorSddlForm(sections));
+                    }
+                    return Elevation.IsAdministrator() ? "user and Administrators owners, protected and inherited DACLs" : "user owner and nondefault group, protected and inherited DACLs; alternate administrator owner requires elevated CI";
+                }
+            });
+            test("configuration: temporary security failure occurs before any replacement bytes are written", () =>
+            {
+                var p = Path.Combine(tmpDir, "atomic-protect-before-bytes"); File.WriteAllText(p, "original");
+                long observed = -1; bool rejected = false;
+                try { ConfigurationTransaction.AtomicBytes(p, Encoding.UTF8.GetBytes("replacement"), null, temporary => { observed = new FileInfo(temporary).Length; throw new UnauthorizedAccessException("security setup failed"); }); }
+                catch (IOException) { rejected = true; }
+                if (!rejected || observed != 0 || File.ReadAllText(p) != "original") throw new Exception("Replacement bytes existed before temporary security was established: " + observed);
                 return null;
             });
             test("recovery: another process can restore configuration and firewall after the deadline", () =>

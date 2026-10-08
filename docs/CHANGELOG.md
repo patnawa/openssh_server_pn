@@ -17,8 +17,8 @@ the builds before them were not published.
 
 October audit follow-up. OpenSSH remains 10.5p1. Available as **unsigned,
 testing-only prereleases**:
-[preview-v10.5.6.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0)
-and [preview-manager-v2.3.0](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0).
+[preview-v10.5.6.0-r2](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-v10.5.6.0-r2)
+and [preview-manager-v2.3.0-r2](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r2).
 The artifacts were built and tested locally; these previews have no GitHub-hosted
 build provenance or artifact attestations. Stable 10.5.5.0 / Manager 2.2.1 and its
 release records are unchanged. The preview tags are not marked as latest stable.
@@ -35,6 +35,9 @@ See [the audit](AUDIT-2026-10-08.md) and [acceptance plan](IMPROVEMENT-PLAN.md).
 - Restart recovery is recorded independently of the GUI, with protected state,
   expected-content checks and a scheduled recovery task. Included-file changes are
   checked for conflicts. Atomic replacement failures preserve the original file.
+  Replacement files receive the original owner, primary group and DACL before data
+  is written; security failures leave the destination unchanged. Hosted CI exposed
+  the primary-group issue, and dedicated regressions now cover it.
 - Endpoint inspection uses `sshd`'s configuration resolver and observed listeners.
   Automatic blocking defers when endpoint or logged-in peer inspection is incomplete.
 - Incremental transfer parsing preserves open-file context across polls and days,
@@ -48,8 +51,10 @@ See [the audit](AUDIT-2026-10-08.md) and [acceptance plan](IMPROVEMENT-PLAN.md).
   manager artifact to packaging and verifies the extracted MSI payload. Source
   changes trigger integration tests. Release signing is required by tag workflows,
   and local upstream patches have a checked inventory.
+  Compiler text inputs are normalized to UTF-8/LF without modifying the checkout;
+  LF/no-BOM and CRLF/BOM checkouts at different paths must produce identical bytes.
 
-Local validation passed **158 manager unit tests and 49 automated GUI checks**,
+Local validation passed **160 manager unit tests and 49 automated GUI checks**,
 native x64, x86 and ARM64 compilation, focused native parser/dumper and crypto probes,
 installer-script and extracted-package checks. The full counts and commands are
 maintained in the acceptance plan. Elevated symlink, authentication/SFTP, install/upgrade,
@@ -62,10 +67,10 @@ static checks do not establish that those scenarios passed.
 
 | Preview file | SHA-256 |
 |---|---|
-| `OpenSSH-Win64-v10.5.6.0.msi` | `7ED68D6064ADEA6AC8764CD8585CA22E94D3BB12527CF1E2C140EFD66D0C4E44` |
-| `OpenSSH-Win32-v10.5.6.0.msi` | `43A4FE361633A6AA2DE9B0F129502C83C17DC390C35F14173C25787EFD387D2C` |
-| `OpenSSH-ARM64-v10.5.6.0.msi` | `F84F18D117970C250D856336504E3388FB39715E92DC531827F985E9A4C1DCA1` |
-| `OpenSSHServerPNManager.exe` (2.3.0) | `6247598DA69E8EB0EA5648ABA315FA9457C9AEE766CC35A3230C8D98ADA46B74` |
+| `OpenSSH-Win64-v10.5.6.0.msi` | `95D8E7BD429FC4234E14E6B594FA9ABA2BB97B1252A21CD8BB2522C8C6088E98` |
+| `OpenSSH-Win32-v10.5.6.0.msi` | `3E45E1670CE195BD719457ABEB74DCD25B0C4FA2775F028C9513B6D4D5E6F542` |
+| `OpenSSH-ARM64-v10.5.6.0.msi` | `80D243E972D5A0E517CB140044593F199BB8E8EC9CACE5E41F2D9F9ED90B4466` |
+| `OpenSSHServerPNManager.exe` (2.3.0) | `C814421AC38FA6C0EE767F8E02568988B0EF511D241ADCBB0331DD9CD0D11F83` |
 
 The preview releases include `SHA256SUMS.txt`. Keep the manager's `.exe.config`
 beside its executable. Use these builds only for testing until the pending

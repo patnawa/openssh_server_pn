@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
@@ -86,19 +87,57 @@ namespace OpenSSHServerPNManager
             var tmp = path + ".new-" + Guid.NewGuid().ToString("N");
             try
             {
-                using (var stream = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+                const AccessControlSections sections = AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access;
+                var originalSecurity = File.Exists(path) ? File.GetAccessControl(path, sections) : null;
+                // Establish security while the temporary file is empty. ReplaceFile preserves the destination DACL,
+                // but takes the replacement file's owner and primary group, so those must be copied before commit.
+                using (new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                if (secureTemporary != null) secureTemporary(tmp);
+                if (originalSecurity != null)
+                {
+                    var copiedSecurity = new FileSecurity();
+                    copiedSecurity.SetSecurityDescriptorBinaryForm(originalSecurity.GetSecurityDescriptorBinaryForm(), sections);
+                    File.SetAccessControl(tmp, copiedSecurity);
+                    if (!SameFileSecurity(originalSecurity, File.GetAccessControl(tmp, sections)))
+                        throw new IOException("The temporary file could not retain the destination owner, group and DACL.");
+                }
+                using (var stream = new FileStream(tmp, FileMode.Open, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
                 {
                     stream.Write(bytes, 0, bytes.Length); stream.Flush(true);
                 }
-                if (secureTemporary != null) secureTemporary(tmp);
                 if (File.Exists(path))
                 {
+                    if (originalSecurity == null || !SameFileSecurity(originalSecurity, File.GetAccessControl(path, sections)))
+                        throw new IOException("The destination security changed before atomic replacement.");
                     if (replace != null) replace(tmp, path); else File.Replace(tmp, path, null);
                 }
-                else File.Move(tmp, path);
+                else
+                {
+                    if (originalSecurity != null) throw new IOException("The destination disappeared before atomic replacement.");
+                    File.Move(tmp, path);
+                }
             }
             catch (Exception ex) { throw new IOException("Atomic write failed; the existing file was not overwritten in place: " + path, ex); }
             finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch { } }
+        }
+
+        internal static bool SameFileSecurity(FileSecurity before, FileSecurity after)
+        {
+            var a = new RawSecurityDescriptor(before.GetSecurityDescriptorBinaryForm(), 0);
+            var b = new RawSecurityDescriptor(after.GetSecurityDescriptorBinaryForm(), 0);
+            const ControlFlags significant = ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected;
+            if (a.Owner != b.Owner || a.Group != b.Group || (a.ControlFlags & significant) != (b.ControlFlags & significant)) return false;
+            if (a.DiscretionaryAcl == null || b.DiscretionaryAcl == null) return a.DiscretionaryAcl == b.DiscretionaryAcl;
+            // AUTO_INHERITED is bookkeeping that Windows may normalize; compare every ordered ACE, including its
+            // inherited flag, plus inheritance protection. Do not discard or reorder access rules.
+            if (a.DiscretionaryAcl.Count != b.DiscretionaryAcl.Count) return false;
+            for (int i = 0; i < a.DiscretionaryAcl.Count; i++)
+            {
+                var left = new byte[a.DiscretionaryAcl[i].BinaryLength]; var right = new byte[b.DiscretionaryAcl[i].BinaryLength];
+                a.DiscretionaryAcl[i].GetBinaryForm(left, 0); b.DiscretionaryAcl[i].GetBinaryForm(right, 0);
+                if (!left.SequenceEqual(right)) return false;
+            }
+            return true;
         }
     }
 }
