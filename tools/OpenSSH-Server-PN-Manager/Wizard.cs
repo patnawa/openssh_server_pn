@@ -21,8 +21,11 @@ namespace OpenSSHServerPNManager
         /// <summary>AllowGroups as typed ("administrators "openssh users""), or null to leave it.</summary>
         public string AllowGroups;
 
-        /// <summary>The changes in words, for the summary page and the preview. addedPorts: what FirewallAdds adds to the rule.</summary>
-        public List<string> Describe(int currentPort, int currentProfiles, bool firewallExists, bool firewallEnabled = true, IList<int> addedPorts = null)
+        /// <summary>
+        /// The changes in words, for the summary page and the preview. addedPorts: what FirewallAdds adds to the rule;
+        /// keptPorts: the ports a narrowed rule ends with (FirewallKept), untilKept the others it allows until then.
+        /// </summary>
+        public List<string> Describe(int currentPort, int currentProfiles, bool firewallExists, bool firewallEnabled = true, IList<int> addedPorts = null, IList<int> keptPorts = null, IList<int> untilKept = null)
         {
             var l = new List<string>();
             bool adds = addedPorts != null && addedPorts.Count > 0;
@@ -30,6 +33,8 @@ namespace OpenSSHServerPNManager
             if (!firewallExists || Profiles != currentProfiles || Port != currentPort || FirewallEnabled != firewallEnabled || adds)
                 l.Add(!FirewallEnabled ? "The firewall rule is disabled; other computers cannot connect through this rule."
                     : addedPorts == null ? "The firewall rule is enabled and allows port " + Port + " on the " + FirewallRule.ProfileText(Profiles) + " network profile(s)."
+                    : keptPorts != null ? "The firewall rule is enabled on the " + FirewallRule.ProfileText(Profiles) + " network profile(s) and allows port " + string.Join(", ", keptPorts) +
+                                          (untilKept != null && untilKept.Count > 0 ? " (and port " + string.Join(", ", untilKept) + " until you keep the new settings)" : "") + "."
                     : "The firewall rule is enabled on the " + FirewallRule.ProfileText(Profiles) + " network profile(s)" + (adds ? (firewallExists ? " and also allows port " : " and allows port ") + string.Join(", ", addedPorts) : "") + ".");
             if (Login == WizardLogin.AdministratorsKeyOnly) l.Add("Administrators log in with a public key only; other accounts as before.");
             if (Login == WizardLogin.EveryoneKeyOnly) l.Add("Every account logs in with a public key only (no Windows password over SSH).");
@@ -49,6 +54,42 @@ namespace OpenSSHServerPNManager
             if (sshdPorts != null) need.AddRange(sshdPorts);
             if (portChanged || sshdPorts == null) need.Add(port);
             return need.Distinct().Where(p => !Firewall.Covers(rulePorts, p)).ToList();
+        }
+
+        /// <summary>
+        /// Whether ApplyWizard narrows the rule to the ports sshd then uses once the new settings are kept: a rule it creates or
+        /// one with one port, after a restart (sshd_config changes), when verified ports from sshd were added to it.
+        /// </summary>
+        internal static bool FirewallNarrows(bool ruleExists, string rulePorts, bool configChanges, bool verified, int added)
+        {
+            return configChanges && verified && added > 0 && (!ruleExists || Firewall.IsSinglePort(rulePorts));
+        }
+
+        /// <summary>
+        /// The ports a narrowed rule is expected to end with: those sshd -T reports now with the Port line's port changed. until:
+        /// the other ports it allows until the new settings are kept (the added ones and the port of a rule with one port).
+        /// </summary>
+        internal static List<int> FirewallKept(string rulePorts, IList<int> adds, int[] configuredPorts, int currentPort, int port, out List<int> until)
+        {
+            var kept = configuredPorts.Select(p => p == currentPort ? port : p).Distinct().OrderBy(p => p).ToList();
+            int single;
+            var allowed = int.TryParse((rulePorts ?? "").Trim(), out single) ? adds.Concat(new[] { single }) : adds;
+            until = allowed.Distinct().Where(p => !kept.Contains(p)).OrderBy(p => p).ToList();
+            return kept;
+        }
+
+        /// <summary>
+        /// Describe, with the firewall ports as ApplyWizard handles them. state: what sshd reported (null or unverified: only
+        /// the wizard's port is added, nothing is taken away); configChanges: whether sshd_config changes.
+        /// </summary>
+        internal List<string> Summary(int currentPort, int currentProfiles, bool ruleExists, bool ruleEnabled, string rulePorts, ServerStateSnapshot state, bool configChanges)
+        {
+            bool verified = state != null && state.Verified;
+            var adds = FirewallAdds(rulePorts, Port, Port != currentPort, verified ? state.Ports : null);
+            if (!FirewallNarrows(ruleExists, rulePorts, configChanges, verified, adds.Count)) return Describe(currentPort, currentProfiles, ruleExists, ruleEnabled, adds);
+            List<int> until;
+            var kept = FirewallKept(ruleExists ? rulePorts : null, adds, state.ConfiguredPorts, currentPort, Port, out until);
+            return Describe(currentPort, currentProfiles, ruleExists, ruleEnabled, adds, kept, until);
         }
     }
 
@@ -74,8 +115,10 @@ namespace OpenSSHServerPNManager
         private bool _working;
         private readonly int _currentPort, _currentProfiles; private readonly bool _fwExists, _fwEnabled, _hadRestriction;
         private readonly string _rulePorts;
-        /// <summary>The ports sshd uses (UseServerState), or null when they are not known.</summary>
-        private int[] _sshdPorts;
+        /// <summary>What sshd reported (UseServerState), or null when it is not verified.</summary>
+        private ServerStateSnapshot _state;
+        /// <summary>Whether a plan changes sshd_config, as the main window writes it (null: assumed); only then is the rule narrowed.</summary>
+        internal Func<WizardPlan, bool> ChangesConfig;
         public WizardPlan Plan;
 
         public SetupWizard(int currentPort, FirewallRule fw, string allowGroups, Func<int> myKeyCount, Action addKey, Func<IWin32Window, string> createKey)
@@ -199,7 +242,7 @@ namespace OpenSSHServerPNManager
         internal void UseServerState(ServerStateSnapshot state)
         {
             if (state == null || !state.Verified) return;
-            _sshdPorts = state.Ports;
+            _state = state;
             if (state.ConfiguredPorts.Length == 1 && state.ConfiguredPorts[0] == _currentPort) return;
             _portNote.Text = "sshd uses port " + string.Join(", ", state.ConfiguredPorts) + " (sshd -T). An Include file, another Port line or a ListenAddress with a port decides that, not only the port shown here (" + _currentPort +
                              ", from sshd_config). A port changed here is written to its Port line, which sshd may then ignore or listen on in addition: change those other lines on the sshd_config (text) tab.";
@@ -255,7 +298,7 @@ namespace OpenSSHServerPNManager
             if (_page == _pages.Length - 1)
             {
                 var plan = BuildPlan();
-                var l = plan.Describe(_currentPort, _currentProfiles, _fwExists, _fwEnabled, WizardPlan.FirewallAdds(_rulePorts, plan.Port, plan.Port != _currentPort, _sshdPorts));
+                var l = plan.Summary(_currentPort, _currentProfiles, _fwExists, _fwEnabled, _rulePorts, _state, ChangesConfig == null || ChangesConfig(plan));
                 _summary.Text = l.Count == 0 ? "Nothing to change: everything stays as it is." : string.Join("\n\n", l.Select(x => "• " + x));
             }
             AcceptButton = _next;

@@ -3696,6 +3696,7 @@ namespace OpenSSHServerPNManager
                 using (var w = new SetupWizard(_cfg.EffectivePort, fw, allow == null || allow.Count == 0 ? null : SshdArgs.FormatTyped(allow), async () => await BgAsync("Reading your keys...", () => MyKeyCount()), QuickAddMyKey, CreateMyKey))
                 {
                     w.UseServerState(state);
+                    w.ChangesConfig = p => { try { return WizardCandidate(p).Text != _cfg.Text; } catch { return true; } };
                     if (w.ShowDialog(this) != DialogResult.OK) return;
                     plan = w.Plan;
                 }
@@ -3704,15 +3705,11 @@ namespace OpenSSHServerPNManager
             finally { _wizardRunning = false; }
         }
 
-        /// <summary>
-        /// Applies the wizard's plan: one save of sshd_config (with the preview and your-access check), the firewall rule, one
-        /// restart with the keep-or-restore question. shown: what sshd reported when the wizard opened (its summary).
-        /// </summary>
-        private async Task ApplyWizard(WizardPlan plan, FirewallRule fw, ServerStateSnapshot shown)
+        /// <summary>sshd_config as the wizard's plan writes it.</summary>
+        private SshdConfig WizardCandidate(WizardPlan plan)
         {
             var cand = _cfg.Copy();
-            bool portChanged = plan.Port != _cfg.EffectivePort;
-            if (portChanged) cand.SetFirst("Port", plan.Port.ToString());
+            if (plan.Port != _cfg.EffectivePort) cand.SetFirst("Port", plan.Port.ToString());
             if (plan.Login != WizardLogin.Keep)
             {
                 var st = AuthConfig.Read(cand);
@@ -3736,12 +3733,22 @@ namespace OpenSSHServerPNManager
                 if ((cand.Get("PerSourcePenalties") ?? "").Equals("no", StringComparison.OrdinalIgnoreCase)) cand.Set("PerSourcePenalties", "");
             }
             if (plan.AllowGroups != null) { string e; cand.Set("AllowGroups", plan.AllowGroups.Length == 0 ? "" : SshdArgs.Join(SshdArgs.ParseTyped(plan.AllowGroups, out e))); }
+            return cand;
+        }
+
+        /// <summary>
+        /// Applies the wizard's plan: one save of sshd_config (with the preview and your-access check), the firewall rule, one
+        /// restart with the keep-or-restore question. shown: what sshd reported when the wizard opened (its summary).
+        /// </summary>
+        private async Task ApplyWizard(WizardPlan plan, FirewallRule fw, ServerStateSnapshot shown)
+        {
+            var cand = WizardCandidate(plan);
+            bool portChanged = plan.Port != _cfg.EffectivePort;
             var fwProfiles = fw == null ? 0 : ((fw.Profiles & 0x7fffffff) == 0x7fffffff ? 7 : fw.Profiles & 7);
             var rulePorts = fw == null ? null : fw.Ports;
-            var changes = plan.Describe(_cfg.EffectivePort, fwProfiles, fw != null, fw != null && fw.Enabled,
-                WizardPlan.FirewallAdds(rulePorts, plan.Port, portChanged, shown != null && shown.Verified ? shown.Ports : null));
             string backup = null;
             bool configurationChanged = cand.Text != _cfg.Text;
+            var changes = plan.Summary(_cfg.EffectivePort, fwProfiles, fw != null, fw != null && fw.Enabled, rulePorts, shown, configurationChanged);
             if (configurationChanged)
             {
                 if (plan.Login != WizardLogin.Keep)
@@ -3774,7 +3781,7 @@ namespace OpenSSHServerPNManager
                 var pending = fw == null ? added : adds.Count == 0 ? fw.Ports : fw.Ports + "," + added;
                 apply = async () => { await BgAsync("Applying the firewall plan...", () => Firewall.Apply(plan.FirewallEnabled, plan.Profiles, pending)); await LoadFirewall(); };
                 undo = () => { if (before == null) Firewall.Remove(); else Firewall.Apply(before.Enabled, before.Profiles, before.Ports); };
-                if (configurationChanged && state.Verified && adds.Count > 0 && (fw == null || Firewall.IsSinglePort(fw.Ports)))
+                if (WizardPlan.FirewallNarrows(fw != null, rulePorts, configurationChanged, state.Verified, adds.Count))
                     keep = async () =>
                     {
                         // Never throws: a keep that fails leaves the recovery armed, which would then restore the settings just kept.

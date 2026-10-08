@@ -132,6 +132,37 @@ namespace OpenSSHServerPNManager
                 if (new WizardPlan { Port = 22, Profiles = 3 }.Describe(22, 3, true, true, new List<int>()).Count != 0) throw new Exception("no change described as a change");
                 return null;
             });
+            test("setup wizard: the summary names the ports the firewall rule ends with once the settings are kept", () =>
+            {
+                Func<int[], ServerStateSnapshot> sshd = ports => new ServerStateSnapshot { Verified = true, ConfiguredPorts = ports, ListeningPorts = ports };
+                Func<List<string>, string> fwLine = l => l.Single(x => x.StartsWith("The firewall rule"));
+                var to2222 = new WizardPlan { Port = 2222, Profiles = 3 };
+                // A rule with one port, or a new one, ends with the port sshd then uses: the old one is allowed only until then.
+                foreach (var l in new[] { to2222.Summary(22, 3, true, true, "22", sshd(new[] { 22 }), true), to2222.Summary(22, 3, false, false, null, sshd(new[] { 22 }), true) })
+                    if (!fwLine(l).EndsWith("allows port 2222 (and port 22 until you keep the new settings).") || fwLine(l).Contains("also")) throw new Exception("narrowed rule: " + fwLine(l));
+                // Nothing is taken away from a rule with several ports, without verified ports or without a restart.
+                foreach (var l in new[] { to2222.Summary(22, 3, true, true, "22,2200", sshd(new[] { 22 }), true), to2222.Summary(22, 3, true, true, "22", null, true),
+                                          to2222.Summary(22, 3, true, true, "22", new ServerStateSnapshot(), true), new WizardPlan { Port = 2222, Profiles = 3 }.Summary(2222, 3, true, true, "22", sshd(new[] { 2222 }), false) })
+                    if (!fwLine(l).EndsWith("also allows port 2222.")) throw new Exception("not narrowed: " + fwLine(l));
+                // sshd listens where its ListenAddress says: the port changed here is allowed only until the settings are kept.
+                var line = fwLine(to2222.Summary(22, 3, true, true, "22", sshd(new[] { 2200 }), true));
+                if (!line.EndsWith("allows port 2200 (and port 22, 2222 until you keep the new settings).")) throw new Exception("ListenAddress: " + line);
+                line = fwLine(new WizardPlan { Port = 22, Profiles = 3 }.Summary(22, 3, false, false, null, sshd(new[] { 22 }), true));
+                if (!line.EndsWith("network profile(s) and allows port 22.")) throw new Exception("new rule on the same port: " + line);
+                // The summary page asks the main window whether sshd_config changes (only then is sshd restarted and the rule narrowed).
+                using (var w = new SetupWizard(2222, new FirewallRule { Enabled = true, Profiles = 3, Ports = "22" }, null, () => 0, () => { }, o => null))
+                {
+                    w.UseServerState(sshd(new[] { 2222 }));
+                    foreach (var changes in new[] { true, false })
+                    {
+                        w.ChangesConfig = p => changes;
+                        w.ShowPageForTest(4);
+                        var summary = ((Label)Get(w, "_summary")).Text;
+                        if (summary.Contains("(and port 22 until you keep the new settings)") != changes) throw new Exception("sshd_config changes " + changes + ": " + summary);
+                    }
+                }
+                return null;
+            });
             test("setup wizard: the port page says when sshd -T uses other ports than the Port line shown", () =>
             {
                 using (var w = new SetupWizard(22, new FirewallRule { Enabled = true, Profiles = 3, Ports = "2222" }, null, () => 0, () => { }, o => null))
