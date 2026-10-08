@@ -127,11 +127,11 @@ namespace OpenSSHServerPNManager
     internal sealed class PartnerKeysDialog : ThemedForm
     {
         private readonly ListView _list;
-        private readonly string _file;
+        private readonly string _file, _name;
 
         public PartnerKeysDialog(PartnerAccount partner, string file)
         {
-            _file = file;
+            _file = file; _name = partner.Name;
             Text = "Keys of " + partner.Name; StartPosition = FormStartPosition.CenterParent; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
             Size = new Size(Ui.Px(820), Ui.Px(420)); MinimumSize = new Size(Ui.Px(600), Ui.Px(320)); MinimizeBox = false; ShowInTaskbar = false; Font = new Font("Segoe UI", Ui.Pt(9.5f)); Padding = new Padding(Ui.Px(8));
             var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
@@ -177,7 +177,8 @@ namespace OpenSSHServerPNManager
             var clean = lines.Select(l => (l ?? "").Trim()).Where(l => l.Length > 0 && !l.StartsWith("#")).ToList();
             if (clean.Any(l => l.IndexOf("PRIVATE KEY", StringComparison.OrdinalIgnoreCase) >= 0 || PpkFile.IsPpk(l)))
                 throw new ConfigException("That is a private key. Ask the partner for the public key: the .pub file, or the line that starts with ssh-ed25519, ecdsa-sha2 or ssh-rsa.");
-            var r = Keys.AddLines(_file, clean, null); // SYSTEM and Administrators only, like administrators_authorized_keys
+            var r = Keys.AddLines(_file, clean, null, backup: false); // SYSTEM and Administrators only, like administrators_authorized_keys
+            if (r[0] > 0) DropLegacyBackup(_file, _name);
             Fill();
             if (r[0] == 0 && r[1] > 0) MessageBox.Show(this, "The key is there already.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
@@ -202,8 +203,26 @@ namespace OpenSSHServerPNManager
             if (_list.SelectedItems.Count == 0) return;
             var line = (string)_list.SelectedItems[0].Tag;
             if (MessageBox.Show(this, "Remove this key? The partner can no longer log in with it.\n\n" + line, Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
-            Keys.RemoveKey(_file, line, null);
+            if (Keys.RemoveKey(_file, line, null, backup: false) > 0) DropLegacyBackup(_file, _name);
             Fill();
+        }
+
+        /// <summary>
+        /// sshd reads partner_keys\name.bak as the keys of a partner named name.bak, so a partner's keys file has no .bak. One
+        /// left by an earlier version, which still holds keys removed since, goes with the next change, unless an account of
+        /// that name exists (then it is that account's keys file).
+        /// </summary>
+        internal static bool DropLegacyBackup(string file, string partnerName)
+        {
+            var bak = file + ".bak";
+            try
+            {
+                if (!File.Exists(bak) || Acl.SidOfAccount(partnerName + ".bak") != null) return false;
+                File.Delete(bak);
+                Log.Info("Deleted " + bak + ": the previous keys of " + partnerName + ", kept by an earlier version");
+                return true;
+            }
+            catch (Exception ex) { Log.Error("Could not delete " + bak, ex, false); return false; }
         }
 
         // --screenshot and --selftest
