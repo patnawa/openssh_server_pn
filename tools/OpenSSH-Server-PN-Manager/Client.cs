@@ -94,11 +94,22 @@ namespace OpenSSHServerPNManager
             return removed;
         }
 
-        public static void AddKnownHosts(ClientFileSnapshot snapshot, IEnumerable<string> lines)
+        /// <summary>Appends the offered lines whose key is not yet trusted for their host; returns how many were added.</summary>
+        public static int AddKnownHosts(ClientFileSnapshot snapshot, IEnumerable<string> lines)
         {
-            var result = snapshot.Lines.ToList();
-            foreach (var line in lines) if (!result.Contains(line)) result.Add(line);
-            snapshot.Write(result, ".old", false);
+            var known = ReadKnownHosts(snapshot, false);
+            var result = snapshot.Lines.ToList(); int added = 0;
+            // A key stored under a hashed name (HashKnownHosts) is the same trust: a clear-text copy would undo the hashing.
+            foreach (var line in lines) if (!result.Contains(line) && !DirectlyTrusted(known, line)) { result.Add(line); added++; }
+            // With nothing to write, "already trusted" still holds only if the file is the one the trust dialog showed.
+            if (added > 0) snapshot.Write(result, ".old", false); else snapshot.RequireUnchanged();
+            return added;
+        }
+
+        private static bool DirectlyTrusted(List<KnownHost> known, string line)
+        {
+            var key = ParseKnownHost(line);
+            return key != null && known.Any(k => k.Marker.Length == 0 && k.Type == key.Type && KeyMaterial(k.Raw) == KeyMaterial(line) && key.Hosts.Split(',').All(host => KnownHostMatches(k.Hosts, host)));
         }
 
         /// <summary>Explicitly describe trust changes, including existing keys for this host/type.</summary>
@@ -183,16 +194,36 @@ namespace OpenSSHServerPNManager
             if (pattern.Any(char.IsControl)) throw new ConfigException("Host names must be a single line.");
             foreach (var pair in values)
                 if ((pair.Value ?? "").Any(c => char.IsControl(c) && !(pair.Key.Equals("IdentityFile", StringComparison.OrdinalIgnoreCase) && (c == '\r' || c == '\n')))) throw new ConfigException("Values must be single lines (one identity path per line).");
+            var problem = PercentProblem(existing, values);
+            if (problem != null) throw new ConfigException(problem);
             var changed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var block = new List<string> { existing != null && existing.Pattern == pattern ? lines[existing.First] : "Host " + pattern };
+            // The identity lines as written: the editor shows their config text, which a rewrite must not quote a second time.
+            var identityLines = new List<string>();
+            if (existing != null)
+                for (int i = existing.First + 1; i <= existing.Last && i < lines.Count; i++)
+                {
+                    string k, v; if (SshdConfig.Split(lines[i], out k, out v) && k.Equals("IdentityFile", StringComparison.OrdinalIgnoreCase)) identityLines.Add(lines[i]);
+                }
             foreach (var k in EditedKeywords)
             {
                 string v; if (!values.TryGetValue(k, out v)) continue;
                 v = (v ?? "").Trim();
                 if (existing != null && (k == "IdentityFile" ? IdentityValues(v).SequenceEqual(existing.GetAll(k)) : v == existing.Get(k))) continue;
                 changed.Add(k);
-                if (v.Length > 0)
-                    foreach (var item in k == "IdentityFile" ? IdentityValues(v) : new List<string> { v }) block.Add("    " + k + " " + Quote(item));
+                if (v.Length == 0) continue;
+                if (k == "HostName") v = EscapeHostNamePercent(v);
+                foreach (var item in k == "IdentityFile" ? IdentityValues(v) : new List<string> { v })
+                {
+                    string kept = null;
+                    if (k == "IdentityFile")
+                        foreach (var line in identityLines)
+                        {
+                            string ik, iv; SshdConfig.Split(line, out ik, out iv);
+                            if (iv == item) { kept = line; identityLines.Remove(line); break; }
+                        }
+                    block.Add(kept ?? "    " + k + " " + Quote(item));
+                }
             }
             var result = lines.ToList();
             if (existing == null)
@@ -219,11 +250,57 @@ namespace OpenSSHServerPNManager
 
         private static List<string> IdentityValues(string value) { return value.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Select(v => v.Trim()).Where(v => v.Length > 0).ToList(); }
 
+        /// <summary>
+        /// A HostName with each % other than %h and %% doubled. ssh expands only those two there and stops on any other
+        /// (fe80::1%12, an IPv6 address with its zone, is written fe80::1%%12).
+        /// </summary>
+        internal static string EscapeHostNamePercent(string value)
+        {
+            var sb = new StringBuilder();
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (value[i] == '%' && i + 1 < value.Length && (value[i + 1] == 'h' || value[i + 1] == '%')) { sb.Append(value, i, 2); i++; continue; }
+                sb.Append(value[i]);
+                if (value[i] == '%') sb.Append('%');
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Why ssh would stop on a % in an edited User or IdentityFile value (ssh.c: unknown tokens are fatal); null when every %
+        /// is one ssh expands. Values that were already in the block are not checked again.
+        /// </summary>
+        public static string PercentProblem(ClientHost existing, IDictionary<string, string> values)
+        {
+            foreach (var k in new[] { "User", "IdentityFile" })
+            {
+                string v; if (!values.TryGetValue(k, out v)) continue;
+                var old = existing == null ? new List<string>() : existing.GetAll(k);
+                var tokens = k == "User" ? "Liklnpdhuj" : "CLiklnpdhujr";
+                foreach (var item in IdentityValues(v ?? ""))
+                {
+                    if (old.Contains(item)) continue;
+                    for (int i = 0; i < item.Length; i++)
+                    {
+                        if (item[i] != '%') continue;
+                        if (i + 1 < item.Length && (item[i + 1] == '%' || tokens.IndexOf(item[i + 1]) >= 0)) { i++; continue; }
+                        var variable = Regex.Match(item.Substring(i), @"^%([A-Za-z_][A-Za-z0-9_]*)%");
+                        return k + " \"" + item + "\": ssh expands % in this setting and cannot expand " + (i + 1 < item.Length ? "%" + item[i + 1] : "a final %") + ". Write %% for a literal %" +
+                            (variable.Success ? "; for the Windows variable %" + variable.Groups[1].Value + "% write ${" + variable.Groups[1].Value + "}" + (variable.Groups[1].Value.Equals("USERPROFILE", StringComparison.OrdinalIgnoreCase) ? " or ~" : "") : "") + ".";
+                    }
+                }
+            }
+            return null;
+        }
+
+        /// <summary>A block without its Host line and settings; comments after its last setting stay, as they usually head the next block.</summary>
         public static List<string> WithoutHost(IList<string> lines, ClientHost existing)
         {
+            int end = existing.First;
+            for (int i = existing.First + 1; i <= existing.Last && i < lines.Count; i++) { string k, v; if (SshdConfig.Split(lines[i], out k, out v)) end = i; }
             var result = lines.ToList();
-            result.RemoveRange(existing.First, existing.Last - existing.First + 1);
-            if (existing.First < result.Count && existing.First > 0 && result[existing.First].Trim().Length == 0 && result[existing.First - 1].Trim().Length == 0) result.RemoveAt(existing.First);
+            result.RemoveRange(existing.First, end - existing.First + 1);
+            if (existing.First < result.Count && result[existing.First].Trim().Length == 0 && (existing.First == 0 || result[existing.First - 1].Trim().Length == 0)) result.RemoveAt(existing.First);
             return result;
         }
 
@@ -245,9 +322,16 @@ namespace OpenSSHServerPNManager
             snapshot.Write(lines, ".bak", true);
         }
 
-        public static bool Connectable(ClientHost host)
+        public static bool Connectable(ClientHost host) { return ConnectProblem(host) == null; }
+
+        /// <summary>Why Connect, SFTP and Effective settings cannot open a Host block by its name; null when they can.</summary>
+        public static string ConnectProblem(ClientHost host)
         {
-            return host != null && !host.IsMatch && Regex.IsMatch(host.Pattern, @"^[A-Za-z0-9._@%+:\[\]][A-Za-z0-9._@%+:\[\]\-]*$");
+            // sftp reads "fe80::1" as host fe80 and remote path ":1", "a@b" as user a at b, and drops [ ]: another host.
+            if (host != null && !host.IsMatch && host.Pattern.IndexOfAny(new[] { ':', '@', '[', ']' }) >= 0)
+                return "\"" + host.Pattern + "\" cannot be opened by its name: sftp reads ':' as the start of a remote path, '@' as a user name and drops [ ], so it would connect to another host. Give the host a plain name (for example web1) and put the address in Host name.";
+            if (host == null || host.IsMatch || !Regex.IsMatch(host.Pattern, @"^[A-Za-z0-9._%+][A-Za-z0-9._%+\-]*$")) return "Choose a host with a single plain name (no wildcards, spaces or leading -).";
+            return null;
         }
 
         public static string EffectivePreview(string host)

@@ -119,27 +119,42 @@ namespace OpenSSHServerPNManager
         private async Task LoadClient()
         {
             if (_lvClientHosts == null) return; // Elevated server console only shows the client-workspace launcher.
-            string agentMessage = null;
+            string agentMessage = null; var errors = new List<string>();
+            // Each part on its own: a file that cannot be read leaves the other parts of the tab usable.
             var data = await BgAsync("Reading the ssh client files and the agent...", () => new
             {
-                Known = SshClient.ReadKnownHosts(SshClient.KnownHostsPath),
-                Config = ClientFileSnapshot.Read(SshClient.ConfigPath),
-                Agent = Services.Status("ssh-agent"),
-                Keys = SshClient.AgentKeys(out agentMessage).Select(Keys.Parse).ToList(),
+                Known = ClientPart(SshClient.KnownHostsPath, () => SshClient.ReadKnownHosts(SshClient.KnownHostsPath), errors),
+                Config = ClientPart(SshClient.ConfigPath, () => ClientFileSnapshot.Read(SshClient.ConfigPath), errors),
+                Agent = ClientPart("ssh-agent service", () => Services.Status("ssh-agent"), errors),
+                Keys = ClientPart("ssh-agent keys", () => SshClient.AgentKeys(out agentMessage).Select(Keys.Parse).ToList(), errors),
             });
+            var known = data.Known ?? new List<KnownHost>();
             _lvKnownHosts.BeginUpdate(); _lvKnownHosts.Items.Clear();
-            foreach (var k in data.Known) _lvKnownHosts.Items.Add(new ListViewItem(new[] { k.Hashed ? "(hashed name)" : k.Hosts, k.Type, k.Fingerprint ?? "", k.Marker }) { Tag = k });
+            foreach (var k in known) _lvKnownHosts.Items.Add(new ListViewItem(new[] { k.Hashed ? "(hashed name)" : k.Hosts, k.Type, k.Fingerprint ?? "", k.Marker }) { Tag = k });
             _lvKnownHosts.EndUpdate();
             _clientConfigSnapshot = data.Config;
-            _clientHosts = SshClient.ParseConfig(data.Config.Lines);
+            _clientHosts = data.Config == null ? new List<ClientHost>() : SshClient.ParseConfig(data.Config.Lines);
             FilterClientHosts();
-            _lblAgent2.Text = "ssh-agent service: " + data.Agent.Status + ", start " + data.Agent.StartMode + (agentMessage != null && data.Agent.Status == "Running" ? ". " + agentMessage : "");
-            _lblAgent2.ForeColor = data.Agent.Status == "Running" ? Green : Orange;
+            _lblAgent2.Text = data.Agent == null ? "ssh-agent service: could not be checked" : "ssh-agent service: " + data.Agent.Status + ", start " + data.Agent.StartMode + (agentMessage != null && data.Agent.Status == "Running" ? ". " + agentMessage : "");
+            _lblAgent2.ForeColor = data.Agent != null && data.Agent.Status == "Running" ? Green : Orange;
+            var keys = data.Keys ?? new List<KeyEntry>();
             _lvAgentKeys.BeginUpdate(); _lvAgentKeys.Items.Clear();
-            foreach (var k in data.Keys) _lvAgentKeys.Items.Add(new ListViewItem(new[] { k.Type, k.Comment, k.Fingerprint }) { Tag = k.Line });
+            foreach (var k in keys) _lvAgentKeys.Items.Add(new ListViewItem(new[] { k.Type, k.Comment, k.Fingerprint }) { Tag = k.Line });
             _lvAgentKeys.EndUpdate();
-            Status(data.Known.Count + " known host key(s), " + _clientHosts.Count + " host block(s), " + data.Keys.Count + " key(s) in the agent");
+            Status(known.Count + " known host key(s), " + _clientHosts.Count + " host block(s), " + keys.Count + " key(s) in the agent" +
+                (data.Config != null && data.Config.NotUtf8 ? "; the config file is not UTF-8, so non-ASCII text shows one character per byte" : ""));
             _clientLoaded = true;
+            if (errors.Count > 0)
+            {
+                Status("Could not read " + string.Join("; ", errors));
+                if (!Program.Unattended) MessageBox.Show(this, "These parts of the Client tab could not be read:\n\n" + string.Join("\n\n", errors) + "\n\nThe other parts are shown. Use Refresh after fixing the cause.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private static T ClientPart<T>(string what, Func<T> read, List<string> errors) where T : class
+        {
+            try { return read(); }
+            catch (Exception ex) { errors.Add(what + ": " + ex.Message); return null; }
         }
 
         private async Task RemoveKnownHosts()
@@ -169,8 +184,8 @@ namespace OpenSSHServerPNManager
             if (MessageBox.Show(this, host + " port " + port + " offers these host keys:\n\n" + string.Join("\n", fps) +
                 "\n\n" + SshClient.TrustChanges(snapshot, lines) + "\n\nCompare them with the fingerprints the server's administrator gives you (on that server: ssh-keygen -lf on its host keys, or the Dashboard of OpenSSH Server PN Manager). Add them to your known_hosts only when they match.\n\nAdd them?",
                 Program.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
-            await BgAsync("Saving known host keys...", () => SshClient.AddKnownHosts(snapshot, lines));
-            await LoadClient(); Status(lines.Count + " host key(s) of " + host + " added to known_hosts");
+            int added = await BgAsync("Saving known host keys...", () => SshClient.AddKnownHosts(snapshot, lines));
+            await LoadClient(); Status(added == 0 ? "The host keys of " + host + " were already in known_hosts" : added + " host key(s) of " + host + " added to known_hosts");
         }
 
         private void FilterClientHosts()
@@ -189,14 +204,15 @@ namespace OpenSSHServerPNManager
         private ClientHost SelectedConnection()
         {
             var host = _lvClientHosts.SelectedItems.Count == 0 ? null : (ClientHost)_lvClientHosts.SelectedItems[0].Tag;
-            if (!SshClient.Connectable(host)) throw new ConfigException("Choose a host with a single plain name (no wildcards, spaces or leading -).");
+            var problem = SshClient.ConnectProblem(host);
+            if (problem != null) throw new ConfigException(problem);
             return host;
         }
 
         private void ConnectClientHost(bool sftp)
         {
             var host = SelectedConnection();
-            Proc.OpenUnelevated(Ssh.Exe(sftp ? "sftp.exe" : "ssh.exe"), "-- " + host.Pattern);
+            Proc.OpenUnelevated(Ssh.Exe(sftp ? "sftp.exe" : "ssh.exe"), "-- " + host.Pattern, true);
         }
 
         private async Task PreviewClientHost()

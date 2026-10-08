@@ -127,7 +127,13 @@ namespace OpenSSHServerPNManager
             { Unattended = true; return ConfigurationRecovery.Run(); }
             if (args.Any(a => a.Equals("--start-client-agent", StringComparison.OrdinalIgnoreCase)))
             {
-                if (!Elevation.IsAdministrator()) return Elevation.Relaunch("--start-client-agent") ? 0 : 1;
+                if (!Elevation.IsAdministrator())
+                {
+                    if (Elevation.Relaunch("--start-client-agent")) return 0;
+                    MessageBox.Show("The ssh-agent service was not started: Windows did not give this program administrator rights (User Account Control may be turned off).\n\nStart OpenSSH Server PN Manager as an administrator, or run Start-Service ssh-agent in an administrator PowerShell.",
+                        AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return 1;
+                }
                 try { Services.SetStartMode("ssh-agent", "auto"); Services.Start("ssh-agent"); return 0; }
                 catch (Exception ex) { Log.Error("Could not start the SSH authentication agent", ex, true); return 1; }
             }
