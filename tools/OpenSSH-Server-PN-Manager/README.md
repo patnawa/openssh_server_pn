@@ -1,38 +1,39 @@
 # OpenSSH Server PN Manager
 
-Version **2.3.1** is the current **unsigned regular release**, published **8 October 2026**
+Version **2.3.2** is the current **unsigned regular release**, published **9 October 2026**
 and marked **Latest** on GitHub.
 
-**[Download OpenSSHServerPNManager.exe](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/OpenSSHServerPNManager.exe)**
-and the **[required OpenSSHServerPNManager.exe.config](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/OpenSSHServerPNManager.exe.config)**.
-Keep both files in the same folder. [Release notes](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.1)
-and [SHA256SUMS.txt](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.1/SHA256SUMS.txt).
-The same manager is included in the [10.5.7.0 packages](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.7.0).
+**[Download OpenSSHServerPNManager.exe](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.2/OpenSSHServerPNManager.exe)**
+and the **[required OpenSSHServerPNManager.exe.config](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.2/OpenSSHServerPNManager.exe.config)**.
+Keep both files in the same folder. [Release notes](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.2)
+and [SHA256SUMS.txt](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.2/SHA256SUMS.txt).
+The same manager is included in the [10.5.8.0 packages](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.8.0).
 
 The release uses the exact GitHub-hosted `manager-tested` branch artifact from source
-[098e124](https://github.com/patnawa/openssh_server_pn/commit/098e124), also embedded in the
-product MSIs. Hosted validation passed **164 unit tests, 49 automated GUI checks and
+[ec50173](https://github.com/patnawa/openssh_server_pn/commit/ec50173df04ece893ea486aae26d385fd8d9d8c5), also embedded in the
+product MSIs. Hosted validation passed **290 unit tests, 49 automated GUI checks and
 13 installer-fixture checks**; the executable matches the reviewed local build.
-SHA-256: `EF1B84B5A1D5D3FE63579CEB50E614795DE77C95B1090042BE044B81B3090EA3`.
+SHA-256: `AA95AB26CD9DE297A37D90D55D55F31566637353F52A128B5A9852E40AA516E6`.
 It is **unsigned and has no cryptographic build attestation**. Linked Actions records,
 `build-info.json` and checksums document its build origin without supplying publisher trust.
 
-The [manager run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773127926)
-and [full product run](https://github.com/patnawa/openssh_server_pn/actions/runs/37773128497)
+The [manager run](https://github.com/patnawa/openssh_server_pn/actions/runs/37915311314)
+and [full product run](https://github.com/patnawa/openssh_server_pn/actions/runs/37915311883)
 passed. All native build/unit/crypto/configuration gates and all four installation lanes
 (Server 2022, Server 2025, PowerShell 2.0 and Windows 11 ARM64) succeeded. Each installed
-manager passed **212/212 self-tests**, actual SYSTEM process-termination recovery and
+manager passed **339/339 self-tests**, actual SYSTEM process-termination recovery and
 wizard launch; client-only, authentication, SSH/SFTP and installer lifecycle checks passed.
 Signing, actual reboot and GUI-click recovery, other-account UAC/client identity and
 manual accessibility/multiple-monitor acceptance remain pending.
-See the [verification record](../../docs/IMPROVEMENT-PLAN.md),
+See the [follow-up review](../../docs/AUDIT-2026-10-08-FOLLOWUP.md),
 [VM validation guide](../../docs/VALIDATION.md) and [release policy](../../docs/RELEASING.md#unsigned-regular-releases).
 
 The October audit follow-up adds a normal-user client workspace, grouped navigation,
 guarded configuration and trust-file edits, persistent restart recovery, incremental
-transfer history, notification retries and agent health. Version 2.3.1 corrects the
-unattended startup and background-refresh fixtures so the installed self-tests wait
-for the loaded UI; their original assertions are retained. See the
+transfer history, notification retries and agent health. Version 2.3.2 corrects what the
+[follow-up review](../../docs/AUDIT-2026-10-08-FOLLOWUP.md) of 2.3.1 found: automatic
+blocking spares logged-in sessions, `authorized_keys` is parsed as `sshd` parses it, partner
+setup writes its rules only, and the setup wizard takes its ports from `sshd -T`. See the
 [audit](../../docs/AUDIT-2026-10-08.md) and [changelog](../../docs/CHANGELOG.md).
 
 The historical [Manager 2.3.0 r3 preview](https://github.com/patnawa/openssh_server_pn/releases/tag/preview-manager-v2.3.0-r3)
@@ -500,12 +501,12 @@ then tests and packages those exact bytes.
 | `Theme.cs`, `Widgets.cs`, `Prefs.cs` | Colours (light, dark, high contrast), list sorting and export, preferences and text comparison |
 | `icon\render.py` | The program icon: draws every size (16 to 256 px, small sizes by hand, pixel by pixel) and writes `icon\app.ico`, which `build.ps1` builds into the executable. Needs Python 3 with Pillow; running it again gives the same file |
 
-Download [Manager 2.3.1](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.1),
-also included in [product 10.5.7.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.7.0).
+Download [Manager 2.3.2](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.2),
+also included in [product 10.5.8.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.8.0).
 Keep the executable and its required `.exe.config` in one folder and verify the
 release's `SHA256SUMS.txt`. These are unsigned hosted branch-build artifacts, with
 no cryptographic attestation; the release notes identify their source and Actions run.
-The published downloads and Manager's Latest designation were verified on 8 October 2026.
+The published downloads and Manager's Latest designation were verified on 9 October 2026.
 
 Earlier [Manager 2.2.1](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.1)
 and [product 10.5.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.5.0)

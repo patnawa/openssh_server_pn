@@ -2,10 +2,12 @@
 
 All builds of this project, newest first. Each entry lists the source, the library versions,
 every change to the packaging, and how the result was verified. The current regular
-releases are [product 10.5.7.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.7.0)
-and [Manager 2.3.1](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.1).
-Both were published on **8 October 2026**, with **Manager 2.3.1 marked Latest**.
+releases are [product 10.5.8.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.8.0)
+and [Manager 2.3.2](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.2).
+Both were published on **9 October 2026**, with **Manager 2.3.2 marked Latest**.
 Earlier regular GitHub releases:
+[release-v10.5.7.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.7.0) (with
+Manager 2.3.1), [release-manager-v2.3.1](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.1),
 [v10.5.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.5.0) (with Manager
 2.2.1), [manager-v2.2.1](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v2.2.1),
 [v10.5.4.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.4.0) (with OpenSSH
@@ -19,11 +21,10 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
-## 10.5.8.0 / Manager 2.3.2 (not yet released)
+## 10.5.8.0 / Manager 2.3.2 (2026-10-09)
 
 Corrections from the [follow-up review](AUDIT-2026-10-08-FOLLOWUP.md) of the 10.5.7.0 / 2.3.1
-sources. OpenSSH remains 10.5p1; the only native change is the `AuthorizedKeysFile` dump. Not
-released yet: the date and the release hashes are added when it is.
+sources. OpenSSH remains 10.5p1; the only native change is the `AuthorizedKeysFile` dump.
 
 - **Automatic blocking.** The exemption for addresses with a logged-in session never matched,
   because the listening `sshd.exe` owns every connection in the TCP table; it now follows the
@@ -76,7 +77,35 @@ released yet: the date and the release hashes are added when it is.
 - **Native.** `sshd -T` quotes an `AuthorizedKeysFile` value that starts with `=`.
 
 Local validation: **290 manager unit tests**, **49 GUI checks**, **188 preinstall checks** and the
-build-reproducibility checks pass. Hosted runs are pending.
+build-reproducibility checks pass.
+
+The [hosted manager run](https://github.com/patnawa/openssh_server_pn/actions/runs/37915311314)
+and the [full product run](https://github.com/patnawa/openssh_server_pn/actions/runs/37915311883)
+on source `ec50173df04ece893ea486aae26d385fd8d9d8c5` passed all **14 expected jobs**, with
+tag-only signing/release jobs skipped for the branch build: **290 unit tests, 49 GUI checks and
+13 installer-fixture checks**, **188 installer script checks** on each architecture, the
+x64/x86/ARM64 native build, unit, crypto and configuration gates, and all four installation lanes
+(Server 2022, Server 2025, PowerShell 2.0 and Windows 11 ARM64) with **339/339 installed
+self-tests** each, actual SYSTEM process-termination recovery, wizard launch, client-only
+coexistence, authentication, SSH/SFTP, upgrade, repair, rollback and uninstall. Informational
+Pester: **159 passed, 0 failures, 1 ignored**. The hosted manager matches the local pinned build
+byte for byte, and the manager in each MSI matches it.
+Manager SHA-256: `AA95AB26CD9DE297A37D90D55D55F31566637353F52A128B5A9852E40AA516E6`.
+
+The exact hosted branch artifacts were published on **9 October 2026** under
+`release-v10.5.8.0` and `release-manager-v2.3.2` as regular unsigned releases, Manager Latest.
+All 11 product and 8 Manager assets were downloaded afresh from the drafts before publication
+and anonymously afterward; all 19 hashes matched the staging files. They have no Authenticode
+signature or cryptographic attestation; the signed `v*` / `manager-v*` workflows remain
+unchanged. Actual reboot recovery, GUI-click recovery, other-account UAC, manual
+accessibility/multiple-monitor acceptance and a failed or cancelled uninstall (no hosted lane
+makes one fail) remain pending.
+
+| Release file | SHA-256 |
+|---|---|
+| `OpenSSH-Win64-v10.5.8.0.msi` | `2790ab3930cf1987254c26191ec8ee5891919b56e93a8626d93f04be80558707` |
+| `OpenSSH-Win32-v10.5.8.0.msi` | `53808db1df1d9ec4e947854544e204ab5ecc326a8ca1f6a4ccbb70464287c91b` |
+| `OpenSSH-ARM64-v10.5.8.0.msi` | `f6a9356243e365d16fc1dff324a796e7adcefdb5919962ff2d613426999ed31b` |
 
 ## 10.5.7.0 / Manager 2.3.1 (2026-10-08)
 
