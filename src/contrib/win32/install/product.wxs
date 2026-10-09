@@ -185,11 +185,14 @@
              The same steps carry the services over every install, upgrade and repair of the server or the agent (an
              administrator's choice only, so not for the in-box registrations): the save step also records which of sshd
              and ssh-agent are running, and a Disabled or Automatic (Delayed Start) start type of a service registered
-             from INSTALLFOLDER. InstallServices registers both again as Automatic and StartServices starts them;
-             OpenSSHServicesRestore, after OpenSSHSshdPort, sets the kept start types again and stops a service that is
-             Disabled again. The rollback step starts the services that were running: OpenSSHPreInstall stops them before
-             StopServices, so the rollback of StopServices does not. Hence the wider condition of these three steps; the
-             firewall part of the save step still runs only with &Server = 3 (OpenSSHServerAction "install").
+             by a package (any folder; not the in-box one). InstallServices registers both again as Automatic and
+             StartServices starts them; OpenSSHServicesRestore, after OpenSSHSshdPort, sets the kept start types again and
+             stops a service that is Disabled again. The rollback step starts the services that were running:
+             OpenSSHPreInstall stops them before StopServices, so the rollback of StopServices does not. It does so for an
+             uninstall or a feature removal too (REMOVE=Server): a cancelled or failed one leaves both running as before.
+             Hence the wider condition of these three steps; the firewall part of the save step still runs only with
+             &Server = 3 (OpenSSHServerAction "install"). Not while this package is removed by an upgrade
+             (UPGRADINGPRODUCTCODE): there the record belongs to the upgrading package, which saves and commits it itself.
              Placement: RemoveExistingProducts runs the removal of the old package at once, when the action is reached,
              while deferred actions run when the script is executed. A deferred action between InstallInitialize and
              RemoveExistingProducts would therefore run after the removal, and Windows Installer refuses that order
@@ -261,13 +264,13 @@
              carry the services over, also when the agent is. -->
         <InstallExecuteSequence>
             <Custom Action="OpenSSHCheckSessions" Before="InstallValidate"><![CDATA[ACTIVE_SESSIONS ~= "abort" AND OpenSSHServerAction <> "none"]]></Custom>
-            <Custom Action="OpenSSHFirewallSaveRollback" After="InstallInitialize"><![CDATA[&Server = 3 OR $SshAgentComponent = 3]]></Custom>
-            <Custom Action="OpenSSHFirewallSave" After="OpenSSHFirewallSaveRollback"><![CDATA[&Server = 3 OR $SshAgentComponent = 3]]></Custom>
+            <Custom Action="OpenSSHFirewallSaveRollback" After="InstallInitialize"><![CDATA[&Server = 3 OR $SshAgentComponent = 3 OR ((OpenSSHServerAction = "remove" OR OpenSSHSharedAction = "remove") AND NOT UPGRADINGPRODUCTCODE)]]></Custom>
+            <Custom Action="OpenSSHFirewallSave" After="OpenSSHFirewallSaveRollback"><![CDATA[&Server = 3 OR $SshAgentComponent = 3 OR ((OpenSSHServerAction = "remove" OR OpenSSHSharedAction = "remove") AND NOT UPGRADINGPRODUCTCODE)]]></Custom>
             <InstallExecute After="OpenSSHFirewallSave" />
             <RemoveExistingProducts After="InstallExecute" />
             <Custom Action="OpenSSHPreInstall" After="RemoveExistingProducts"><![CDATA[OpenSSHServerAction <> "none" OR OpenSSHClientAction <> "none" OR OpenSSHSharedAction <> "none"]]></Custom>
             <Custom Action="OpenSSHFirewallProfiles" After="$(var.FirewallSchedAction)"><![CDATA[&Server = 3]]></Custom>
-            <Custom Action="OpenSSHFirewallCommit" After="OpenSSHFirewallProfiles"><![CDATA[&Server = 3 OR $SshAgentComponent = 3]]></Custom>
+            <Custom Action="OpenSSHFirewallCommit" After="OpenSSHFirewallProfiles"><![CDATA[&Server = 3 OR $SshAgentComponent = 3 OR ((OpenSSHServerAction = "remove" OR OpenSSHSharedAction = "remove") AND NOT UPGRADINGPRODUCTCODE)]]></Custom>
             <Custom Action="OpenSSHSshdPortRollback" Before="OpenSSHSshdPort"><![CDATA[SSHD_PORT AND &Server = 3]]></Custom>
             <Custom Action="OpenSSHSshdPort" After="StartServices"><![CDATA[SSHD_PORT AND &Server = 3]]></Custom>
             <Custom Action="OpenSSHServicesRestore" After="OpenSSHSshdPort"><![CDATA[&Server = 3 OR $SshAgentComponent = 3]]></Custom>

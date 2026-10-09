@@ -115,8 +115,13 @@ Before 'StartServices' 'OpenSSHServicesRestore'
 Before 'OpenSSHSshdPort' 'OpenSSHServicesRestore'
 Before 'OpenSSHServicesRestore' 'InstallFinalize'
 Check 'OpenSSHFirewallProfiles condition' ($cond['OpenSSHFirewallProfiles'] -eq '&Server = 3') $cond['OpenSSHFirewallProfiles']
-# the save, its rollback and commit, and the restore step also run for the agent (client-only, repair)
-foreach ($a in @('OpenSSHFirewallSave', 'OpenSSHFirewallSaveRollback', 'OpenSSHFirewallCommit', 'OpenSSHServicesRestore')) { Check ($a + ' condition: the server or the agent is installed') ($cond[$a] -eq '&Server = 3 OR $SshAgentComponent = 3') $cond[$a] }
+# the save, its rollback and commit, and the restore step also run for the agent (client-only, repair); the save,
+# rollback and commit also for an uninstall or REMOVE=Server, so that a cancelled one starts the stopped services again,
+# but not while an upgrade removes this package (the upgrading package keeps its own record)
+Check 'OpenSSHServicesRestore condition: the server or the agent is installed' ($cond['OpenSSHServicesRestore'] -eq '&Server = 3 OR $SshAgentComponent = 3') $cond['OpenSSHServicesRestore']
+foreach ($a in @('OpenSSHFirewallSave', 'OpenSSHFirewallSaveRollback', 'OpenSSHFirewallCommit')) {
+    Check ($a + ' condition: installed, or removed other than by an upgrade') ($cond[$a] -eq '&Server = 3 OR $SshAgentComponent = 3 OR ((OpenSSHServerAction = "remove" OR OpenSSHSharedAction = "remove") AND NOT UPGRADINGPRODUCTCODE)') $cond[$a]
+}
 Check 'the save step: keep when a package of this series is installed' ($cond['SetOpenSSHFirewallSaveKeep'] -match '^Installed OR OPENSSH_PREVIOUS_INSTALLED OR OPENSSH_NEWER_INSTALLED' -and $target['SetOpenSSHFirewallSaveKeep'] -match 'fwsave -Previous keep \[OpenSSHFeatureArguments\]"$')
 Check 'the save step: fresh otherwise' ($cond['SetOpenSSHFirewallSaveFresh'] -eq ('NOT (' + $cond['SetOpenSSHFirewallSaveKeep'] + ')') -and $target['SetOpenSSHFirewallSaveFresh'] -match 'fwsave -Previous none \[OpenSSHFeatureArguments\]"$')
 Before 'SetOpenSSHFeatureArguments' 'SetOpenSSHFirewallSaveKeep'
