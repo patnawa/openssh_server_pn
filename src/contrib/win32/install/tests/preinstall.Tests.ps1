@@ -378,12 +378,14 @@ try {
     Same 'Write-ConfigText: failed replacement keeps original content' "#Port 22`n" ([IO.File]::ReadAllText($cfg3))
     Check 'Write-ConfigText: failed replacement leaves no temporary file' (@(Get-ChildItem -LiteralPath $tmp -Filter 'fallback_config.new-*').Count -eq 0)
 
-    # The rename keeps an inherited DACL exactly: no explicit copies of the inherited entries.
+    # The rename keeps an inherited DACL: the same entries, still inherited, no explicit copies. Setting a
+    # DACL that is not protected marks it auto-inherited (D:AI), which no access check of a file reads: in
+    # a folder without that flag (the hosted runners' temp folder) the file has D: before and D:AI after.
     $cfg4 = Join-Path $tmp 'inherited_config'
     [IO.File]::WriteAllText($cfg4, "#Port 22`n")
-    $inherited = [IO.File]::GetAccessControl($cfg4).GetSecurityDescriptorSddlForm('Access')
+    $inherited = [IO.File]::GetAccessControl($cfg4).GetSecurityDescriptorSddlForm('Access') -replace '^D:AI\(', 'D:('
     Write-ConfigText $cfg4 "Port 2222`n" ''
-    Same 'Write-ConfigText: an inherited DACL stays inherited' $inherited ([IO.File]::GetAccessControl($cfg4).GetSecurityDescriptorSddlForm('Access'))
+    Same 'Write-ConfigText: an inherited DACL stays inherited' $inherited ([IO.File]::GetAccessControl($cfg4).GetSecurityDescriptorSddlForm('Access') -replace '^D:AI\(', 'D:(')
     Check 'Write-ConfigText: without a backup name, no backup' (@(Get-ChildItem -LiteralPath $tmp -Filter 'inherited_config*').Count -eq 1)
 
     # The rollback of a failed port change: the previous file back, byte for byte, with the
