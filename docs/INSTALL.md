@@ -390,7 +390,9 @@ From 10.5.4.0 on, it also removes the scheduled tasks of the manager's Alerts ta
 `%ProgramData%\ssh` (configuration, host keys, logs, the manager's alert settings and transfer
 archive in `manager`, the partners' keys in `partner_keys`) in place; delete it manually if you
 want a clean slate. Partner accounts, their groups and their folders stay too: delete the partners
-on the Partners tab first if they should go.
+on the Partners tab first if they should go. In builds after 10.5.7.0, an uninstall or
+`REMOVE=Server` that is cancelled or fails starts `sshd` and `ssh-agent` again if they were
+running; sessions it ended stay ended.
 
 **Windows' own OpenSSH after the uninstall.** The package takes over the `ssh-agent` service of
 the in-box *OpenSSH Client* capability, which Windows 10 1809 and later, Windows 11 and Windows

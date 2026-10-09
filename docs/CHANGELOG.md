@@ -27,7 +27,8 @@ released: the product version and the release hashes are set when it is.
 
 - **Automatic blocking.** The exemption for addresses with a logged-in session never matched,
   because the listening `sshd.exe` owns every connection in the TCP table; it now follows the
-  login `sshd` recorded for each session. A firewall rule that cannot be read is never rewritten
+  login `sshd` recorded for each session, and a session whose login has left the event log spares
+  every connected address instead of turning blocking off. A firewall rule that cannot be read is never rewritten
   as if it were empty; additions merge with the rule as it is just before the write; the block
   schedule is saved before the firewall changes and restored if the write fails; expiry of a
   block no longer stops the rest of the minute's work when the firewall service is down; manual
@@ -55,8 +56,9 @@ released: the product version and the release hashes are set when it is.
   staged in an administrators-only folder; non-UTF-8 `sshd_config` text is never overwritten;
   errors after a save no longer say "not saved"; saving only the default shell does not rewrite
   `sshd_config`.
-- **Server window.** The wizard never narrows the firewall rule to a port `sshd` does not use;
-  *Fix selected* applies every selected fix; the tray stays current on the Sessions tab; F5 asks
+- **Server window.** The wizard never narrows the firewall rule to a port `sshd` does not use; when
+  a `ListenAddress` port or an `Include` decides the port, it says so, and its summary names the
+  ports `sshd -T` reports for the new settings. *Fix selected* applies every selected fix; the tray stays current on the Sessions tab; F5 asks
   before discarding unsaved Firewall and Alerts edits; destructive questions default to No;
   Ctrl+1…9 follow the navigation; stored numbers outside a field's range no longer stop the window.
 - **Client workspace.** Works on a full-token administrator desktop (the built-in Administrator on
@@ -65,14 +67,15 @@ released: the product version and the release hashes are set when it is.
   is handled as `ssh` expands it; trust and host edits keep unrelated lines.
 - **Dates** use Gregorian years under cultures with another calendar (th-TH showed 2569).
 - **Installer.** A failed upgrade or repair starts the services that ran before and undoes an
-  `SSHD_PORT` change; an administrator's *Disabled* or delayed start type is kept; `ssh-agent` gets
+  `SSHD_PORT` change, and so does a cancelled or failed uninstall or `REMOVE=Server` for the
+  services; an administrator's *Disabled* or delayed start type is kept; `ssh-agent` gets
   its privilege restriction in client-only installs; the `SSHD_PORT` check requires `sshd` itself
   on the port; `sshd_config` is replaced by rename with its permissions; `install-sshd.ps1` runs on
   PowerShell 2.0. CI: the MSI signing-target check reads the MSI File table (it could never pass
   on a signed tag before), and every release upload is checked.
 - **Native.** `sshd -T` quotes an `AuthorizedKeysFile` value that starts with `=`.
 
-Local validation: **288 manager unit tests**, **49 GUI checks**, **187 preinstall checks** and the
+Local validation: **290 manager unit tests**, **49 GUI checks**, **188 preinstall checks** and the
 build-reproducibility checks pass. Hosted runs are pending.
 
 ## 10.5.7.0 / Manager 2.3.1 (2026-10-08)

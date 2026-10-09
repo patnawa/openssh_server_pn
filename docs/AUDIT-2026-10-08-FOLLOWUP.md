@@ -65,6 +65,48 @@ files on classic NTFS, the agent stopping when the firewall service is down, and
 are fixed, except the Slack `unfurl_*` flags (D11: receivers such as Google Chat reject unknown
 fields; links are defanged instead).
 
+## Final review of the merged branch
+
+A last review of the merged branch, by area, found these; all are fixed in Manager 2.3.2:
+
+- **Logged-in peers.** A session whose login has left the event log no longer turns automatic
+  blocking off: every connected address is spared instead, and only sessions of the installed
+  `sshd` count. The Failed logins dialog always opens, so blocks can still be lifted.
+- **Restarts.** A changed `Include` no longer refuses the Dashboard and tray Restart for good;
+  without a record of the file `sshd` runs, the restart is a plain one (the newest backup could be
+  older than that file). A save that fails after its recovery record was written puts the record
+  back, and a first save without a previous file never rolls back by deleting it.
+- **Keep** never restores the settings just kept when narrowing the firewall fails; the Firewall
+  tab shows a failed read instead of throwing. The wizard's administrator key-only choice writes
+  rules only.
+- **Usable keys** are counted as `sshd` reads and accepts them (no UTF-16 files, Ctrl-Z ends a
+  file, unknown options, certificate lines, types outside `PubkeyAcceptedAlgorithms` and RSA below
+  `RequiredRSASize` do not count); the account check and the wizard share the count. RFC 4716
+  exports keep the comment on one line PuTTY reads.
+- **Partners** are not created under a root another account controls; a volume root's DELETE
+  permission is not reported as a problem; names ending in `.bak` get a true reason. Key files below
+  an administrator's junction (a moved `C:\Users`) are written; only the key file's own folder may
+  not be a link.
+- **Client.** ssh Connect accepts IPv6 host names; a blocked `cmd.exe` falls back to starting `ssh`
+  directly; new non-ASCII text is refused in a non-UTF-8 file; a reduced-token client explains how
+  to manage the server.
+- **Agent.** An archive held open by a spreadsheet delays only those records; state files are
+  replaced through a backup name; a manual unblock is not undone by failures already counted.
+- **Installer.** A *Disabled* or delayed start type is kept for a service any package registered,
+  not only one in the new `INSTALLFOLDER`.
+
+Two low-severity items it left open were then fixed as well:
+
+- **A cancelled or failed uninstall, or `REMOVE=Server`,** left `sshd` and `ssh-agent` stopped:
+  the step that records the running services, and its rollback, ran only when the server or the
+  agent was installed. They now also run for a removal, except while an upgrade removes the old
+  package (the upgrading package keeps its own record).
+- **The setup wizard's port note and firewall summary** assumed the port shown came from the main
+  file's `Port` line. When it comes from a `ListenAddress` with a port, or the main file has no
+  `Port` line and includes others, the page says that the `Port` line it writes may not decide the
+  port, and the summary and preview name the ports `sshd -T` reports for the wizard's own
+  `sshd_config`.
+
 ## Owner decisions taken as defaults
 
 | Question | Default chosen |
@@ -81,18 +123,20 @@ fields; links are defanged instead).
 
 ## Verification
 
-Local, unelevated, on the merged branch: **288 unit tests** and **49 GUI checks** pass;
-`preinstall.Tests.ps1` **187/187**; two independent pinned builds are identical. Several
+Local, unelevated, on the final branch: **290 unit tests** and **49 GUI checks** pass;
+`preinstall.Tests.ps1` **188/188**; two independent pinned builds are identical. Several
 regressions were also run against the previous code to confirm that they fail there.
 
-Only the hosted workflows can prove: the MSI changes (sequencing of the new restore and rollback
-actions, upgrade/repair/rollback/uninstall lanes, client-only installs), the `servconf.c` dump
-change and its round trips, elevated `--selftest`/`--authtest`/`--keytest`, the SAFER token path
-with a real full-token desktop, and the logged-in-peer mapping with real sessions.
+Only the hosted workflows can prove: the MSI changes (sequencing and conditions of the new restore
+and rollback actions, upgrade/repair/rollback/uninstall lanes, client-only installs), the
+`servconf.c` dump change and its round trips, elevated `--selftest`/`--authtest`/`--keytest`, the
+SAFER token path with a real full-token desktop, and the logged-in-peer mapping with real sessions.
 
 ## Residual risks
 
 - `FirewallScript` in the MSI is close to its command-line budget (about 380 base64 characters left).
+- No hosted lane makes an uninstall fail. The restart after a cancelled uninstall rests on the
+  package test of the action conditions and on the script tests of the save and rollback phases.
 - A hard link planted through a directory handle held from before a partner-folder reset can
   still receive inherited permissions; the reset then fails and the new account is removed.
 - A recovery restore through the SYSTEM task does not keep the replaced file as a backup.
