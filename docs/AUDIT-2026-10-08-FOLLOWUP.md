@@ -2,8 +2,8 @@
 
 A second review of the sources released as **10.5.7.0 / Manager 2.3.1** (starting revision
 `b1ac978bd`), made after [the first audit](AUDIT-2026-10-08.md) of the same day. The
-corrections are on branch `bughunt-2026-10-08` as **Manager 2.3.2** and the next product build.
-They are **not released**: installer, native and elevated checks run only in CI (see
+corrections are on branch `bughunt-2026-10-08` as **Manager 2.3.2** and product **10.5.8.0**.
+They are **not released** yet: installer, native and elevated checks run only in CI (see
 [Verification](#verification)).
 
 ## Method

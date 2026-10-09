@@ -19,11 +19,11 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
-## Unreleased: Manager 2.3.2 and the next product build
+## 10.5.8.0 / Manager 2.3.2 (not yet released)
 
 Corrections from the [follow-up review](AUDIT-2026-10-08-FOLLOWUP.md) of the 10.5.7.0 / 2.3.1
 sources. OpenSSH remains 10.5p1; the only native change is the `AuthorizedKeysFile` dump. Not
-released: the product version and the release hashes are set when it is.
+released yet: the date and the release hashes are added when it is.
 
 - **Automatic blocking.** The exemption for addresses with a logged-in session never matched,
   because the listening `sshd.exe` owns every connection in the TCP table; it now follows the

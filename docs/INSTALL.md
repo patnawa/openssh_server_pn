@@ -122,14 +122,14 @@ installed and clears it before it copies a single file:
    upgrade with an open session ended with "restart required" and the old binaries in use.
 4. **The in-box Windows *OpenSSH Server* capability** is removed if present (section 6).
 5. Files, services, firewall rule and registry entries are re-created and the services started.
-   In builds after 10.5.7.0, a service an administrator set to *Disabled* or *Automatic (delayed
+   From 10.5.8.0 on, a service an administrator set to *Disabled* or *Automatic (delayed
    start)* keeps that start type, and a disabled service stays stopped, also when the previous
    package had another architecture or folder. A registration that pointed at the in-box OpenSSH
    gets the package's defaults, since its start types are Windows' own.
 
 All of this runs inside one Windows Installer transaction: if the install fails, the previous
-package is restored, and since 10.5.2.0 also its firewall settings. Builds after 10.5.7.0 also
-start again the services that ran before, and undo an `SSHD_PORT` change to `sshd_config`. The pre-install
+package is restored, and since 10.5.2.0 also its firewall settings. From 10.5.8.0 on it also
+starts again the services that ran before, and undo an `SSHD_PORT` change to `sshd_config`. The pre-install
 steps are not undone: sessions it ended stay ended, and a removed in-box *OpenSSH Server*
 capability stays removed (`Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0`
 brings it back). Pass `ACTIVE_SESSIONS=abort` to stop an install instead of ending sessions.
@@ -390,7 +390,7 @@ From 10.5.4.0 on, it also removes the scheduled tasks of the manager's Alerts ta
 `%ProgramData%\ssh` (configuration, host keys, logs, the manager's alert settings and transfer
 archive in `manager`, the partners' keys in `partner_keys`) in place; delete it manually if you
 want a clean slate. Partner accounts, their groups and their folders stay too: delete the partners
-on the Partners tab first if they should go. In builds after 10.5.7.0, an uninstall or
+on the Partners tab first if they should go. From 10.5.8.0 on, an uninstall or
 `REMOVE=Server` that is cancelled or fails starts `sshd` and `ssh-agent` again if they were
 running; sessions it ended stay ended.
 
