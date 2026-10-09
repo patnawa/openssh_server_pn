@@ -198,6 +198,35 @@ namespace OpenSSHServerPNManager
                 }
                 return null;
             });
+            test("setup wizard: the summary follows sshd -T for the new sshd_config when a ListenAddress or an Include decides the port", () =>
+            {
+                Func<int[], ServerStateSnapshot> sshd = ports => new ServerStateSnapshot { Verified = true, ConfiguredPorts = ports, ListeningPorts = ports };
+                Func<List<string>, string> fwLine = l => l.Single(x => x.StartsWith("The firewall rule"));
+                var to2300 = new WizardPlan { Port = 2300, Profiles = 3 };
+                // "ListenAddress 0.0.0.0:2222" and no Port line: the port shown (2222) stays, the Port line written is ignored.
+                var line = fwLine(to2300.Summary(2222, 3, true, true, "2222", sshd(new[] { 2222 }), true, () => new[] { 2222 }));
+                if (!line.EndsWith("allows port 2222 (and port 2300 until you keep the new settings).")) throw new Exception("ListenAddress with a port: " + line);
+                // An Include sets Port 2222 and the main file has none: the Port line written adds 2300 to it.
+                line = fwLine(to2300.Summary(22, 3, true, true, "2222", sshd(new[] { 2222 }), true, () => new[] { 2222, 2300 }));
+                if (!line.EndsWith("allows port 2222, 2300.")) throw new Exception("Include with a Port: " + line);
+                // Unknown (sshd -T failed): the earlier estimate, never an exception.
+                line = fwLine(new WizardPlan { Port = 2222, Profiles = 3 }.Summary(22, 3, true, true, "22", sshd(new[] { 22 }), true, () => null));
+                if (!line.EndsWith("allows port 2222 (and port 22 until you keep the new settings).")) throw new Exception("without a prediction: " + line);
+                // When the Port line alone decides nothing, the main window says why.
+                Func<string[], string> caveat = lines => MainForm.WizardPortCaveat(new SshdConfig { Lines = lines.ToList() });
+                if (caveat(new[] { "ListenAddress 0.0.0.0:2222" }) == null || !caveat(new[] { "ListenAddress 0.0.0.0:2222" }).Contains("2222")) throw new Exception("ListenAddress with a port not named");
+                if (caveat(new[] { "Include sshd_config.d/*.conf" }) == null) throw new Exception("an Include without a Port line not named");
+                foreach (var plain in new[] { new[] { "Port 22", "Include sshd_config.d/*.conf" }, new[] { "ListenAddress ::" }, new[] { "Port 2222" } })
+                    if (caveat(plain) != null) throw new Exception("a caveat for " + string.Join(" / ", plain));
+                using (var w = new SetupWizard(2222, new FirewallRule { Enabled = true, Profiles = 3, Ports = "2222" }, null, () => 0, () => { }, o => null))
+                {
+                    // sshd -T agrees with the port shown, yet a ListenAddress decides it: the note still says so.
+                    w.UseServerState(sshd(new[] { 2222 }), caveat(new[] { "ListenAddress 0.0.0.0:2222" }));
+                    var note = ((Label)Get(w, "_portNote")).Text;
+                    if (!note.Contains("ListenAddress") || note.Contains("sshd -T")) throw new Exception("note: " + note);
+                }
+                return null;
+            });
             test("setup wizard: the port page says when sshd -T uses other ports than the Port line shown", () =>
             {
                 using (var w = new SetupWizard(22, new FirewallRule { Enabled = true, Profiles = 3, Ports = "2222" }, null, () => 0, () => { }, o => null))

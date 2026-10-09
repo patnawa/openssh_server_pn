@@ -66,12 +66,14 @@ namespace OpenSSHServerPNManager
         }
 
         /// <summary>
-        /// The ports a narrowed rule is expected to end with: those sshd -T reports now with the Port line's port changed. until:
-        /// the other ports it allows until the new settings are kept (the added ones and the port of a rule with one port).
+        /// The ports a narrowed rule is expected to end with: predicted, the ports sshd -T reports for the plan's own sshd_config,
+        /// when known; else those it reports now with the Port line's port changed (wrong when a ListenAddress with a port or an
+        /// Include decides the port). until: the other ports it allows until the new settings are kept (the added ones and the
+        /// port of a rule with one port).
         /// </summary>
-        internal static List<int> FirewallKept(string rulePorts, IList<int> adds, int[] configuredPorts, int currentPort, int port, out List<int> until)
+        internal static List<int> FirewallKept(string rulePorts, IList<int> adds, int[] configuredPorts, int currentPort, int port, out List<int> until, int[] predicted = null)
         {
-            var kept = configuredPorts.Select(p => p == currentPort ? port : p).Distinct().OrderBy(p => p).ToList();
+            var kept = (predicted ?? configuredPorts.Select(p => p == currentPort ? port : p)).Distinct().OrderBy(p => p).ToList();
             int single;
             var allowed = int.TryParse((rulePorts ?? "").Trim(), out single) ? adds.Concat(new[] { single }) : adds;
             until = allowed.Distinct().Where(p => !kept.Contains(p)).OrderBy(p => p).ToList();
@@ -80,15 +82,16 @@ namespace OpenSSHServerPNManager
 
         /// <summary>
         /// Describe, with the firewall ports as ApplyWizard handles them. state: what sshd reported (null or unverified: only
-        /// the wizard's port is added, nothing is taken away); configChanges: whether sshd_config changes.
+        /// the wizard's port is added, nothing is taken away); configChanges: whether sshd_config changes. predict: the ports
+        /// sshd -T reports for the plan's sshd_config (null when unknown), asked only when the rule is to be narrowed.
         /// </summary>
-        internal List<string> Summary(int currentPort, int currentProfiles, bool ruleExists, bool ruleEnabled, string rulePorts, ServerStateSnapshot state, bool configChanges)
+        internal List<string> Summary(int currentPort, int currentProfiles, bool ruleExists, bool ruleEnabled, string rulePorts, ServerStateSnapshot state, bool configChanges, Func<int[]> predict = null)
         {
             bool verified = state != null && state.Verified;
             var adds = FirewallAdds(rulePorts, Port, Port != currentPort, verified ? state.Ports : null);
             if (!FirewallNarrows(ruleExists, rulePorts, configChanges, verified, adds.Count)) return Describe(currentPort, currentProfiles, ruleExists, ruleEnabled, adds);
             List<int> until;
-            var kept = FirewallKept(ruleExists ? rulePorts : null, adds, state.ConfiguredPorts, currentPort, Port, out until);
+            var kept = FirewallKept(ruleExists ? rulePorts : null, adds, state.ConfiguredPorts, currentPort, Port, out until, predict == null ? null : predict());
             return Describe(currentPort, currentProfiles, ruleExists, ruleEnabled, adds, kept, until);
         }
     }
@@ -119,6 +122,8 @@ namespace OpenSSHServerPNManager
         private ServerStateSnapshot _state;
         /// <summary>Whether a plan changes sshd_config, as the main window writes it (null: assumed); only then is the rule narrowed.</summary>
         internal Func<WizardPlan, bool> ChangesConfig;
+        /// <summary>The ports sshd -T reports for a plan's sshd_config, as the main window writes it; null when unknown.</summary>
+        internal Func<WizardPlan, int[]> PredictPorts;
         public WizardPlan Plan;
 
         public SetupWizard(int currentPort, FirewallRule fw, string allowGroups, Func<int> myKeyCount, Action addKey, Func<IWin32Window, string> createKey)
@@ -237,15 +242,17 @@ namespace OpenSSHServerPNManager
 
         /// <summary>
         /// What sshd reports, read by the main window: the ports sshd uses for the firewall plan, and a note on the first page
-        /// when sshd -T listens on other ports than the Port line shown there (an Include file or a ListenAddress with a port).
+        /// when the Port line shown there does not alone decide the port: sshd -T listens on other ports, or portCaveat says
+        /// why it would not follow a change (a ListenAddress with a port, an Include that may set Port).
         /// </summary>
-        internal void UseServerState(ServerStateSnapshot state)
+        internal void UseServerState(ServerStateSnapshot state, string portCaveat = null)
         {
-            if (state == null || !state.Verified) return;
-            _state = state;
-            if (state.ConfiguredPorts.Length == 1 && state.ConfiguredPorts[0] == _currentPort) return;
-            _portNote.Text = "sshd uses port " + string.Join(", ", state.ConfiguredPorts) + " (sshd -T). An Include file, another Port line or a ListenAddress with a port decides that, not only the port shown here (" + _currentPort +
-                             ", from sshd_config). A port changed here is written to its Port line, which sshd may then ignore or listen on in addition: change those other lines on the sshd_config (text) tab.";
+            if (state != null && state.Verified) _state = state;
+            bool differs = _state != null && !(_state.ConfiguredPorts.Length == 1 && _state.ConfiguredPorts[0] == _currentPort);
+            if (!differs && portCaveat == null) return;
+            _portNote.Text = (differs ? "sshd uses port " + string.Join(", ", _state.ConfiguredPorts) + " (sshd -T). " : "") +
+                             (portCaveat ?? "An Include file, another Port line or a ListenAddress with a port decides that, not only the port shown here (" + _currentPort + ", from sshd_config).") +
+                             " A port changed here is written to its Port line, which sshd may then ignore or listen on in addition: change those other lines on the sshd_config (text) tab.";
             _portNote.Visible = true;
         }
 
@@ -298,7 +305,8 @@ namespace OpenSSHServerPNManager
             if (_page == _pages.Length - 1)
             {
                 var plan = BuildPlan();
-                var l = plan.Summary(_currentPort, _currentProfiles, _fwExists, _fwEnabled, _rulePorts, _state, ChangesConfig == null || ChangesConfig(plan));
+                var l = plan.Summary(_currentPort, _currentProfiles, _fwExists, _fwEnabled, _rulePorts, _state, ChangesConfig == null || ChangesConfig(plan),
+                                     PredictPorts == null ? (Func<int[]>)null : () => PredictPorts(plan));
                 _summary.Text = l.Count == 0 ? "Nothing to change: everything stays as it is." : string.Join("\n\n", l.Select(x => "• " + x));
             }
             AcceptButton = _next;

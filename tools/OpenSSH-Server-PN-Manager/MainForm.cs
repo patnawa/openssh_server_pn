@@ -4059,14 +4059,35 @@ namespace OpenSSHServerPNManager
                 WizardPlan plan;
                 using (var w = new SetupWizard(_cfg.EffectivePort, fw, allow == null || allow.Count == 0 ? null : SshdArgs.FormatTyped(allow), async () => { var policy = WizardKeyPolicy(); return await BgAsync("Reading your keys...", () => MyKeyCount(policy)); }, QuickAddMyKey, CreateMyKey))
                 {
-                    w.UseServerState(state);
+                    w.UseServerState(state, WizardPortCaveat(_cfg));
                     w.ChangesConfig = p => { try { return WizardCandidate(p).Text != _cfg.Text; } catch { return true; } };
+                    w.PredictPorts = p => { try { return PredictPorts(WizardCandidate(p)); } catch { return null; } };
                     if (w.ShowDialog(this) != DialogResult.OK) return;
                     plan = w.Plan;
                 }
                 await ApplyWizard(plan, fw, state);
             }
             finally { _wizardRunning = false; }
+        }
+
+        /// <summary>
+        /// Why the Port line the wizard edits may not decide the port sshd uses, or null: a ListenAddress with a port is
+        /// listened on whatever Port says, and an Include may set Port when the main file has none (a Port written then adds).
+        /// </summary>
+        internal static string WizardPortCaveat(SshdConfig cfg)
+        {
+            var named = cfg.GetAll("ListenAddress").Select(la => SshdConfig.ListenPort(la.Value)).Where(p => p > 0).Distinct().ToList();
+            if (named.Count > 0) return "A ListenAddress line in sshd_config names port " + string.Join(", ", named) + ": sshd listens there whatever its Port line says.";
+            if (cfg.Get("Port") == null && cfg.GetAll("Include").Count > 0) return "sshd_config has no Port line of its own and includes other files, which may set one: a port written here would add to theirs.";
+            return null;
+        }
+
+        /// <summary>The ports sshd -T reports for a candidate sshd_config (Include files and ListenAddress ports resolved), or null.</summary>
+        private static int[] PredictPorts(SshdConfig cand)
+        {
+            var tmp = WriteCandidate(cand);
+            try { var state = ServerState.Parse(Ssh.Exe("sshd.exe"), tmp); return state.Verified ? state.ConfiguredPorts : null; }
+            finally { try { File.Delete(tmp); } catch { } }
         }
 
         /// <summary>sshd_config as the wizard's plan writes it.</summary>
@@ -4115,7 +4136,8 @@ namespace OpenSSHServerPNManager
             var rulePorts = fw == null ? null : fw.Ports;
             string backup = null;
             bool configurationChanged = cand.Text != _cfg.Text;
-            var changes = plan.Summary(_cfg.EffectivePort, fwProfiles, fw != null, fw != null && fw.Enabled, rulePorts, shown, configurationChanged);
+            var predicted = configurationChanged ? await BgAsync("Resolving the ports of the new settings...", () => { try { return PredictPorts(cand); } catch { return (int[])null; } }) : null;
+            var changes = plan.Summary(_cfg.EffectivePort, fwProfiles, fw != null, fw != null && fw.Enabled, rulePorts, shown, configurationChanged, () => predicted);
             if (configurationChanged)
             {
                 // Recommended raises RequiredRSASize too, which can make the only key of a key-only server unusable.
