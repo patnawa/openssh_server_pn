@@ -421,11 +421,12 @@ namespace OpenSSHServerPNManager
         /// Match block per rule, in order, before the first other Match block so that the rules take precedence, closed by
         /// "Match all". Keyboard-interactive is switched off: OpenSSH for Windows has no keyboard-interactive back end, so it
         /// never logs anyone in, and each client attempt at it counts against MaxAuthTries. Windows passwords use the
-        /// password method.
+        /// password method. A null global leaves the settings for all accounts exactly as they are: their values may come from
+        /// an included file, which the main file's defaults must not override.
         /// </summary>
         public static void Apply(SshdConfig cfg, AuthMethods global, List<AuthRule> rules)
         {
-            if (!global.AnyEnabled) throw new ConfigException("Tick at least one login method for all accounts.");
+            if (global != null && !global.AnyEnabled) throw new ConfigException("Tick at least one login method for all accounts.");
             if (rules != null)
             {
                 var keys = new HashSet<string>(StringComparer.Ordinal);
@@ -442,14 +443,17 @@ namespace OpenSSHServerPNManager
             var problem = FindRegion(cfg.Lines, out begin, out end);
             if (problem == null && begin >= 0) ParseRules(cfg.Lines, begin, end, out problem); // never overwrite lines added by hand
             if (rules != null && problem != null) throw new ConfigException("The rules section in sshd_config was changed by hand (" + problem + "). Correct or delete it on the sshd_config (text) tab first.");
-            cfg.Set("PasswordAuthentication", YesNo(global.Password));
-            cfg.Set("PubkeyAuthentication", YesNo(global.PublicKey));
-            cfg.Set("GSSAPIAuthentication", YesNo(global.Kerberos));
-            cfg.Set("KbdInteractiveAuthentication", "no");
-            cfg.Set("ChallengeResponseAuthentication", ""); // older name of KbdInteractiveAuthentication; its first value would win
-            var req = global.Requirement;
-            // Removing the directive restores the default only when no included file can supply a requirement.
-            cfg.Set("AuthenticationMethods", req == "any" && cfg.GetAll("Include").Count == 0 ? "" : req);
+            if (global != null)
+            {
+                cfg.Set("PasswordAuthentication", YesNo(global.Password));
+                cfg.Set("PubkeyAuthentication", YesNo(global.PublicKey));
+                cfg.Set("GSSAPIAuthentication", YesNo(global.Kerberos));
+                cfg.Set("KbdInteractiveAuthentication", "no");
+                cfg.Set("ChallengeResponseAuthentication", ""); // older name of KbdInteractiveAuthentication; its first value would win
+                var req = global.Requirement;
+                // Removing the directive restores the default only when no included file can supply a requirement.
+                cfg.Set("AuthenticationMethods", req == "any" && cfg.GetAll("Include").Count == 0 ? "" : req);
+            }
             if (rules == null) return;
             FindRegion(cfg.Lines, out begin, out end); // Set may have inserted lines above the section
             int at;
@@ -687,17 +691,19 @@ namespace OpenSSHServerPNManager
             try { files = Ssh.ResolveEffectiveKeysFiles(value, me, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)); }
             catch (Exception ex) { return "The authorized key files for " + me + " could not be checked: " + ex.Message; }
             int n = 0;
-            try { n = files.Sum(file => Keys.Read(file).Count(k => k.Type != "?")); }
+            var policy = Keys.KeyPolicy.From(d);
+            try { n = Keys.UsableCount(files, null, policy); }
             catch (Exception ex) { return "The authorized key files for " + me + " could not be read: " + ex.Message; }
             if (n > 0) return null;
             return "With these settings " + me + " (you) can log in over SSH only with a public key" + (eff.BothRequired ? " plus the Windows password" : "") +
-                   ", but no key is authorized for this account" + (files.Count > 0 ? " in\n" + string.Join("\n", files) : " (AuthorizedKeysFile none)") + ".\n\nCreate a key on the Key generator tab (tick \"Allow this key to log in\") and test it first.";
+                   ", but no usable key is authorized for this account" + (files.Count > 0 ? " in\n" + string.Join("\n", files) : " (AuthorizedKeysFile none)") +
+                   ". Not counted: DSA keys, RSA keys below " + policy.RequiredRsaBits + " bits, key types PubkeyAcceptedAlgorithms leaves out, cert-authority and certificate lines, lines with options sshd does not know, files saved as UTF-16, and lines ssh-keygen cannot read.\n\nCreate a key on the Key generator tab (tick \"Allow this key to log in\") and test it first.";
         }
     }
 
     /// <summary>
     /// One-off scheduled tasks that run a program from System32 or the installation folder as SYSTEM. Everything they read
-    /// or write lies in a folder only SYSTEM and Administrators can change.
+    /// or write, and the task definition itself, lies in a folder only SYSTEM and Administrators can change.
     /// </summary>
     internal static class SystemTasks
     {
@@ -725,17 +731,30 @@ namespace OpenSSHServerPNManager
             RegisterXml(name, TaskXml(description, command, arguments, atStartup));
         }
 
-        /// <summary>Creates or replaces a task from its XML definition (schtasks /Create /XML).</summary>
+        /// <summary>
+        /// Creates or replaces a task from its XML definition (schtasks /Create /XML). The file is staged in a private folder,
+        /// never in %TEMP%: there an unelevated process of the same administrator could swap it before schtasks reads it.
+        /// </summary>
         public static void RegisterXml(string name, string xml)
         {
-            var file = Path.Combine(Path.GetTempPath(), "osm-task-" + Guid.NewGuid().ToString("N") + ".xml");
-            File.WriteAllText(file, xml, Encoding.Unicode);
+            var dir = StagingDir(Guid.NewGuid().ToString("N"));
+            bool created = false;
             try
             {
+                Acl.CreatePrivateFolder(dir); created = true;
+                var file = Path.Combine(dir, "task.xml");
+                using (var stream = new FileStream(file, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                using (var writer = new StreamWriter(stream, Encoding.Unicode)) writer.Write(xml);
                 var r = Proc.Run(Schtasks, "/Create /TN " + Proc.Quote(name) + " /XML " + Proc.Quote(file) + " /F", 30000);
                 if (!r.Ok) throw new Exception("schtasks /Create failed: " + r.Output);
             }
-            finally { try { File.Delete(file); } catch { } }
+            finally { if (created) { try { Directory.Delete(dir, true); } catch { } } }
+        }
+
+        /// <summary>A new folder for one task definition under %ProgramData%, where Users cannot delete or rename it.</summary>
+        internal static string StagingDir(string id)
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "osm-task-" + id);
         }
 
         public static bool Delete(string name) { return Proc.Run(Schtasks, "/Delete /TN " + Proc.Quote(name) + " /F", 30000).Ok; }
@@ -794,16 +813,28 @@ namespace OpenSSHServerPNManager
 
         /// <summary>
         /// Deletes a profile at the next startup, and at every startup until it is gone; the task then removes itself. For the
-        /// profile of a deleted test account that Windows keeps loaded: sshd loads the profile at login and never unloads it.
+        /// profile of a deleted account (an SFTP partner or an --authtest test account) that Windows keeps loaded: sshd loads
+        /// the profile at login and never unloads it.
         /// </summary>
         public static string ScheduleProfileRemoval(SecurityIdentifier sid, string account)
         {
-            var task = "OpenSSH Server PN Manager remove test profile " + account;
+            var task = ProfileRemovalTaskName(sid, account);
             var script = ProfileRemovalScript(sid.Value, task);
-            Register(task, "Deletes the profile of " + account + ", a temporary test account of OpenSSH Server PN Manager --authtest that no longer exists, then removes this task.",
+            Register(task, ProfileRemovalDescription(sid, account),
                      Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"),
                      "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(script)), true);
             return task;
+        }
+
+        /// <summary>One task per account: a later account of the same name has another SID, and /F must not replace its task.</summary>
+        internal static string ProfileRemovalTaskName(SecurityIdentifier sid, string account)
+        {
+            return "OpenSSH Server PN Manager remove profile " + sid.Value + " (" + account + ")";
+        }
+
+        internal static string ProfileRemovalDescription(SecurityIdentifier sid, string account)
+        {
+            return "Deletes the profile of " + account + " (" + sid.Value + "), an account deleted in OpenSSH Server PN Manager (an SFTP partner or an --authtest test account), at startup until it is gone, then removes this task.";
         }
 
         /// <summary>

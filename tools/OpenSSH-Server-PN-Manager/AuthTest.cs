@@ -360,7 +360,7 @@ namespace OpenSSHServerPNManager
                 step("SFTP partner with a key only, download only (" + b + ")", () =>
                 {
                     var pwB = Partners.Create(g, root, b, "", "", true, true, null); made.Add(b);
-                    Keys.AddLines(Partners.EnsureKeysFile(g, b), new[] { key.PublicKey }, null);
+                    Keys.AddLines(Partners.EnsureKeysFile(g, b), new[] { key.PublicKey }, null, false);
                     var src = s.MakeFile("partner-report.bin", 64 << 10);
                     File.Copy(src, Path.Combine(Partners.FolderOf(root, b), "report.bin"));
                     var p = find(b);

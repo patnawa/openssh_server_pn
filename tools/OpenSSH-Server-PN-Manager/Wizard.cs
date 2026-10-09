@@ -21,19 +21,78 @@ namespace OpenSSHServerPNManager
         /// <summary>AllowGroups as typed ("administrators "openssh users""), or null to leave it.</summary>
         public string AllowGroups;
 
-        /// <summary>The changes in words, for the summary page and the preview.</summary>
-        public List<string> Describe(int currentPort, int currentProfiles, bool firewallExists, bool firewallEnabled = true)
+        /// <summary>
+        /// The changes in words, for the summary page and the preview. addedPorts: what FirewallAdds adds to the rule;
+        /// keptPorts: the ports a narrowed rule ends with (FirewallKept), untilKept the others it allows until then.
+        /// </summary>
+        public List<string> Describe(int currentPort, int currentProfiles, bool firewallExists, bool firewallEnabled = true, IList<int> addedPorts = null, IList<int> keptPorts = null, IList<int> untilKept = null)
         {
             var l = new List<string>();
+            bool adds = addedPorts != null && addedPorts.Count > 0;
             if (Port != currentPort) l.Add("sshd listens on port " + Port + " instead of " + currentPort + ".");
-            if (!firewallExists || Profiles != currentProfiles || Port != currentPort || FirewallEnabled != firewallEnabled)
-                l.Add(FirewallEnabled ? "The firewall rule is enabled and allows port " + Port + " on the " + FirewallRule.ProfileText(Profiles) + " network profile(s)."
-                    : "The firewall rule is disabled; other computers cannot connect through this rule.");
+            if (!firewallExists || Profiles != currentProfiles || Port != currentPort || FirewallEnabled != firewallEnabled || adds)
+                l.Add(!FirewallEnabled ? "The firewall rule is disabled; other computers cannot connect through this rule."
+                    : addedPorts == null ? "The firewall rule is enabled and allows port " + Port + " on the " + FirewallRule.ProfileText(Profiles) + " network profile(s)."
+                    : keptPorts != null ? "The firewall rule is enabled on the " + FirewallRule.ProfileText(Profiles) + " network profile(s) and allows port " + string.Join(", ", keptPorts) +
+                                          (untilKept != null && untilKept.Count > 0 ? " (and port " + string.Join(", ", untilKept) + " until you keep the new settings)" : "") + "."
+                    : "The firewall rule is enabled on the " + FirewallRule.ProfileText(Profiles) + " network profile(s)" + (adds ? (firewallExists ? " and also allows port " : " and allows port ") + string.Join(", ", addedPorts) : "") + ".");
             if (Login == WizardLogin.AdministratorsKeyOnly) l.Add("Administrators log in with a public key only; other accounts as before.");
             if (Login == WizardLogin.EveryoneKeyOnly) l.Add("Every account logs in with a public key only (no Windows password over SSH).");
             if (Recommended) l.Add("Recommended settings: ClientAliveInterval 300, MaxAuthTries 4, LoginGraceTime 60, RequiredRSASize 2048, LogLevel VERBOSE, keyboard-interactive off.");
             if (AllowGroups != null) l.Add(AllowGroups.Length == 0 ? "Every account may log in (AllowGroups removed)." : "Only members of " + AllowGroups + " may log in (AllowGroups).");
             return l;
+        }
+
+        /// <summary>
+        /// The ports the wizard adds to the firewall rule (it never takes one away here): those sshd uses (sshdPorts: sshd -T,
+        /// with Include files and ListenAddress ports, and the running listeners) and a port changed in the wizard, when the
+        /// rule does not allow them yet. Without verified ports from sshd (null), the wizard's port.
+        /// </summary>
+        internal static List<int> FirewallAdds(string rulePorts, int port, bool portChanged, int[] sshdPorts)
+        {
+            var need = new List<int>();
+            if (sshdPorts != null) need.AddRange(sshdPorts);
+            if (portChanged || sshdPorts == null) need.Add(port);
+            return need.Distinct().Where(p => !Firewall.Covers(rulePorts, p)).ToList();
+        }
+
+        /// <summary>
+        /// Whether ApplyWizard narrows the rule to the ports sshd then uses once the new settings are kept: a rule it creates or
+        /// one with one port, after a restart (sshd_config changes), when verified ports from sshd were added to it.
+        /// </summary>
+        internal static bool FirewallNarrows(bool ruleExists, string rulePorts, bool configChanges, bool verified, int added)
+        {
+            return configChanges && verified && added > 0 && (!ruleExists || Firewall.IsSinglePort(rulePorts));
+        }
+
+        /// <summary>
+        /// The ports a narrowed rule is expected to end with: predicted, the ports sshd -T reports for the plan's own sshd_config,
+        /// when known; else those it reports now with the Port line's port changed (wrong when a ListenAddress with a port or an
+        /// Include decides the port). until: the other ports it allows until the new settings are kept (the added ones and the
+        /// port of a rule with one port).
+        /// </summary>
+        internal static List<int> FirewallKept(string rulePorts, IList<int> adds, int[] configuredPorts, int currentPort, int port, out List<int> until, int[] predicted = null)
+        {
+            var kept = (predicted ?? configuredPorts.Select(p => p == currentPort ? port : p)).Distinct().OrderBy(p => p).ToList();
+            int single;
+            var allowed = int.TryParse((rulePorts ?? "").Trim(), out single) ? adds.Concat(new[] { single }) : adds;
+            until = allowed.Distinct().Where(p => !kept.Contains(p)).OrderBy(p => p).ToList();
+            return kept;
+        }
+
+        /// <summary>
+        /// Describe, with the firewall ports as ApplyWizard handles them. state: what sshd reported (null or unverified: only
+        /// the wizard's port is added, nothing is taken away); configChanges: whether sshd_config changes. predict: the ports
+        /// sshd -T reports for the plan's sshd_config (null when unknown), asked only when the rule is to be narrowed.
+        /// </summary>
+        internal List<string> Summary(int currentPort, int currentProfiles, bool ruleExists, bool ruleEnabled, string rulePorts, ServerStateSnapshot state, bool configChanges, Func<int[]> predict = null)
+        {
+            bool verified = state != null && state.Verified;
+            var adds = FirewallAdds(rulePorts, Port, Port != currentPort, verified ? state.Ports : null);
+            if (!FirewallNarrows(ruleExists, rulePorts, configChanges, verified, adds.Count)) return Describe(currentPort, currentProfiles, ruleExists, ruleEnabled, adds);
+            List<int> until;
+            var kept = FirewallKept(ruleExists ? rulePorts : null, adds, state.ConfiguredPorts, currentPort, Port, out until, predict == null ? null : predict());
+            return Describe(currentPort, currentProfiles, ruleExists, ruleEnabled, adds, kept, until);
         }
     }
 
@@ -52,12 +111,19 @@ namespace OpenSSHServerPNManager
         private readonly CheckBox _firewallEnabled, _dom, _priv, _pub, _recommended, _restrict;
         private readonly RadioButton _keep, _adminKeys, _allKeys;
         private readonly TextBox _groups;
-        private readonly Label _keysState, _summary, _keyNote;
+        private readonly Label _keysState, _summary, _keyNote, _portNote;
         private readonly Func<Task<int>> _myKeyCount;
         private readonly Func<Task> _addKey;
         private readonly Func<IWin32Window, Task<string>> _createKey;
         private bool _working;
         private readonly int _currentPort, _currentProfiles; private readonly bool _fwExists, _fwEnabled, _hadRestriction;
+        private readonly string _rulePorts;
+        /// <summary>What sshd reported (UseServerState), or null when it is not verified.</summary>
+        private ServerStateSnapshot _state;
+        /// <summary>Whether a plan changes sshd_config, as the main window writes it (null: assumed); only then is the rule narrowed.</summary>
+        internal Func<WizardPlan, bool> ChangesConfig;
+        /// <summary>The ports sshd -T reports for a plan's sshd_config, as the main window writes it; null when unknown.</summary>
+        internal Func<WizardPlan, int[]> PredictPorts;
         public WizardPlan Plan;
 
         public SetupWizard(int currentPort, FirewallRule fw, string allowGroups, Func<int> myKeyCount, Action addKey, Func<IWin32Window, string> createKey)
@@ -66,7 +132,7 @@ namespace OpenSSHServerPNManager
         public SetupWizard(int currentPort, FirewallRule fw, string allowGroups, Func<Task<int>> myKeyCount, Func<Task> addKey, Func<IWin32Window, Task<string>> createKey)
         {
             _myKeyCount = myKeyCount; _addKey = addKey; _createKey = createKey; _currentPort = currentPort; _fwExists = fw != null; _hadRestriction = !string.IsNullOrEmpty(allowGroups);
-            _fwEnabled = fw != null && fw.Enabled;
+            _fwEnabled = fw != null && fw.Enabled; _rulePorts = fw == null ? null : fw.Ports;
             _currentProfiles = fw == null ? DefaultProfiles() : ((fw.Profiles & 0x7fffffff) == 0x7fffffff ? 7 : fw.Profiles & 7);
             Text = "Set up the SSH server"; StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
             MinimizeBox = MaximizeBox = false; ShowInTaskbar = false; ClientSize = new Size(Ui.Px(720), Ui.Px(470)); Font = new Font("Segoe UI", Ui.Pt(9.5f));
@@ -88,6 +154,8 @@ namespace OpenSSHServerPNManager
             portRow.Controls.Add(_port);
             portRow.Controls.Add(new Label { Text = "22 is the standard; another port only reduces the noise of scanners, it is not a protection.", AutoSize = true, ForeColor = Theme.Muted, Margin = new Padding(10, 7, 3, 3) });
             Add(p1, portRow);
+            _portNote = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(680), 0), ForeColor = Theme.Warn, Margin = new Padding(3, 0, 3, 6), Visible = false };
+            Add(p1, _portNote);
             _firewallEnabled = new CheckBox { Text = "Enable the inbound SSH firewall rule", AutoSize = true, Checked = fw == null || fw.Enabled };
             Add(p1, _firewallEnabled);
             _dom = new CheckBox { Text = "Domain networks (the domain of a domain member)", AutoSize = true, Checked = (_currentProfiles & 1) != 0 };
@@ -103,9 +171,9 @@ namespace OpenSSHServerPNManager
             _keysState = new Label { AutoSize = true, MaximumSize = new Size(Ui.Px(680), 0), Font = new Font("Segoe UI", Ui.Pt(9.5f), FontStyle.Bold), Margin = new Padding(3, 8, 3, 8) };
             Add(p2, _keysState);
             var createKeyButton = new Button { Text = "Create a key for me...", AutoSize = true, MinimumSize = new Size(Ui.Px(200), Ui.Px(32)), Margin = new Padding(3, 3, 8, 3) };
-            createKeyButton.Click += async (s, e) => await WorkAsync(async () => { var note = await _createKey(this); if (note != null) _keyNote.Text = note; await UpdateKeys(); });
+            createKeyButton.Click += async (s, e) => await WorkAsync(() => KeyActionAsync(async () => { var note = await _createKey(this); if (note != null) _keyNote.Text = note; }));
             var addKeyButton = new Button { Text = "Add my public key (.pub file)...", AutoSize = true, MinimumSize = new Size(0, Ui.Px(32)) };
-            addKeyButton.Click += async (s, e) => await WorkAsync(async () => { await _addKey(); await UpdateKeys(); });
+            addKeyButton.Click += async (s, e) => await WorkAsync(() => KeyActionAsync(_addKey));
             var keyButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
             keyButtons.Controls.Add(createKeyButton); keyButtons.Controls.Add(addKeyButton);
             Add(p2, keyButtons);
@@ -156,12 +224,36 @@ namespace OpenSSHServerPNManager
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                _keep.Checked = true; _adminKeys.Enabled = _allKeys.Enabled = false;
-                _keysState.Text = "Key authorization could not be verified: " + ex.Message; _keysState.ForeColor = Theme.Warn;
                 Log.Error("Setup wizard", ex, false);
                 if (!Program.Unattended) MessageBox.Show(this, ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             finally { _working = false; if (!IsDisposed) { Enabled = true; UseWaitCursor = false; } }
+        }
+
+        /// <summary>Adds or creates a key, then reads the authorized keys again even when that failed: a wrong .pub file leaves the keys already there usable.</summary>
+        private async Task KeyActionAsync(Func<Task> action)
+        {
+            Exception failed = null;
+            try { await action(); }
+            catch (Exception ex) { failed = ex; }
+            await UpdateKeys();
+            if (failed != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failed).Throw();
+        }
+
+        /// <summary>
+        /// What sshd reports, read by the main window: the ports sshd uses for the firewall plan, and a note on the first page
+        /// when the Port line shown there does not alone decide the port: sshd -T listens on other ports, or portCaveat says
+        /// why it would not follow a change (a ListenAddress with a port, an Include that may set Port).
+        /// </summary>
+        internal void UseServerState(ServerStateSnapshot state, string portCaveat = null)
+        {
+            if (state != null && state.Verified) _state = state;
+            bool differs = _state != null && !(_state.ConfiguredPorts.Length == 1 && _state.ConfiguredPorts[0] == _currentPort);
+            if (!differs && portCaveat == null) return;
+            _portNote.Text = (differs ? "sshd uses port " + string.Join(", ", _state.ConfiguredPorts) + " (sshd -T). " : "") +
+                             (portCaveat ?? "An Include file, another Port line or a ListenAddress with a port decides that, not only the port shown here (" + _currentPort + ", from sshd_config).") +
+                             " A port changed here is written to its Port line, which sshd may then ignore or listen on in addition: change those other lines on the sshd_config (text) tab.";
+            _portNote.Visible = true;
         }
 
         /// <summary>Windows Server: every profile; Windows 10 and 11: Domain and Private (as the installer does).</summary>
@@ -183,9 +275,20 @@ namespace OpenSSHServerPNManager
 
         private async Task UpdateKeys()
         {
-            int n = await _myKeyCount();
+            int n;
+            try { n = await _myKeyCount(); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                // Without a verified count, key-only login is not offered.
+                Log.Error("Setup wizard: reading your keys", ex, false);
+                if (IsDisposed) return;
+                _keep.Checked = true; _adminKeys.Enabled = _allKeys.Enabled = false;
+                _keysState.Text = "Key authorization could not be verified: " + ex.Message; _keysState.ForeColor = Theme.Warn;
+                return;
+            }
             if (IsDisposed) return;
-            _keysState.Text = n > 0 ? n + " key(s) are authorized for " + KeyGen.LoginName() + " (you). You can log in with a key." : "No key is authorized for " + KeyGen.LoginName() + " (you) yet.";
+            _keysState.Text = n > 0 ? n + " key(s) are authorized for " + KeyGen.LoginName() + " (you). You can log in with a key." : "No usable key is authorized for " + KeyGen.LoginName() + " (you) yet.";
             _keysState.ForeColor = n > 0 ? Theme.Good : Theme.Warn;
             _adminKeys.Enabled = _allKeys.Enabled = n > 0;
             if (n == 0) _keep.Checked = true;
@@ -202,7 +305,8 @@ namespace OpenSSHServerPNManager
             if (_page == _pages.Length - 1)
             {
                 var plan = BuildPlan();
-                var l = plan.Describe(_currentPort, _currentProfiles, _fwExists, _fwEnabled);
+                var l = plan.Summary(_currentPort, _currentProfiles, _fwExists, _fwEnabled, _rulePorts, _state, ChangesConfig == null || ChangesConfig(plan),
+                                     PredictPorts == null ? (Func<int[]>)null : () => PredictPorts(plan));
                 _summary.Text = l.Count == 0 ? "Nothing to change: everything stays as it is." : string.Join("\n\n", l.Select(x => "• " + x));
             }
             AcceptButton = _next;

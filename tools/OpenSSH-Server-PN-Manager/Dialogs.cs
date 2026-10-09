@@ -131,12 +131,13 @@ namespace OpenSSHServerPNManager
         private readonly Button _browse = new Button { Text = "Browse...", AutoSize = true, MinimumSize = new Size(Ui.Px(90), Ui.Px(28)), Margin = new Padding(3, 1, 3, 2) };
         private readonly CheckBox _readOnly = new CheckBox { Text = "Download only: no upload, rename, removal or new folders", AutoSize = true, Margin = new Padding(3, 8, 3, 2) };
         private readonly List<SftpRule> _others;
+        private readonly SftpRule _existing;
         private readonly string _defaultUserFolder = Path.Combine(Path.GetPathRoot(Environment.SystemDirectory) ?? "C:\\", "SFTP") + "\\%u";
         public SftpRule Result;
 
         public SftpRuleDialog(SftpRule existing, List<SftpRule> others)
         {
-            _others = others ?? new List<SftpRule>();
+            _others = others ?? new List<SftpRule>(); _existing = existing;
             Text = existing == null ? "Add an SFTP-only account or group" : "SFTP-only " + existing.Kind.ToLowerInvariant() + " " + existing.Name;
             StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog; if (Ui.AppIcon != null) Icon = Ui.AppIcon;
             MinimizeBox = MaximizeBox = false; ShowInTaskbar = false; AutoSize = true; AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -223,7 +224,10 @@ namespace OpenSSHServerPNManager
                 if (ferr != null) { MessageBox.Show(this, ferr, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); _folder.Focus(); return; }
             }
             if (_others.Any(o => o.IsGroup == group && o.Name == name)) { MessageBox.Show(this, "There is already a rule for " + (group ? "group " : "user ") + name + ".", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-            Result = new SftpRule { IsGroup = group, Name = name, Folder = folder, ReadOnly = _readOnly.Checked };
+            // The dialog does not edit AuthorizedKeysFile (the partner rules' admin-managed keys); the same rule keeps it.
+            // Dropping it would make sshd ignore every partner key after the next restart.
+            bool sameRule = _existing != null && _existing.IsGroup == group && _existing.Name == name;
+            Result = new SftpRule { IsGroup = group, Name = name, Folder = folder, ReadOnly = _readOnly.Checked, KeysFile = sameRule ? _existing.KeysFile : null };
             DialogResult = DialogResult.OK;
         }
     }
@@ -481,10 +485,10 @@ namespace OpenSSHServerPNManager
             Controls.Add(root);
             CancelButton = close;
             block.Click += async (s, e) => await GuardAsync(Block);
-            unblock.Click += (s, e) => Guard(Unblock);
+            unblock.Click += async (s, e) => await GuardAsync(Unblock);
             _sources.KeyDown += async (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete || (e.Control && e.KeyCode == System.Windows.Forms.Keys.B)) { e.Handled = true; await GuardAsync(Block); } };
-            _blocked.KeyDown += (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; Guard(Unblock); } };
-            Load += (s, e) => FillBlocked();
+            _blocked.KeyDown += async (s, e) => { if (e.KeyCode == System.Windows.Forms.Keys.Delete) { e.Handled = true; await GuardAsync(Unblock); } };
+            Load += (s, e) => Guard(FillBlocked);
             FormClosing += (s, e) => { if (_actionRunning) e.Cancel = true; };
         }
 
@@ -523,29 +527,54 @@ namespace OpenSSHServerPNManager
             _connected.Clear(); _connected.AddRange(peers);
             var refused = chosen.Select(Firewall.NotBlockable).Where(x => x != null).ToList();
             chosen = chosen.Where(a => Firewall.NotBlockable(a) == null).ToList();
-            var connected = chosen.Where(a => _connected.Contains(a, StringComparer.OrdinalIgnoreCase)).ToList();
+            var connected = chosen.Where(a => _connected.Select(Firewall.WithoutZone).Contains(a, StringComparer.OrdinalIgnoreCase)).ToList();
             var text = "Block " + string.Join(", ", chosen) + " from SSH (port " + _ports + ")?" +
                        (connected.Count > 0 ? "\n\nWarning: " + string.Join(", ", connected) + " has an SSH connection open right now. If that is you, you lock yourself out." : "") +
                        (refused.Count > 0 ? "\n\nNot blocked: " + string.Join("; ", refused) + "." : "");
             if (chosen.Count == 0) { MessageBox.Show(this, "Nothing to block: " + string.Join("; ", refused) + ".", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
             if (MessageBox.Show(this, text, Program.AppName, MessageBoxButtons.YesNo, connected.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Question, connected.Count > 0 ? MessageBoxDefaultButton.Button2 : MessageBoxDefaultButton.Button1) != DialogResult.Yes) return;
-            await StaOperation.Run(() =>
-            {
-                var list = Firewall.BlockedAddresses();
-                foreach (var a in chosen) if (!list.Contains(a)) list.Add(a);
-                Firewall.SetBlockedAddresses(list, state.FirewallPorts); return true;
-            });
+            var warning = await StaOperation.Run(() => ChangeBlocks(chosen, () => Firewall.AddBlockedAddresses(chosen, state.FirewallPorts)));
             Log.Info("Blocked from SSH: " + string.Join(", ", chosen));
             FillBlocked();
+            if (warning != null)
+            {
+                Log.Info(warning);
+                if (!Program.Unattended) MessageBox.Show(this, "Blocked. " + warning + "\n\nIf the background agent had blocked one of these addresses for a time, it may still unblock it when that time is up: block it again later to keep it blocked.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
-        private void Unblock()
+        private async Task Unblock()
         {
             var chosen = _blocked.SelectedItems.Cast<ListViewItem>().Select(i => (string)i.Tag).ToList();
             if (chosen.Count == 0) { _note.Text = "Select one or more blocked addresses first."; return; }
-            Firewall.RemoveBlockedAddresses(chosen);
-            Log.Info("Unblocked from SSH: " + string.Join(", ", chosen));
+            var warning = await StaOperation.Run(() => ChangeBlocks(chosen, () => Firewall.RemoveBlockedAddresses(chosen)));
+            Log.Info("Unblocked from SSH: " + string.Join(", ", chosen) + (warning == null ? "" : " (" + warning + ")"));
             FillBlocked();
+        }
+
+        /// <summary>
+        /// Changes the block rule under the background agent's state lock, and ends the agent's timers for these addresses: its
+        /// expiry must never lift a block made here, nor its own write drop one. Returns null, or why the agent's state could not
+        /// be updated (the firewall is changed all the same).
+        /// </summary>
+        internal static string ChangeBlocks(IList<string> addresses, Action change)
+        {
+            bool entered = false, changed = false;
+            string problem;
+            try
+            {
+                if (Agent.WithStateLock(Agent.StateLockName, 30000, () =>
+                {
+                    entered = true; change(); changed = true;
+                    var st = AgentState.Load();
+                    if (Agent.ClearTimers(st, addresses) > 0) st.Save();
+                })) return null;
+                problem = "The background agent is busy.";
+            }
+            catch (Exception ex) when (changed) { return "The background agent's state could not be updated: " + ex.Message; }
+            catch (UnauthorizedAccessException ex) when (!entered) { problem = "The background agent's lock cannot be used: " + ex.Message; }
+            change();
+            return problem;
         }
     }
 
@@ -594,7 +623,7 @@ namespace OpenSSHServerPNManager
                 return t;
             };
             _pattern = row("Host:", existing == null ? "" : existing.Pattern, "the name you type: ssh <host>");
-            _fields["HostName"] = row("Host name:", existing == null ? "" : existing.Get("HostName"), "server name or address");
+            _fields["HostName"] = row("Host name:", existing == null ? "" : existing.Get("HostName"), "server name or address (a % is saved as %%)");
             _fields["User"] = row("User:", existing == null ? "" : existing.Get("User"), "account on the server");
             _fields["Port"] = row("Port:", existing == null ? "" : existing.Get("Port"), "empty = inherited setting (default 22)");
             _fields["IdentityFile"] = row("Key files:", existing == null ? "" : string.Join(Environment.NewLine, existing.GetAll("IdentityFile")), "one private key path per line; all are kept");
@@ -614,6 +643,8 @@ namespace OpenSSHServerPNManager
                 int port;
                 if (Pattern.Length == 0) { MessageBox.Show(this, "Enter the host name you want to type after ssh.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
                 if (_fields["Port"].Text.Trim().Length > 0 && (!int.TryParse(_fields["Port"].Text.Trim(), out port) || port < 1 || port > 65535)) { MessageBox.Show(this, "The port must be a number from 1 to 65535.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                var percent = SshClient.PercentProblem(existing, Values);
+                if (percent != null) { MessageBox.Show(this, percent, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
                 DialogResult = DialogResult.OK;
             };
         }

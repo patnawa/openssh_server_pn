@@ -14,6 +14,9 @@ namespace OpenSSHServerPNManager
     // ------------------------------------------------------------------------------------------
     // Private key files in the OpenSSH format and in PuTTY's .ppk format (versions 2 and 3), read and written in memory:
     // the key material never goes to a temporary file. What is written here is checked with ssh-keygen by the callers.
+    // Byte arrays that held key material or a passphrase are wiped after use, as far as that goes: passphrases come from
+    // text boxes as strings, key files are read and written as text, and the garbage collector may have copied an array
+    // before it is wiped. None of those copies can be wiped.
     // ------------------------------------------------------------------------------------------
 
     /// <summary>A wrong passphrase, or none given for an encrypted key.</summary>
@@ -35,18 +38,27 @@ namespace OpenSSHServerPNManager
         private static Exception Short() { return new FormatException("The key file is damaged: it ends in the middle of a value."); }
     }
 
-    /// <summary>Writes the SSH wire encoding. Clear() wipes the buffer when it held private key material.</summary>
+    /// <summary>
+    /// Writes the SSH wire encoding. Clear() wipes the buffer when it held private key material; a buffer outgrown on the way
+    /// is wiped when it is replaced (a MemoryStream leaves it behind).
+    /// </summary>
     internal sealed class SshWriter
     {
-        private readonly MemoryStream _m = new MemoryStream();
-        public int Length { get { return (int)_m.Length; } }
-        public SshWriter Byte(byte b) { _m.WriteByte(b); return this; }
-        public SshWriter UInt32(uint v) { _m.WriteByte((byte)(v >> 24)); _m.WriteByte((byte)(v >> 16)); _m.WriteByte((byte)(v >> 8)); _m.WriteByte((byte)v); return this; }
-        public SshWriter Raw(byte[] b) { _m.Write(b, 0, b.Length); return this; }
+        private byte[] _b = new byte[256]; private int _n;
+        public int Length { get { return _n; } }
+        private void Room(int more)
+        {
+            if (_n + more <= _b.Length) return;
+            var b = new byte[Math.Max(_n + more, _b.Length * 2)];
+            Buffer.BlockCopy(_b, 0, b, 0, _n); Array.Clear(_b, 0, _b.Length); _b = b;
+        }
+        public SshWriter Byte(byte b) { Room(1); _b[_n++] = b; return this; }
+        public SshWriter UInt32(uint v) { Room(4); _b[_n++] = (byte)(v >> 24); _b[_n++] = (byte)(v >> 16); _b[_n++] = (byte)(v >> 8); _b[_n++] = (byte)v; return this; }
+        public SshWriter Raw(byte[] b) { Room(b.Length); Buffer.BlockCopy(b, 0, _b, _n, b.Length); _n += b.Length; return this; }
         public SshWriter String(byte[] b) { UInt32((uint)b.Length); return Raw(b); }
         public SshWriter String(string s) { return String(Encoding.UTF8.GetBytes(s ?? "")); }
-        public byte[] ToArray() { return _m.ToArray(); }
-        public void Clear() { var b = _m.GetBuffer(); Array.Clear(b, 0, b.Length); _m.SetLength(0); }
+        public byte[] ToArray() { return KeyFormats.Sub(_b, 0, _n); }
+        public void Clear() { Array.Clear(_b, 0, _b.Length); _n = 0; }
     }
 
     /// <summary>A private key in memory: the public key blob, the private fields in the order of OpenSSH's format, and the comment.</summary>
@@ -96,7 +108,7 @@ namespace OpenSSHServerPNManager
             var r = new SshReader(k.Private); var w = new SshWriter();
             switch (k.Type)
             {
-                case "ssh-ed25519": { r.String(); var sk = r.String(); w.String(Sub(sk, 0, 32)); Array.Clear(sk, 0, sk.Length); break; }
+                case "ssh-ed25519": { r.String(); var sk = r.String(); var seed = Sub(sk, 0, 32); w.String(seed); Wipe(sk, seed); break; }
                 case "ssh-rsa": { r.String(); r.String(); var d = r.String(); var iqmp = r.String(); var p = r.String(); var q = r.String(); w.String(d).String(p).String(q).String(iqmp); Wipe(d, iqmp, p, q); break; }
                 default: { r.String(); r.String(); var d = r.String(); w.String(d); Wipe(d); break; }
             }
@@ -114,9 +126,12 @@ namespace OpenSSHServerPNManager
             {
                 case "ssh-ed25519":
                 {
-                    var pk = pub.String(); var seed = r.String();
-                    if (pk.Length != 32 || seed.Length != 32) throw new FormatException("The key file is damaged: an Ed25519 key has 32-byte keys.");
-                    var sk = seed.Concat(pk).ToArray(); w.String(pk).String(sk); Wipe(seed, sk); break;
+                    // PuTTY writes the private key as a minimal little-endian integer (put_mp_le_unsigned): one key in 256
+                    // ends in a zero byte and is stored shorter. Zeros on the right restore the 32-byte seed.
+                    var pk = pub.String(); var stored = r.String();
+                    if (pk.Length != 32 || stored.Length == 0 || stored.Length > 32) throw new FormatException("The key file is damaged: an Ed25519 key has 32-byte keys.");
+                    var sk = new byte[64]; Buffer.BlockCopy(stored, 0, sk, 0, stored.Length); Buffer.BlockCopy(pk, 0, sk, 32, 32);
+                    w.String(pk).String(sk); Wipe(stored, sk); break;
                 }
                 case "ssh-rsa":
                 {
@@ -219,9 +234,15 @@ namespace OpenSSHServerPNManager
                 if (salt.Length == 0 || rounds < 1 || Body.Length % 16 != 0) throw new FormatException("The OpenSSH private key is damaged: its encryption settings are not valid.");
                 // ssh-keygen uses 24 rounds unless told otherwise (-a); the limit keeps a crafted file from taking many minutes here.
                 if (rounds > MaxRounds) throw new ConfigException("The key is protected with " + rounds + " rounds of bcrypt_pbkdf; this program reads keys with up to " + MaxRounds + ". ssh-keygen -p -a 100 -f <key> saves it with fewer.");
-                var km = BcryptPbkdf.Derive(Encoding.UTF8.GetBytes(passphrase), salt, (int)rounds, c.Key + 16);
-                try { plain = AesModes.Transform(KeyFormats.Sub(km, 0, c.Key), KeyFormats.Sub(km, c.Key, 16), Body, c.Value, false); }
-                finally { KeyFormats.Wipe(km); }
+                var pass = Encoding.UTF8.GetBytes(passphrase);
+                byte[] km = null, key = null, iv = null;
+                try
+                {
+                    km = BcryptPbkdf.Derive(pass, salt, (int)rounds, c.Key + 16);
+                    key = KeyFormats.Sub(km, 0, c.Key); iv = KeyFormats.Sub(km, c.Key, 16);
+                    plain = AesModes.Transform(key, iv, Body, c.Value, false);
+                }
+                finally { KeyFormats.Wipe(pass, km, key, iv); }
             }
             try
             {
@@ -231,7 +252,7 @@ namespace OpenSSHServerPNManager
                 var type = r.Text();
                 if (type != Type) throw new FormatException("The OpenSSH private key is damaged: its private part is of another type than its public key.");
                 int start = r.Position;
-                for (int i = 0; i < KeyFormats.PrivateFieldCount(type); i++) r.String();
+                for (int i = 0; i < KeyFormats.PrivateFieldCount(type); i++) KeyFormats.Wipe(r.String());
                 var k = new PrivateKeyData { Type = type, PublicBlob = PublicBlob, Private = KeyFormats.Sub(plain, start, r.Position - start), Comment = r.Text() };
                 for (int i = 1; r.Remaining > 0; i++) if (r.Byte() != (byte)i) throw new FormatException("The OpenSSH private key is damaged (its padding is not valid).");
                 KeyFormats.CheckConsistent(k);
@@ -249,22 +270,26 @@ namespace OpenSSHServerPNManager
             {
                 var salt = KeyFormats.Random(16);
                 kdfOptions = new SshWriter().String(salt).UInt32((uint)rounds).ToArray();
-                km = BcryptPbkdf.Derive(Encoding.UTF8.GetBytes(passphrase), salt, rounds, 48);
+                var pass = Encoding.UTF8.GetBytes(passphrase);
+                try { km = BcryptPbkdf.Derive(pass, salt, rounds, 48); }
+                finally { KeyFormats.Wipe(pass); }
             }
             var check = BitConverter.ToUInt32(KeyFormats.Random(4), 0);
             var w = new SshWriter().UInt32(check).UInt32(check).String(k.Type).Raw(k.Private).String(k.Comment ?? "");
             for (int i = 1; w.Length % (enc ? 16 : 8) != 0; i++) w.Byte((byte)i);
             var plain = w.ToArray(); w.Clear();
+            byte[] key = null, iv = null, blob = null; var bw = new SshWriter();
             try
             {
-                var body = enc ? AesModes.Transform(KeyFormats.Sub(km, 0, 32), KeyFormats.Sub(km, 32, 16), plain, true, true) : plain;
-                var blob = new SshWriter().Raw(Magic).String(enc ? "aes256-ctr" : "none").String(enc ? "bcrypt" : "none").String(kdfOptions).UInt32(1).String(k.PublicBlob).String(body).ToArray();
+                if (enc) { key = KeyFormats.Sub(km, 0, 32); iv = KeyFormats.Sub(km, 32, 16); }
+                var body = enc ? AesModes.Transform(key, iv, plain, true, true) : plain;
+                blob = bw.Raw(Magic).String(enc ? "aes256-ctr" : "none").String(enc ? "bcrypt" : "none").String(kdfOptions).UInt32(1).String(k.PublicBlob).String(body).ToArray();
                 var b64 = Convert.ToBase64String(blob);
                 var sb = new StringBuilder(Begin).Append('\n');
                 for (int i = 0; i < b64.Length; i += 70) sb.Append(b64, i, Math.Min(70, b64.Length - i)).Append('\n');
                 return sb.Append(End).Append('\n').ToString();
             }
-            finally { KeyFormats.Wipe(plain, km); }
+            finally { KeyFormats.Wipe(plain, km, key, iv, blob); bw.Clear(); }
         }
     }
 
@@ -288,7 +313,13 @@ namespace OpenSSHServerPNManager
         public static PpkFile Parse(byte[] data)
         {
             var text = Encoding.GetEncoding(28591).GetString(data);
-            if (text.StartsWith(new string(new[] { (char)0xEF, (char)0xBB, (char)0xBF }), StringComparison.Ordinal)) text = text.Substring(3); // a UTF-8 byte order mark
+            // What IsPpk skips before the first line: UTF-8 byte order marks, blanks and empty lines (the MAC does not cover them).
+            var bom = new string(new[] { (char)0xEF, (char)0xBB, (char)0xBF });
+            for (var t = ""; t != text; )
+            {
+                t = text; text = text.TrimStart(' ', '\t', '\r', '\n');
+                if (text.StartsWith(bom, StringComparison.Ordinal)) text = text.Substring(3);
+            }
             var lines = text.Replace("\r\n", "\n").Split('\n');
             int i = 0;
             Func<string> next = () => { if (i >= lines.Length) throw new FormatException("The PuTTY key file ends too early."); return lines[i++]; };
@@ -368,9 +399,7 @@ namespace OpenSSHServerPNManager
                 else macKey = new byte[0];
                 if (Encrypted && PrivateBlob.Length % 16 != 0) throw new FormatException("The PuTTY key file is damaged: its private part has a wrong length.");
                 plain = Encrypted ? AesModes.Transform(key, iv, PrivateBlob, false, false) : (byte[])PrivateBlob.Clone();
-                var macData = new SshWriter().String(Algorithm).String(Encryption).String(CommentBytes).String(PublicBlob).String(plain);
-                var mac = Version == 2 ? Hashes.Hmac(Hashes.Sha1, 64, macKey, macData.ToArray()) : Hashes.Hmac(Hashes.Sha256, 64, macKey, macData.ToArray());
-                macData.Clear();
+                var mac = MacOf(Version, macKey, new SshWriter().String(Algorithm).String(Encryption).String(CommentBytes).String(PublicBlob).String(plain));
                 if (!KeyFormats.Equal(mac, Mac))
                 {
                     if (Encrypted) throw new WrongPassphraseException("Wrong passphrase.");
@@ -386,14 +415,22 @@ namespace OpenSSHServerPNManager
         /// <summary>True for a passphrase a .ppk file can carry the same way in PuTTY: ASCII characters without control characters.</summary>
         public static bool PassphraseFits(string passphrase) { return (passphrase ?? "").All(c => c >= 32 && c <= 126); }
 
+        /// <summary>The MAC of a .ppk file (HMAC-SHA-1 in version 2, HMAC-SHA-256 in 3) over macData, which holds the private key in the clear and is wiped.</summary>
+        private static byte[] MacOf(int version, byte[] macKey, SshWriter macData)
+        {
+            var data = macData.ToArray();
+            try { return version == 2 ? Hashes.Hmac(Hashes.Sha1, 64, macKey, data) : Hashes.Hmac(Hashes.Sha256, 64, macKey, data); }
+            finally { KeyFormats.Wipe(data); macData.Clear(); }
+        }
+
         /// <summary>Version 2: AES key from SHA-1 of the passphrase, a zero IV, and the MAC key "putty-private-key-file-mac-key" + passphrase.</summary>
         private static void Version2Keys(byte[] pass, bool encrypted, out byte[] key, out byte[] iv, out byte[] macKey)
         {
             macKey = Hashes.Sha1(new[] { Encoding.ASCII.GetBytes("putty-private-key-file-mac-key"), pass });
             key = iv = null;
             if (!encrypted) return;
-            var k = Hashes.Sha1(new[] { new byte[] { 0, 0, 0, 0 }, pass }).Concat(Hashes.Sha1(new[] { new byte[] { 0, 0, 0, 1 }, pass })).ToArray();
-            key = KeyFormats.Sub(k, 0, 32); KeyFormats.Wipe(k);
+            var k0 = Hashes.Sha1(new[] { new byte[] { 0, 0, 0, 0 }, pass }); var k1 = Hashes.Sha1(new[] { new byte[] { 0, 0, 0, 1 }, pass });
+            key = new byte[32]; Buffer.BlockCopy(k0, 0, key, 0, 20); Buffer.BlockCopy(k1, 0, key, 20, 12); KeyFormats.Wipe(k0, k1);
             iv = new byte[16];
         }
 
@@ -401,7 +438,8 @@ namespace OpenSSHServerPNManager
         public static string Write(PrivateKeyData k, string passphrase, int version)
         {
             if (version != 2 && version != 3) throw new ArgumentOutOfRangeException("version");
-            if ((k.Comment ?? "").Any(char.IsControl)) throw new ConfigException("The key's comment has a line break, which a .ppk file cannot hold.");
+            // PuTTY reads the comment up to the end of its line: a tab is kept, a line break or other control character is not.
+            if ((k.Comment ?? "").Any(c => c != '\t' && char.IsControl(c))) throw new ConfigException("The key's comment has a line break or another control character, which a .ppk file cannot hold.");
             var priv = KeyFormats.ToPutty(k);
             bool enc = !string.IsNullOrEmpty(passphrase);
             var pass = enc ? Encoding.UTF8.GetBytes(passphrase) : new byte[0];
@@ -414,7 +452,7 @@ namespace OpenSSHServerPNManager
                     // Padding to the AES block size with the start of SHA-1 of the private blob, as PuTTY does.
                     plain = new byte[(priv.Length + 15) / 16 * 16];
                     Buffer.BlockCopy(priv, 0, plain, 0, priv.Length);
-                    var h = Hashes.Sha1(new[] { priv }); Buffer.BlockCopy(h, 0, plain, priv.Length, plain.Length - priv.Length);
+                    var h = Hashes.Sha1(new[] { priv }); Buffer.BlockCopy(h, 0, plain, priv.Length, plain.Length - priv.Length); KeyFormats.Wipe(h);
                 }
                 if (version == 2) Version2Keys(pass, enc, out key, out iv, out macKey);
                 else if (enc)
@@ -425,9 +463,7 @@ namespace OpenSSHServerPNManager
                 }
                 else macKey = new byte[0];
                 var comment = k.Comment ?? "";
-                var macData = new SshWriter().String(k.Type).String(encryption).String(comment).String(k.PublicBlob).String(plain);
-                var mac = version == 2 ? Hashes.Hmac(Hashes.Sha1, 64, macKey, macData.ToArray()) : Hashes.Hmac(Hashes.Sha256, 64, macKey, macData.ToArray());
-                macData.Clear();
+                var mac = MacOf(version, macKey, new SshWriter().String(k.Type).String(encryption).String(comment).String(k.PublicBlob).String(plain));
                 var stored = enc ? AesModes.Transform(key, iv, plain, false, true) : plain;
                 var sb = new StringBuilder();
                 sb.Append(Header).Append(version).Append(": ").Append(k.Type).Append('\n');
@@ -506,9 +542,11 @@ namespace OpenSSHServerPNManager
             var k = new byte[blockSize];
             var kk = key.Length > blockSize ? hash(new[] { key }) : key;
             Buffer.BlockCopy(kk, 0, k, 0, kk.Length);
-            var ipad = k.Select(b => (byte)(b ^ 0x36)).ToArray(); var opad = k.Select(b => (byte)(b ^ 0x5c)).ToArray();
-            try { return hash(new[] { opad, hash(new[] { ipad, data }) }); }
-            finally { KeyFormats.Wipe(k, ipad, opad); }
+            if (kk != key) KeyFormats.Wipe(kk);
+            var ipad = new byte[blockSize]; var opad = new byte[blockSize]; byte[] inner = null;
+            for (int i = 0; i < blockSize; i++) { ipad[i] = (byte)(k[i] ^ 0x36); opad[i] = (byte)(k[i] ^ 0x5c); }
+            try { inner = hash(new[] { ipad, data }); return hash(new[] { opad, inner }); }
+            finally { KeyFormats.Wipe(k, ipad, opad, inner); }
         }
     }
 
@@ -526,13 +564,16 @@ namespace OpenSSHServerPNManager
             for (uint count = 1; remaining > 0; count++)
             {
                 countsalt[salt.Length] = (byte)(count >> 24); countsalt[salt.Length + 1] = (byte)(count >> 16); countsalt[salt.Length + 2] = (byte)(count >> 8); countsalt[salt.Length + 3] = (byte)count;
-                var tmp = BcryptHash(sha2pass, Hashes.Sha512(new[] { countsalt }));
+                var sha2salt = Hashes.Sha512(new[] { countsalt });
+                var tmp = BcryptHash(sha2pass, sha2salt);
                 var output = (byte[])tmp.Clone();
                 for (int i = 1; i < rounds; i++)
                 {
-                    tmp = BcryptHash(sha2pass, Hashes.Sha512(new[] { tmp }));
+                    KeyFormats.Wipe(sha2salt); sha2salt = Hashes.Sha512(new[] { tmp });
+                    KeyFormats.Wipe(tmp); tmp = BcryptHash(sha2pass, sha2salt);
                     for (int j = 0; j < output.Length; j++) output[j] ^= tmp[j];
                 }
+                KeyFormats.Wipe(sha2salt);
                 amt = Math.Min(amt, remaining);
                 int k;
                 for (k = 0; k < amt; k++)

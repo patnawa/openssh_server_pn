@@ -292,7 +292,7 @@ With the box at the top of the Alerts tab ticked, *Save* sets up two scheduled t
 | Task | Runs | Does |
 |---|---|---|
 | `Watch` | Every minute, and at startup | Advance and archive the journal; retry queued notifications; check service transitions, failed logins, automatic blocking, partner uploads and free disk space (once an hour) |
-| `Daily` | Each night at 00:30 | Advance and archive the journal; retry queued notifications; prune history; on the 1st, prepare the monthly report to the admins (HTML, with the transfers as a CSV attachment) |
+| `Daily` | Each night at 00:30:30 (00:30 for tasks registered before 2.3.2) | Advance and archive the journal; retry queued notifications; prune history; on the 1st, prepare the monthly report to the admins (HTML, with the transfers as a CSV attachment) |
 
 There is no separate Windows service for these jobs. A pending configuration restart also
 uses an independent recovery task, even if alerts are off. The alert tasks run the manager
@@ -317,7 +317,13 @@ that copy.
   hours, then 7 days when it is blocked again within a week. A login with an account name that does
   not exist counts twice, since `sshd` logs it twice. Never blocked: the addresses and networks on
   the allow list (`203.0.113.0/24`, IPv4 and IPv6), this computer, and addresses that have a
-  logged-in SSH session. The Logs tab lists the blocked addresses and unblocks them.
+  logged-in SSH session. A session's address comes from the login `sshd` recorded for it
+  ("Accepted ... from *address* port *n*") while that connection is still open; the TCP table
+  cannot tell, since the listening `sshd.exe` owns every connection. Logins found are kept in
+  `session-logins.ini`, because the OpenSSH event log overwrites them during long sessions; when a
+  session's login is not known, blocking waits and agent health says why. The Logs tab lists the
+  blocked addresses and unblocks them; a manual block or unblock there takes the address out of
+  the agent's schedule, so a block you made never expires by itself.
 - **Secrets.** The settings are in `%ProgramData%\ssh\manager\alerts.ini`, which only SYSTEM and
   Administrators can open; the SMTP password and the webhook address (it works as a password) are
   encrypted there with DPAPI for this computer. The agent's log is `agent.log` in the same folder
@@ -386,7 +392,11 @@ How the key material is kept safe:
 
 - The manifest uses `asInvoker`. Client work runs as the desktop user; `--server` and
   `--wizard` explicitly relaunch with a UAC prompt when necessary. Client commands
-  opened from an elevated window use the desktop user's token and environment.
+  opened from an elevated window use the desktop user's token and environment. When the desktop
+  itself has a full administrator token of the same account (the built-in Administrator on
+  Windows Server, or UAC switched off), client work runs with a reduced standard-user token of
+  that account instead of being refused. Elevation with *another* account's credentials is not
+  supported for client work: open *OpenSSH Client PN* from the Start menu in that user's session.
 - Every configuration save is written to a temporary candidate first and validated with
   `sshd -t -f`. Only a configuration that `sshd` accepts replaces the live file. The new file is
   staged next to `sshd_config` with the original owner, group, access rules, streams and
@@ -402,9 +412,13 @@ How the key material is kept safe:
 - *Save and restart*: if `sshd` does not start, the previous file is put back and `sshd` started
   again, without a question; the file that failed is kept as a backup. If it starts, the server is
   checked and you are asked to keep the new settings. Without an answer within 60 seconds (the
-  time can be changed, and the question switched off, under About), the previous file comes back,
-  like the display settings of Windows: a setting that locks you out also keeps you from answering
-  remotely. The protected recovery journal and SYSTEM task survive closure of the GUI.
+  time can be changed, and the question switched off, under About), the configuration `sshd` ran
+  before this restart comes back (a file saved meanwhile without a restart stays among the
+  backups), like the display settings of Windows: a setting that locks you out also keeps you from answering
+  remotely. Restarts from the Dashboard or the tray that apply a saved file `sshd` has not run go
+  through the same confirmation. A recovery that cannot finish (the file was edited meanwhile, or
+  `sshd` does not start even with the previous settings) is shown when the manager starts and when
+  a save is refused because of it, with *Restore now* and *Keep the files as they are*. The protected recovery journal and SYSTEM task survive closure of the GUI.
   The task is armed before restart and associated firewall mutations; it also runs after
   a reboot. Recovery preserves the prior file bytes and firewall scope, and refuses to
   overwrite a conflicting external edit. Included file contents and glob membership are
@@ -540,7 +554,14 @@ the release input.
   implicit TLS (port 465) and no OAuth login, so Microsoft 365 is reached through a connector that
   accepts this server's address, and Gmail through an app password.
 - Partner accounts are local accounts of this computer. A domain controller has no local
-  accounts; the Partners tab was not tested there.
+  accounts, so the Partners tab refuses to work there (from 2.3.2); groups or accounts that
+  earlier versions made on a domain controller are in Active Directory and are removed there.
+- A partner created again with the name of a deleted one finds its old folder: the manager asks
+  first, then resets the folder's permissions so that only SYSTEM, Administrators and the new
+  partner have access, and every file in it becomes visible to the new partner. A folder that is
+  or contains a link (junction, symbolic link, mounted drive, or a file with another name
+  elsewhere) is refused. Keys left in `partner_keys` by an earlier account of the same name are
+  moved to `partner_keys.removed` and never log in to the new one.
 - `sshd` for Windows loads an account's profile at login and never unloads it, and Windows
   keeps it loaded (it could not be unloaded here), so the profile of an account that has logged
   in over SSH can be deleted only after a restart.

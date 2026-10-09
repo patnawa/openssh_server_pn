@@ -71,12 +71,15 @@ namespace OpenSSHServerPNManager
         {
             private readonly string root;
             private readonly AgentStorage.PermissionPolicy previous;
+            private readonly string previousLock;
             internal ScratchStorage(string directory)
             {
                 root = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
                 if (!root.StartsWith(Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException("Agent fixture storage must stay inside the temporary directory.");
                 previous = AgentStorage.Permissions; AgentStorage.Permissions = this;
+                // The installed agent takes the machine-wide lock every minute: a fixture must neither wait for it nor block it.
+                previousLock = Agent.StateLockName; Agent.StateLockName = "Local\\pn-agent-test-" + Guid.NewGuid().ToString("N");
             }
             private void Check(string path)
             {
@@ -85,7 +88,7 @@ namespace OpenSSHServerPNManager
             }
             public void CreateFolder(string path) { Check(path); Directory.CreateDirectory(path); }
             public void RestrictFile(string path) { Check(path); }
-            public void Dispose() { AgentStorage.Permissions = previous; }
+            public void Dispose() { AgentStorage.Permissions = previous; Agent.StateLockName = previousLock; }
         }
 
         public static string PartnerDriveRoot()

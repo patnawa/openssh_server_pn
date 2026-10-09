@@ -17,17 +17,24 @@ $cases = @(
     @{ Name = 'double quote'; Value = '"keys\"quote"'; Expected = '"keys\"quote"' },
     @{ Name = 'single quote'; Value = '"keys''quote"'; Expected = '"keys''quote"' },
     @{ Name = 'Windows backslashes'; Value = '"C:\\Keys dir\\%u"'; Expected = '"C:\\Keys dir\\%u"' },
-    @{ Name = 'leading comment character'; Value = '"#keys"'; Expected = '"#keys"' }
+    @{ Name = 'leading comment character'; Value = '"#keys"'; Expected = '"#keys"' },
+    # Unquoted, a leading '=' of the first path is read as the separator after the keyword.
+    @{ Name = 'leading equals sign'; Value = '"=keys" .ssh/two'; Expected = '"=keys" .ssh/two' },
+    @{ Name = 'equals sign only'; Value = '"="'; Expected = '"="' },
+    @{ Name = 'leading equals sign after the first path'; Value = '.ssh/one "=keys"'; Expected = '.ssh/one "=keys"' }
 )
-# Every generated path contains whitespace, requiring quotes; the independent input encoder
-# produces a canonical line that must survive both native parsing and dump/reparse unchanged.
+$fixedCases = $cases.Count
+# Every generated path contains whitespace or starts with '=', requiring quotes; the independent
+# input encoder produces a canonical line that must survive both native parsing and dump/reparse
+# unchanged.
 $random = New-Object Random 48771
-$alphabet = @('a','Z','0','9','%','u','#','\','"',"'",'/',':','-','_', ' ', "`t")
+$alphabet = @('a','Z','0','9','%','u','#','\','"',"'",'/',':','-','_','=', ' ', "`t")
 for ($caseIndex = 0; $caseIndex -lt $SeededCases; $caseIndex++) {
     $encoded = @()
     $pathCount = $random.Next(1,5)
     for ($pathIndex = 0; $pathIndex -lt $pathCount; $pathIndex++) {
         $token = 'k '
+        if ($random.Next(4) -eq 0) { $token = '=' }
         $length = $random.Next(1,33)
         for ($i = 0; $i -lt $length; $i++) { $token += $alphabet[$random.Next($alphabet.Count)] }
         $encoded += '"' + $token.Replace('\','\\').Replace('"','\"') + '"'
@@ -53,7 +60,7 @@ try {
         if ($secondLine.Count -ne 1 -or "$($secondLine[0])" -cne "$($line[0])") { throw "$($case.Name): argument boundaries changed on roundtrip." }
         if (-not $case.Generated) { Write-Host "PASS $($case.Name)" }
     }
-    Write-Host "All $($cases.Count) AuthorizedKeysFile dump checks passed (8 fixed, $SeededCases seeded)."
+    Write-Host "All $($cases.Count) AuthorizedKeysFile dump checks passed ($fixedCases fixed, $SeededCases seeded)."
 }
 finally {
     $resolved = (Resolve-Path -LiteralPath $scratch).Path

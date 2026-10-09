@@ -134,7 +134,7 @@
     "overlayIntegrity": "tools/release/Test-UpstreamInventory.ps1",
     "nativePrimitives": ".github/scripts/Test-CryptoProbes.ps1 -RequireSuccess",
     "nativeRegression": ".github/scripts/Invoke-UnitTests.ps1",
-    "nativeParserFuzz": "tools/OpenSSH-Server-PN-Manager/Test-ConfigDump.ps1: 8 fixed and 128 seeded quote/path round trips",
+    "nativeParserFuzz": "tools/OpenSSH-Server-PN-Manager/Test-ConfigDump.ps1: 11 fixed and 128 seeded quote/path round trips",
     "sshSftp": ".github/scripts/Test-SshInterop.ps1",
     "keyFormatDifferential": "installed manager --keytest",
     "parserFuzz": "manager --unittest: deterministic parser/property cases"

@@ -29,12 +29,68 @@ namespace OpenSSHServerPNManager
             try { return new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator); }
             catch { return false; }
         }
-        /// <summary>Starts this program again with administrator rights (the UAC prompt), with the given arguments.</summary>
-        public static bool Relaunch(string args = null)
+
+        [DllImport("advapi32.dll", SetLastError = true)] private static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr info, int length, out int returned);
+
+        /// <summary>
+        /// A standard-user token made from an administrator's own full token: the client workspace on a desktop without UAC
+        /// filtering (the built-in Administrator, or UAC off). It has no linked administrator token, so "runas" cannot
+        /// elevate it: UAC off starts the program with this same token, UAC on asks for another administrator's password.
+        /// </summary>
+        public static bool IsReducedAdministrator()
         {
             try
             {
-                var psi = new ProcessStartInfo(Application.ExecutablePath, args ?? "") { UseShellExecute = true, Verb = "runas" };
+                using (var id = WindowsIdentity.GetCurrent())
+                {
+                    if (new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator)) return false;
+                    if (TokenInformation(id.Token, 18 /*TokenElevationType*/, b => Marshal.ReadInt32(b)) != 1 /*TokenElevationTypeDefault*/) return false;
+                    var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+                    return TokenInformation(id.Token, 2 /*TokenGroups*/, b =>
+                    {
+                        int count = Marshal.ReadInt32(b), entry = 2 * IntPtr.Size;
+                        for (int i = 0; i < count; i++)
+                        {
+                            var at = IntPtr.Add(b, IntPtr.Size + i * entry);
+                            // Administrators kept only to deny access: the token was reduced from an administrator's.
+                            if ((Marshal.ReadInt32(at, IntPtr.Size) & 0x10 /*SE_GROUP_USE_FOR_DENY_ONLY*/) != 0 && new SecurityIdentifier(Marshal.ReadIntPtr(at)) == admins) return 1;
+                        }
+                        return 0;
+                    }) == 1;
+                }
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Reads one token information class through a temporary buffer; -1 when it cannot be read.</summary>
+        private static int TokenInformation(IntPtr token, int infoClass, Func<IntPtr, int> read)
+        {
+            int size;
+            GetTokenInformation(token, infoClass, IntPtr.Zero, 0, out size);
+            if (size <= 0) return -1;
+            var buffer = Marshal.AllocHGlobal(size);
+            try { return GetTokenInformation(token, infoClass, buffer, size, out size) ? read(buffer) : -1; }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+
+        private const string RelaunchMarker = "--elevation-requested";
+
+        /// <summary>
+        /// Whether a process with these arguments may ask for elevation again. Without User Account Control, "runas" starts the
+        /// program with the caller's token, so a process that a relaunch started without rights would relaunch itself without end.
+        /// </summary>
+        internal static bool RelaunchAllowed(string[] args)
+        {
+            return !args.Any(a => a.Equals(RelaunchMarker, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>Starts this program again with administrator rights (the UAC prompt), with the given arguments.</summary>
+        public static bool Relaunch(string args = null)
+        {
+            if (!RelaunchAllowed(Environment.GetCommandLineArgs())) return false;
+            try
+            {
+                var psi = new ProcessStartInfo(Application.ExecutablePath, ((args ?? "") + " " + RelaunchMarker).Trim()) { UseShellExecute = true, Verb = "runas" };
                 Process.Start(psi);
                 return true;
             }
@@ -140,10 +196,10 @@ namespace OpenSSHServerPNManager
             return r;
         }
 
-        /// <summary>Opens a client program as the original desktop user with that user's environment.</summary>
-        public static void OpenUnelevated(string exe, string args)
+        /// <summary>Opens a client program as the original desktop user with that user's environment (see UserProcessLauncher.Open for connections).</summary>
+        public static void OpenUnelevated(string exe, string args, bool connection = false)
         {
-            try { UserProcessLauncher.Open(exe, args); }
+            try { UserProcessLauncher.Open(exe, args, connection); }
             catch (Exception ex) { Log.Error("Could not start " + exe + " as the desktop user", ex, true); }
         }
         public static void OpenExternal(string target, string args = null)

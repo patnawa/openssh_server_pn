@@ -102,10 +102,14 @@
         <Condition Message="A newer version of OpenSSH from this package series is already installed. To replace it with this older version, run the installer with ALLOWDOWNGRADE=1 (msiexec /i package.msi ALLOWDOWNGRADE=1), or uninstall the newer version first."><![CDATA[Installed OR ALLOWDOWNGRADE = 1 OR NOT (OPENSSH_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchA)_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchB)_NEWER_INSTALLED)]]></Condition>
         <Condition Message="OpenSSH is supported only on Windows 7 and newer."><![CDATA[VersionNT >= 601]]></Condition>
         <!-- These public properties are passed to the pre-install script, which runs as LocalSystem, inside single-quoted
-             PowerShell strings. Only known values are accepted, so no command-line value can change that command. -->
+             PowerShell strings. Only known values are accepted, so no command-line value can change that command.
+             PowerShell also ends such a string at the typographic single quotes U+2018 to U+201B. INSTALLFOLDER may contain
+             none of them except U+201B, which the package's code page (1252) cannot hold: a folder with that character only
+             an administrator can give (a property or a transform), and every PowerShell step then fails to parse and does
+             nothing. Character references are expanded only outside CDATA, hence the escaped < and > there. -->
         <Condition Message="FIREWALL_PROFILES must be all, domain,private, domain or private."><![CDATA[NOT FIREWALL_PROFILES OR FIREWALL_PROFILES ~= "all" OR FIREWALL_PROFILES ~= "domain,private" OR FIREWALL_PROFILES ~= "domain" OR FIREWALL_PROFILES ~= "private"]]></Condition>
         <Condition Message="KEEP_INBOX_OPENSSH must be 1 or 0."><![CDATA[NOT KEEP_INBOX_OPENSSH OR KEEP_INBOX_OPENSSH = "1" OR KEEP_INBOX_OPENSSH = "0"]]></Condition>
-        <Condition Message="INSTALLFOLDER must not contain an apostrophe."><![CDATA[NOT (INSTALLFOLDER >< "'")]]></Condition>
+        <Condition Message="INSTALLFOLDER must not contain an apostrophe or a typographic single quote.">NOT (INSTALLFOLDER &gt;&lt; "'" OR INSTALLFOLDER &gt;&lt; "&#x2018;" OR INSTALLFOLDER &gt;&lt; "&#x2019;" OR INSTALLFOLDER &gt;&lt; "&#x201A;")</Condition>
         <!-- A property value is compared as a number only when it is an integer (digits, an optional leading minus sign);
              any other text makes both comparisons false. -->
         <Condition Message="SSHD_PORT must be a TCP port number from 1 to 65535, digits only."><![CDATA[NOT SSHD_PORT OR (SSHD_PORT >= 1 AND SSHD_PORT <= 65535)]]></Condition>
@@ -141,7 +145,8 @@
              preinstall.ps1. Positional parameters: install folder, REMOVE, KEEP_INBOX_OPENSSH, phase,
              FIREWALL_PROFILES, MsiNTProductType; named: -SshdPort, -Previous. The firewall steps do not use REMOVE and
              KEEP_INBOX_OPENSSH and pass empty strings for them. Every value that reaches the
-             single-quoted command is either set by Windows Installer or restricted by a launch condition above. -->
+             single-quoted command is either set by Windows Installer or restricted by a launch condition above (for
+             INSTALLFOLDER, all quote characters but U+201B; see there). -->
         <Property Id="PreInstallCommand" Value="&amp;([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$(var.PreInstallScript)'))))" />
         <Property Id="FirewallCommand" Value="&amp;([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$(var.FirewallScript)'))))" />
         <!-- Private properties populated after CostFinalize from resolved actions, never inferred from REMOVE.
@@ -177,14 +182,25 @@
              The record is taken only when a package of this series is installed (maintenance, upgrade, downgrade);
              on a fresh install the save step only deletes a record left by an interrupted installation, so the rule
              gets the defaults as before.
+             The same steps carry the services over every install, upgrade and repair of the server or the agent (an
+             administrator's choice only, so not for the in-box registrations): the save step also records which of sshd
+             and ssh-agent are running, and a Disabled or Automatic (Delayed Start) start type of a service registered
+             by a package (any folder; not the in-box one). InstallServices registers both again as Automatic and
+             StartServices starts them; OpenSSHServicesRestore, after OpenSSHSshdPort, sets the kept start types again and
+             stops a service that is Disabled again. The rollback step starts the services that were running:
+             OpenSSHPreInstall stops them before StopServices, so the rollback of StopServices does not. It does so for an
+             uninstall or a feature removal too (REMOVE=Server): a cancelled or failed one leaves both running as before.
+             Hence the wider condition of these three steps; the firewall part of the save step still runs only with
+             &Server = 3 (OpenSSHServerAction "install"). Not while this package is removed by an upgrade
+             (UPGRADINGPRODUCTCODE): there the record belongs to the upgrading package, which saves and commits it itself.
              Placement: RemoveExistingProducts runs the removal of the old package at once, when the action is reached,
              while deferred actions run when the script is executed. A deferred action between InstallInitialize and
              RemoveExistingProducts would therefore run after the removal, and Windows Installer refuses that order
              (error 2613, ICE63). InstallExecute, right after the save step, runs the script built so far, and
              RemoveExistingProducts comes immediately after it, a placement ICE63 accepts. The old package is still
              removed before any file of this package is installed, in the same transaction. -->
-        <SetProperty Action="SetOpenSSHFirewallSaveKeep" Id="OpenSSHFirewallSave" Sequence="execute" Before="OpenSSHFirewallSave" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' fwsave -Previous keep&quot;"><![CDATA[Installed OR OPENSSH_PREVIOUS_INSTALLED OR OPENSSH_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchA)_INSTALLED OR OPENSSH_$(var.OtherArchA)_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchB)_INSTALLED OR OPENSSH_$(var.OtherArchB)_NEWER_INSTALLED]]></SetProperty>
-        <SetProperty Action="SetOpenSSHFirewallSaveFresh" Id="OpenSSHFirewallSave" Sequence="execute" Before="OpenSSHFirewallSave" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' fwsave -Previous none&quot;"><![CDATA[NOT (Installed OR OPENSSH_PREVIOUS_INSTALLED OR OPENSSH_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchA)_INSTALLED OR OPENSSH_$(var.OtherArchA)_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchB)_INSTALLED OR OPENSSH_$(var.OtherArchB)_NEWER_INSTALLED)]]></SetProperty>
+        <SetProperty Action="SetOpenSSHFirewallSaveKeep" Id="OpenSSHFirewallSave" Sequence="execute" Before="OpenSSHFirewallSave" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' fwsave -Previous keep [OpenSSHFeatureArguments]&quot;"><![CDATA[Installed OR OPENSSH_PREVIOUS_INSTALLED OR OPENSSH_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchA)_INSTALLED OR OPENSSH_$(var.OtherArchA)_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchB)_INSTALLED OR OPENSSH_$(var.OtherArchB)_NEWER_INSTALLED]]></SetProperty>
+        <SetProperty Action="SetOpenSSHFirewallSaveFresh" Id="OpenSSHFirewallSave" Sequence="execute" Before="OpenSSHFirewallSave" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' fwsave -Previous none [OpenSSHFeatureArguments]&quot;"><![CDATA[NOT (Installed OR OPENSSH_PREVIOUS_INSTALLED OR OPENSSH_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchA)_INSTALLED OR OPENSSH_$(var.OtherArchA)_NEWER_INSTALLED OR OPENSSH_$(var.OtherArchB)_INSTALLED OR OPENSSH_$(var.OtherArchB)_NEWER_INSTALLED)]]></SetProperty>
         <CustomAction Id="OpenSSHFirewallSave" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
         <SetProperty Id="OpenSSHFirewallSaveRollback" Sequence="execute" Before="OpenSSHFirewallSaveRollback" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' fwrollback&quot;" />
         <CustomAction Id="OpenSSHFirewallSaveRollback" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="rollback" Return="ignore" Impersonate="no" />
@@ -201,10 +217,16 @@
         <!-- SSHD_PORT (1-65535): the firewall rule gets that port (above), and after StartServices has started sshd - which
              creates %ProgramData%\ssh\sshd_config from sshd_config_default at its first start - OpenSSHSshdPort writes
              "Port <n>" into sshd_config (backup sshd_config.bak.<date>-<time>, permissions kept) and restarts sshd. If
-             sshd does not listen on the new port, the previous file is put back and the rule gets its port(s) again. -->
+             sshd does not listen on the new port, the previous file is put back and the rule gets its port(s) again.
+             If the installation fails, OpenSSHSshdPortRollback puts the previous file back (or deletes the one the step
+             created), before the rollback of the save step starts sshd again with the old firewall settings. -->
         <Property Id="SSHD_PORT" Secure="yes" />
         <SetProperty Id="OpenSSHSshdPort" Sequence="execute" Before="OpenSSHSshdPort" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' port -SshdPort '[SSHD_PORT]'&quot;" />
         <CustomAction Id="OpenSSHSshdPort" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
+        <SetProperty Id="OpenSSHSshdPortRollback" Sequence="execute" Before="OpenSSHSshdPortRollback" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' portrollback&quot;" />
+        <CustomAction Id="OpenSSHSshdPortRollback" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="rollback" Return="ignore" Impersonate="no" />
+        <SetProperty Id="OpenSSHServicesRestore" Sequence="execute" Before="OpenSSHServicesRestore" Value="&quot;[$(var.SystemPowerShellFolder)]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -InputFormat None -Command &quot;[FirewallCommand] '[INSTALLFOLDER]' '' '' svcrestore&quot;" />
+        <CustomAction Id="OpenSSHServicesRestore" BinaryKey="WixCA" DllEntry="$(var.QuietExec)" Execute="deferred" Return="ignore" Impersonate="no" />
 
         <!-- OpenSSH Server PN Manager (shared.wxs) needs .NET Framework 4.5 or later, whose setup writes this value. Without it
              the two manager steps below are skipped: the manager cannot start, so nothing can have set up its tasks, and the
@@ -238,17 +260,20 @@
 
         <!-- Cleanup follows actual feature/component actions, including adding Server to a client-only install.
              Adding Client alone cannot stop a retained server. The session check runs only when Server changes.
-             Firewall steps run when Server is installed in this transaction. -->
+             Firewall steps run when Server is installed in this transaction; the save, commit and rollback steps, which
+             carry the services over, also when the agent is. -->
         <InstallExecuteSequence>
             <Custom Action="OpenSSHCheckSessions" Before="InstallValidate"><![CDATA[ACTIVE_SESSIONS ~= "abort" AND OpenSSHServerAction <> "none"]]></Custom>
-            <Custom Action="OpenSSHFirewallSaveRollback" After="InstallInitialize"><![CDATA[&Server = 3]]></Custom>
-            <Custom Action="OpenSSHFirewallSave" After="OpenSSHFirewallSaveRollback"><![CDATA[&Server = 3]]></Custom>
+            <Custom Action="OpenSSHFirewallSaveRollback" After="InstallInitialize"><![CDATA[&Server = 3 OR $SshAgentComponent = 3 OR ((OpenSSHServerAction = "remove" OR OpenSSHSharedAction = "remove") AND NOT UPGRADINGPRODUCTCODE)]]></Custom>
+            <Custom Action="OpenSSHFirewallSave" After="OpenSSHFirewallSaveRollback"><![CDATA[&Server = 3 OR $SshAgentComponent = 3 OR ((OpenSSHServerAction = "remove" OR OpenSSHSharedAction = "remove") AND NOT UPGRADINGPRODUCTCODE)]]></Custom>
             <InstallExecute After="OpenSSHFirewallSave" />
             <RemoveExistingProducts After="InstallExecute" />
             <Custom Action="OpenSSHPreInstall" After="RemoveExistingProducts"><![CDATA[OpenSSHServerAction <> "none" OR OpenSSHClientAction <> "none" OR OpenSSHSharedAction <> "none"]]></Custom>
             <Custom Action="OpenSSHFirewallProfiles" After="$(var.FirewallSchedAction)"><![CDATA[&Server = 3]]></Custom>
-            <Custom Action="OpenSSHFirewallCommit" After="OpenSSHFirewallProfiles"><![CDATA[&Server = 3]]></Custom>
+            <Custom Action="OpenSSHFirewallCommit" After="OpenSSHFirewallProfiles"><![CDATA[&Server = 3 OR $SshAgentComponent = 3 OR ((OpenSSHServerAction = "remove" OR OpenSSHSharedAction = "remove") AND NOT UPGRADINGPRODUCTCODE)]]></Custom>
+            <Custom Action="OpenSSHSshdPortRollback" Before="OpenSSHSshdPort"><![CDATA[SSHD_PORT AND &Server = 3]]></Custom>
             <Custom Action="OpenSSHSshdPort" After="StartServices"><![CDATA[SSHD_PORT AND &Server = 3]]></Custom>
+            <Custom Action="OpenSSHServicesRestore" After="OpenSSHSshdPort"><![CDATA[&Server = 3 OR $SshAgentComponent = 3]]></Custom>
             <Custom Action="OpenSSHManagerUninstall" Before="OpenSSHPreInstall"><![CDATA[OpenSSHServerAction = "remove" AND NOT UPGRADINGPRODUCTCODE AND NETFX45_RELEASE]]></Custom>
             <Custom Action="OpenSSHWizardRequest" Before="InstallFinalize"><![CDATA[OPEN_WIZARD = "1" AND UILevel >= 4 AND &Server = 3 AND NETFX45_RELEASE AND OpenSSHFirstInstall]]></Custom>
             <Custom Action="OpenSSHOpenWizard" After="InstallFinalize"><![CDATA[OPEN_WIZARD = "1" AND UILevel >= 4 AND &Server = 3 AND NETFX45_RELEASE AND OpenSSHFirstInstall]]></Custom>

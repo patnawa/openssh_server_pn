@@ -63,7 +63,8 @@
     <!-- Embeds preinstall.ps1 into the package: writes $(IntermediateOutputPath)preinstall.wxi with two defines, each the
          base64 of a script (UTF-8, no BOM) that product.wxs passes to powershell.exe on its command line:
          - PreInstallScript: the file without its "#region firewall" parts (phases pre and sessions),
-         - FirewallScript: the file without its "#region pre" parts (phases fwsave, fwrollback, fwcommit, firewall, port).
+         - FirewallScript: the file without its "#region pre" parts (phases fwsave, fwrollback, fwcommit, firewall,
+           svcrestore, port, portrollback).
          Comment lines, blank lines and indentation are left out and every line ends with LF, so the package bytes do not
          depend on the line endings of the checkout. Windows limits a command line to 32767 characters; the build stops
          when a script leaves less than about 1700 characters for the rest of the command (powershell.exe path, install

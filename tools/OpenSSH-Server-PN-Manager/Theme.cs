@@ -126,7 +126,8 @@ namespace OpenSSHServerPNManager
             if (previous != null)
             {
                 var from = previous.Semantic; var to = p.Semantic;
-                for (int i = 0; i < from.Length; i++) if (!map.ContainsKey(from[i].ToArgb())) map[from[i].ToArgb()] = to[i];
+                // High contrast gives every kind one colour; plain text (last in Semantic) is the common case, so it wins.
+                for (int i = from.Length - 1; i >= 0; i--) if (!map.ContainsKey(from[i].ToArgb())) map[from[i].ToArgb()] = to[i];
             }
             if (form != null) { if (p.Dark) { form.BackColor = p.Back; form.ForeColor = p.Text; } else { form.ResetBackColor(); form.ResetForeColor(); } }
             ApplyTree(root, map);

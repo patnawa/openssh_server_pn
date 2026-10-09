@@ -95,11 +95,13 @@
             </Component>
         </ComponentGroup>
 
-        <!-- Automatically add custom actions if referencing the Shared component group. -->
+        <!-- Automatically add custom actions if referencing the Shared component group. The privilege list follows the agent
+             service, which both features install (and an upgrade registers again), not only the Server feature (adding
+             Server to a client-only installation leaves the agent component as it is). -->
         <SetProperty Id="SetPrivilegesOnSshAgent" Value="&quot;[SystemFolder]sc.exe&quot; privs ssh-agent SeAssignPrimaryTokenPrivilege/SeTcbPrivilege/SeBackupPrivilege/SeRestorePrivilege/SeImpersonatePrivilege" Sequence="execute" Before="SetPrivilegesOnSshAgent" />
         <CustomAction Id="SetPrivilegesOnSshAgent" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
         <InstallExecuteSequence>
-            <Custom Action="SetPrivilegesOnSshAgent" After="InstallServices"><![CDATA[&Server = 3]]></Custom>
+            <Custom Action="SetPrivilegesOnSshAgent" After="InstallServices"><![CDATA[$SshAgentComponent = 3 OR &Server = 3]]></Custom>
         </InstallExecuteSequence>
     </Fragment>
 </Wix>

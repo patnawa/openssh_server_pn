@@ -10,9 +10,18 @@ using System.Threading;
 
 namespace OpenSSHServerPNManager
 {
+    /// <summary>
+    /// The configuration lock stayed taken by another process, so nothing was done. While a change awaits recovery that is
+    /// normally a restore in progress (the recovery task, or a window), not a failure of one.
+    /// </summary>
+    internal sealed class ConfigurationBusyException : ConfigException { public ConfigurationBusyException(string m) : base(m) { } }
+
     /// <summary>Validation, conflict detection, backup and atomic commit share one transaction for every server editor.</summary>
     internal static class ConfigurationTransaction
     {
+        /// <summary>How long Locked waits for another configuration operation (tests shorten it).</summary>
+        internal static int LockWaitMilliseconds = 15000;
+
         internal static T Locked<T>(string path, Func<T> action)
         {
             string name;
@@ -28,8 +37,8 @@ namespace OpenSSHServerPNManager
                 bool acquired = false;
                 try
                 {
-                    try { acquired = mutex.WaitOne(15000); } catch (AbandonedMutexException) { acquired = true; }
-                    if (!acquired) throw new ConfigException("Another configuration operation is still running. Try again when it finishes.");
+                    try { acquired = mutex.WaitOne(LockWaitMilliseconds); } catch (AbandonedMutexException) { acquired = true; }
+                    if (!acquired) throw new ConfigurationBusyException("Another configuration operation is still running. Try again when it finishes.");
                     return action();
                 }
                 finally { if (acquired) mutex.ReleaseMutex(); }
@@ -38,10 +47,13 @@ namespace OpenSSHServerPNManager
 
         public static string Save(SshdConfig candidate, bool overwrite)
         {
+            var refusal = SshdConfig.NonUtf8Refusal(candidate, File.Exists(candidate.Path) ? File.ReadAllBytes(candidate.Path) : null);
+            if (refusal != null) throw new ConfigException(refusal);
+            var bytes = candidate.ExactBytes ?? new UTF8Encoding(false).GetBytes(candidate.Text);
             // Keep the validation fixture beside its destination, under the same protected directory.
             Directory.CreateDirectory(Path.GetDirectoryName(candidate.Path));
             var tmp = candidate.Path + ".candidate-" + Guid.NewGuid().ToString("N");
-            File.WriteAllText(tmp, candidate.Text, new UTF8Encoding(false));
+            File.WriteAllBytes(tmp, bytes);
             try
             {
                 if (candidate.LoadedDependencies != null) candidate.LoadedDependencies.RequireUnchanged();
@@ -65,10 +77,19 @@ namespace OpenSSHServerPNManager
                         if (SshdConfig.FileHash(backup) != originalHash) throw new ConfigChangedException("The configuration changed while its backup was being created. Reload before saving.");
                     }
                     // Persist the previous bytes and the validated Include graph before replacing the live root.
-                    ConfigurationRecovery.OpenForPath(candidate.Path).Prepare(backup, new UTF8Encoding(false).GetBytes(candidate.Text), dependencies);
-                    dependencies.RequireUnchanged();
-                    if (SshdConfig.FileHash(candidate.Path) != originalHash) throw new ConfigChangedException("The configuration changed before its atomic replacement. No changes were saved.");
-                    AtomicWrite(candidate.Path, candidate.Text);
+                    var recovery = ConfigurationRecovery.OpenForPath(candidate.Path);
+                    var prepared = recovery.Prepare(backup, bytes, dependencies);
+                    try
+                    {
+                        dependencies.RequireUnchanged();
+                        if (SshdConfig.FileHash(candidate.Path) != originalHash) throw new ConfigChangedException("The configuration changed before its atomic replacement. No changes were saved.");
+                        AtomicBytes(candidate.Path, bytes);
+                    }
+                    catch
+                    {
+                        try { recovery.Unprepare(prepared); } catch (Exception ex) { Log.Error("Restoring the recovery record of a save that failed", ex, false); }
+                        throw;
+                    }
                     candidate.LoadedHash = SshdConfig.FileHash(candidate.Path);
                     candidate.LoadedDependencies = candidateDependencies;
                     Log.Info("Saved " + candidate.Path + (backup == null ? "" : " (backup " + backup + ")"));
@@ -142,6 +163,23 @@ namespace OpenSSHServerPNManager
 
         [DllImport("kernel32.dll", EntryPoint = "MoveFileExW", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool MoveFileEx(string source, string destination, uint flags);
+
+        /// <summary>
+        /// Same-directory rename over the destination (or to a new name), with no copy/delete fallback. Any open handle on
+        /// the destination refuses the rename, even one that shares delete; sshd opens authorized_keys for every key login,
+        /// so a refusal while the destination exists is retried for about 3 s.
+        /// </summary>
+        internal static void RenameReplacing(string source, string destination)
+        {
+            int start = Environment.TickCount;
+            while (!MoveFileEx(source, destination, 1 | 8))
+            {
+                int error = Marshal.GetLastWin32Error();
+                if ((error == 5 || error == 32) && unchecked(Environment.TickCount - start) < 3000 && File.Exists(destination)) { Thread.Sleep(100); continue; }
+                var reason = new Win32Exception(error);
+                throw new IOException("Could not replace " + destination + ": " + reason.Message.TrimEnd('.', ' ') + "." + (error == 5 ? " It may be open in another program; try again." : ""), reason);
+            }
+        }
 
         private static void CopyExactSecurity(string path, FileSecurity security)
         {

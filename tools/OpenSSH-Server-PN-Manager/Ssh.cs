@@ -38,14 +38,8 @@ namespace OpenSSHServerPNManager
                 {
                     using (var k = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Default).OpenSubKey(@"SYSTEM\CurrentControlSet\Services\sshd"))
                     {
-                        var img = k == null ? null : k.GetValue("ImagePath") as string;
-                        if (!string.IsNullOrEmpty(img))
-                        {
-                            img = Environment.ExpandEnvironmentVariables(img.Trim());
-                            if (img.StartsWith("\"")) img = img.Substring(1, Math.Max(0, img.IndexOf('"', 1) - 1));
-                            else if (img.IndexOf(" -", StringComparison.Ordinal) > 0) img = img.Substring(0, img.IndexOf(" -", StringComparison.Ordinal));
-                            if (File.Exists(img)) dir = Path.GetDirectoryName(img);
-                        }
+                        string rest; var img = Services.SplitImagePath(k == null ? null : k.GetValue("ImagePath") as string, out rest);
+                        if (!string.IsNullOrEmpty(img) && File.Exists(img)) dir = Path.GetDirectoryName(img);
                     }
                 }
                 catch { }
@@ -250,13 +244,43 @@ namespace OpenSSHServerPNManager
             catch { return null; }
         }
 
-        public static string ParseImagePath(string img)
+        public static string ParseImagePath(string img) { string arguments; return SplitImagePath(img, out arguments); }
+
+        /// <summary>
+        /// The executable of a service ImagePath (environment variables expanded) and the rest of the line. The one reading
+        /// for Ssh.InstallDir, the Hardening check and ServerState: a quoted path ends at its quote; an unquoted one, which
+        /// may contain spaces, ends after ".exe" followed by a space or the end, else before " -", else at the end.
+        /// </summary>
+        internal static string SplitImagePath(string img, out string arguments)
         {
+            arguments = "";
             if (string.IsNullOrWhiteSpace(img)) return null;
             img = Environment.ExpandEnvironmentVariables(img.Trim());
-            if (img.StartsWith("\"")) { int q = img.IndexOf('"', 1); return q > 1 ? img.Substring(1, q - 1) : img.Trim('"'); }
-            int e = img.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
-            return e > 0 ? img.Substring(0, e + 4) : img;
+            if (img.StartsWith("\""))
+            {
+                int q = img.IndexOf('"', 1);
+                if (q < 0) return img.Trim('"');
+                arguments = img.Substring(q + 1).Trim();
+                return img.Substring(1, q - 1);
+            }
+            var m = Regex.Match(img, @"\.exe(?=\s|$)", RegexOptions.IgnoreCase);
+            int end = m.Success ? m.Index + m.Length : img.IndexOf(" -", StringComparison.Ordinal);
+            if (end <= 0) return img;
+            arguments = img.Substring(end).Trim();
+            return img.Substring(0, end).TrimEnd();
+        }
+
+        /// <summary>
+        /// For an unquoted path with spaces: the files Windows tries before it, one per space (C:\Program.exe first). Any
+        /// of them that exists runs in its place.
+        /// </summary>
+        internal static IEnumerable<string> UnquotedSearchOrder(string program)
+        {
+            for (int i = program.IndexOfAny(new[] { ' ', '\t' }); i > 0; i = program.IndexOfAny(new[] { ' ', '\t' }, i + 1))
+            {
+                var prefix = program.Substring(0, i);
+                yield return Path.GetExtension(prefix).Length == 0 ? prefix + ".exe" : prefix;
+            }
         }
 
         /// <summary>The package's copy of an executable in %ProgramFiles%\OpenSSH or %ProgramFiles(x86)%\OpenSSH, or null.</summary>
@@ -371,19 +395,50 @@ namespace OpenSSHServerPNManager
         public static void Start(string name, int timeoutSec = 40)
         {
             using (var sc = new ServiceController(name))
-            {
-                if (sc.Status == ServiceControllerStatus.Running) return;
-                if (sc.Status != ServiceControllerStatus.StartPending) sc.Start();
-                sc.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(timeoutSec));
-            }
+                MoveTo(name, ServiceControllerStatus.Running, () => { sc.Refresh(); return sc.Status; }, sc.Start, TimeSpan.FromSeconds(timeoutSec), Thread.Sleep);
         }
         public static void Stop(string name, int timeoutSec = 40)
         {
             using (var sc = new ServiceController(name))
+                MoveTo(name, ServiceControllerStatus.Stopped, () => { sc.Refresh(); return sc.Status; }, sc.Stop, TimeSpan.FromSeconds(timeoutSec), Thread.Sleep);
+        }
+
+        /// <summary>
+        /// Brings a service to Running or Stopped. The status can change between reading it and sending the control (the SCM's
+        /// recovery actions, another console, a service that ends by itself); the SCM then refuses the control, which is only a
+        /// failure if the service is not already on its way to the target. A transition in the other direction is allowed to
+        /// finish first, since the SCM refuses controls during it. A service that stops again while starting fails at once
+        /// rather than at the end of the timeout.
+        /// </summary>
+        internal static void MoveTo(string name, ServiceControllerStatus target, Func<ServiceControllerStatus> status, Action control, TimeSpan timeout, Action<int> sleep)
+        {
+            bool starting = target == ServiceControllerStatus.Running;
+            var pending = starting ? ServiceControllerStatus.StartPending : ServiceControllerStatus.StopPending;
+            var opposite = starting ? ServiceControllerStatus.StopPending : ServiceControllerStatus.StartPending;
+            var sw = Stopwatch.StartNew();
+            Action<string> waitOrFail = what =>
             {
-                if (sc.Status == ServiceControllerStatus.Stopped) return;
-                if (sc.Status != ServiceControllerStatus.StopPending) sc.Stop();
-                sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(timeoutSec));
+                if (sw.Elapsed > timeout) throw new System.ServiceProcess.TimeoutException("The " + name + " service did not " + what + " within " + (int)timeout.TotalSeconds + " seconds.");
+                sleep(250);
+            };
+            var s = status();
+            while (s == opposite) { waitOrFail("finish " + (starting ? "stopping" : "starting")); s = status(); }
+            if (s == target) return;
+            if (s != pending)
+            {
+                try { control(); }
+                catch (InvalidOperationException)
+                {
+                    s = status();
+                    if (s != target && s != pending) throw;
+                }
+            }
+            // The SCM reports StartPending before an accepted start returns, so Stopped from here on means the service ended.
+            while ((s = status()) != target)
+            {
+                if (starting && s == ServiceControllerStatus.Stopped)
+                    throw new InvalidOperationException("The " + name + " service stopped while starting. See the Logs tab or the OpenSSH event log.");
+                waitOrFail(starting ? "start" : "stop");
             }
         }
         public static void Restart(string name) { Stop(name); Start(name); }

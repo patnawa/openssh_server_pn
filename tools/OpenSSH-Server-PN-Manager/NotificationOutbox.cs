@@ -26,8 +26,10 @@ namespace OpenSSHServerPNManager
                 foreach (var s in new[] { Id, Source, Destination, Subject, Text, Html, Recipients, AttachmentName, AttachmentText, Lease, LastError }) w.Write(s ?? "");
                 w.Write(Attempts); w.Write(Delivered); w.Write(Exhausted);
                 w.Write(CreatedUtc.Ticks); w.Write(NextUtc.Ticks); w.Write(LeaseUntilUtc.Ticks);
-                foreach (var s in new[] { Transport.SmtpHost, Transport.SmtpUser, Secret.Seal(Transport.SmtpPassword), Transport.From, Secret.Seal(Transport.Webhook) }) w.Write(s ?? "");
-                w.Write(Transport.SmtpPort); w.Write(Transport.SmtpTls); w.Write(Transport.WebhookTeams);
+                // An exhausted item is sent again only by RetryFailed, with the settings of then: keep no sealed secrets for it.
+                var t = Exhausted ? new AlertSettings() : Transport;
+                foreach (var s in new[] { t.SmtpHost, t.SmtpUser, Secret.Seal(t.SmtpPassword), t.From, Secret.Seal(t.Webhook) }) w.Write(s ?? "");
+                w.Write(t.SmtpPort); w.Write(t.SmtpTls); w.Write(t.WebhookTeams);
                 w.Flush(); return Convert.ToBase64String(bytes.ToArray());
             }
         }
@@ -53,6 +55,9 @@ namespace OpenSSHServerPNManager
     internal static class NotificationOutbox
     {
         internal const int MaxAttempts = 12, MaxDeliveriesPerRun = 8;
+        /// <summary>Undelivered alerts kept for "Retry failed deliveries": the newest 200 of each destination, for 30 days.</summary>
+        internal const int MaxExhaustedPerDestination = 200;
+        internal static readonly TimeSpan ExhaustedRetention = TimeSpan.FromDays(30);
 
         internal static void Enqueue(AgentState st, AlertSettings settings, string source, string subject, string text,
             string html, List<string> recipients, string attachmentName, string attachmentText, DateTime utcNow, bool mailOnly = false)
@@ -73,12 +78,15 @@ namespace OpenSSHServerPNManager
             }
         }
 
-        /// <summary>Claims exactly one due destination while state is locked. An expired lease is retried after a crashed worker.</summary>
-        internal static NotificationItem Claim(AgentState st, DateTime utcNow)
+        /// <summary>
+        /// Claims exactly one due destination while state is locked. An expired lease is retried after a crashed worker.
+        /// Destinations in skip (failed earlier in this run) are left for the next run.
+        /// </summary>
+        internal static NotificationItem Claim(AgentState st, DateTime utcNow, ICollection<string> skip = null)
         {
             var oldDelivered = new HashSet<string>(st.Notifications.Where(n => n.Delivered).OrderByDescending(n => n.NextUtc).Skip(256).Select(n => n.Id));
             st.Notifications.RemoveAll(n => n.Delivered && (n.NextUtc < utcNow.AddDays(-7) || oldDelivered.Contains(n.Id)));
-            var item = st.Notifications.Where(n => !n.Delivered && !n.Exhausted && n.NextUtc <= utcNow && n.LeaseUntilUtc <= utcNow)
+            var item = st.Notifications.Where(n => !n.Delivered && !n.Exhausted && n.NextUtc <= utcNow && n.LeaseUntilUtc <= utcNow && (skip == null || !skip.Contains(n.Destination)))
                 .OrderBy(n => n.NextUtc).ThenBy(n => n.CreatedUtc).FirstOrDefault();
             if (item == null) return null;
             item.Lease = Guid.NewGuid().ToString("N"); item.LeaseUntilUtc = utcNow.AddMinutes(3);
@@ -99,26 +107,45 @@ namespace OpenSSHServerPNManager
                 // Keep a small delivery receipt, not copies of reports or credentials for every successful alert.
                 item.Text = item.Html = item.AttachmentText = ""; item.Transport = new AlertSettings();
             }
+            if (item.Exhausted) item.Transport = new AlertSettings(); // RetryFailed sends with the settings of its time
+        }
+
+        /// <summary>
+        /// Drops undelivered alerts kept for an explicit retry once they are older than ExhaustedRetention or beyond the newest
+        /// MaxExhaustedPerDestination of their destination: weeks of a broken mail server must not grow the state without end.
+        /// </summary>
+        internal static int Prune(AgentState st, DateTime utcNow)
+        {
+            var drop = new HashSet<NotificationItem>(st.Notifications.Where(n => n.Exhausted && !n.Delivered).GroupBy(n => n.Destination)
+                .SelectMany(g => g.OrderByDescending(n => n.CreatedUtc).Where((n, i) => i >= MaxExhaustedPerDestination || n.CreatedUtc < utcNow - ExhaustedRetention)));
+            if (drop.Count == 0) return 0;
+            st.Notifications.RemoveAll(drop.Contains);
+            st.NotificationsDiscarded += drop.Count;
+            return drop.Count;
         }
 
         internal static void Drain(Action<NotificationItem> deliver = null)
         {
             deliver = deliver ?? Deliver;
             var elapsed = Stopwatch.StartNew();
+            // A destination that failed in this run waits for the next: one that hangs for its timeout must not use up the run.
+            var failed = new HashSet<string>();
             for (int i = 0; i < MaxDeliveriesPerRun && elapsed.Elapsed < TimeSpan.FromSeconds(120); i++)
             {
                 NotificationItem item = null;
                 if (!Agent.WithStateLock(Agent.StateLockName, 1000, () =>
-                    { var st = AgentState.Load(); int count = st.Notifications.Count; item = Claim(st, DateTime.UtcNow); if (item != null || st.Notifications.Count != count) st.Save(); }) || item == null) return;
+                    { var st = AgentState.Load(); int count = st.Notifications.Count; Prune(st, DateTime.UtcNow); item = Claim(st, DateTime.UtcNow, failed); if (item != null || st.Notifications.Count != count) st.Save(); }) || item == null) return;
                 // Network calls deliberately run outside the state lock. Watch and Daily can keep recording events.
                 string error = null;
                 try
                 {
                     deliver(item);
                 }
-                catch (Exception ex) { error = ex.Message; }
+                catch (Exception ex) { error = ex.Message; failed.Add(item.Destination); }
                 var result = error;
-                if (!Agent.WithStateLock(Agent.StateLockName, 1000, () =>
+                // Sent already: wait for the lock while the lease lasts, or the alert goes out again once the lease expires.
+                int wait = (int)Math.Max(1000, Math.Min(120000, (item.LeaseUntilUtc - DateTime.UtcNow - TimeSpan.FromSeconds(10)).TotalMilliseconds));
+                if (!Agent.WithStateLock(Agent.StateLockName, wait, () =>
                     { var st = AgentState.Load(); Complete(st, item.Id, item.Lease, DateTime.UtcNow, result); st.Save(); }))
                     Agent.Note("notification " + item.Id + ": delivery result could not be committed; lease recovery will retry");
                 Agent.Note("notification " + item.Id + " by " + item.Destination + (error == null ? " delivered" : " failed: " + error));
@@ -158,6 +185,7 @@ namespace OpenSSHServerPNManager
         public DateTime? LastWatchSuccessUtc, LastDailySuccessUtc, CheckpointUtc, LastEventUtc, GapUtc;
         public long CheckpointRecordId, Backlog;
         public int PendingNotifications, FailedNotifications, ExhaustedNotifications;
+        public long DiscardedNotifications;
         public string LastWatchError = "", LastDailyError = "", JournalGap = "", LastDeliveryError = "", BlockingDegradedReason = "";
         public Dictionary<string, int> PendingByDestination = new Dictionary<string, int>();
         public Dictionary<string, int> FailedByDestination = new Dictionary<string, int>();
@@ -170,7 +198,7 @@ namespace OpenSSHServerPNManager
                 JournalGap = st.Journal.Gap, GapUtc = st.Journal.GapUtc, BlockingDegradedReason = st.BlockingDegradedReason,
                 PendingNotifications = st.Notifications.Count(n => !n.Delivered && !n.Exhausted),
                 FailedNotifications = st.Notifications.Count(n => !n.Delivered && n.Attempts > 0),
-                ExhaustedNotifications = st.Notifications.Count(n => n.Exhausted),
+                ExhaustedNotifications = st.Notifications.Count(n => n.Exhausted), DiscardedNotifications = st.NotificationsDiscarded,
                 LastDeliveryError = st.Notifications.Where(n => !n.Delivered && n.LastError.Length > 0).OrderByDescending(n => n.NextUtc).Select(n => n.LastError).FirstOrDefault() ?? "",
                 PendingByDestination = st.Notifications.Where(n => !n.Delivered && !n.Exhausted).GroupBy(n => n.Destination).ToDictionary(g => g.Key, g => g.Count()),
                 FailedByDestination = st.Notifications.Where(n => !n.Delivered && n.Attempts > 0).GroupBy(n => n.Destination).ToDictionary(g => g.Key, g => g.Count()) };

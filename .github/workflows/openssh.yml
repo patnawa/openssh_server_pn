@@ -891,13 +891,17 @@ jobs:
           $notesFile = Join-Path $env:RUNNER_TEMP 'notes.md'
           [IO.File]::WriteAllText($notesFile, ($notes -join "`n") + "`n")
           $files = Get-ChildItem dist -File | ForEach-Object FullName
+          # A native command that fails does not stop the step, and the step's own exit code is only that of the last
+          # one: every gh call is checked. "gh release view" fails when there is no release yet, which is expected.
           $existing = gh release view $env:TAG --repo $repo --json isDraft 2>$null | ConvertFrom-Json
           if ($existing) {
             if (-not $existing.isDraft) { Write-Host "::error::Release $env:TAG is already published; not changing it."; exit 1 }
             gh release upload $env:TAG @files --repo $repo --clobber
+            if ($LASTEXITCODE) { Write-Host "::error::gh release upload failed ($LASTEXITCODE); the draft may lack assets."; exit $LASTEXITCODE }
             gh release edit $env:TAG --repo $repo --notes-file $notesFile
+            if ($LASTEXITCODE) { Write-Host "::error::gh release edit failed ($LASTEXITCODE)"; exit $LASTEXITCODE }
           } else {
             gh release create $env:TAG @files --repo $repo --draft --verify-tag --title "OpenSSH Server PN $env:VERSION" --notes-file $notesFile
+            if ($LASTEXITCODE) { Write-Host "::error::gh release create failed ($LASTEXITCODE)"; exit $LASTEXITCODE }
           }
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           "Draft release $env:TAG: https://github.com/$repo/releases (review and publish it by hand)" | Add-Content -Path $env:GITHUB_STEP_SUMMARY

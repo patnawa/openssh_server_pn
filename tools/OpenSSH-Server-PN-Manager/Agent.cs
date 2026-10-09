@@ -176,7 +176,7 @@ namespace OpenSSHServerPNManager
         {
             var d = new Dictionary<string, string>(StringComparer.Ordinal);
             if (!File.Exists(path)) return d;
-            foreach (var line in File.ReadAllLines(path, Encoding.UTF8))
+            foreach (var line in ReadLines(path, FileShare.Read))
             {
                 if (line.StartsWith("#")) continue;
                 int i = line.IndexOf('=');
@@ -185,22 +185,82 @@ namespace OpenSSHServerPNManager
             return d;
         }
 
+        /// <summary>
+        /// The lines of a file that another process replaces (Replace). Never shared for delete: where a deleted file keeps its
+        /// name while it is open (Windows Server 2016 and older), File.Replace under such a reader deletes the file and then
+        /// cannot rename the new one into its place. Without that sharing the replace fails cleanly and is retried; the replace
+        /// itself holds the file for a moment, which a reader waits out.
+        /// </summary>
+        internal static List<string> ReadLines(string path, FileShare share)
+        {
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    var lines = new List<string>();
+                    using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, share))
+                    using (var reader = new StreamReader(stream, Encoding.UTF8))
+                    { string l; while ((l = reader.ReadLine()) != null) lines.Add(l); }
+                    return lines;
+                }
+                catch (IOException ex) when (attempt < 40 && !(ex is FileNotFoundException) && !(ex is DirectoryNotFoundException)) { Thread.Sleep(50); }
+            }
+        }
+
         public static void Write(string path, IEnumerable<KeyValuePair<string, string>> values)
         {
             var dir = Path.GetDirectoryName(path);
             if (!Directory.Exists(dir)) AgentStorage.Permissions.CreateFolder(dir);
             var text = "# " + Program.AppName + ": written by the program, " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + "\r\n" +
                        string.Concat(values.Select(kv => kv.Key + "=" + (kv.Value ?? "").Replace("\r", " ").Replace("\n", " ") + "\r\n"));
+            WriteReplacing(path, writer => writer.Write(text));
+        }
+
+        /// <summary>Writes a file in full to a temporary file, which then replaces it (Replace).</summary>
+        internal static void WriteReplacing(string path, Action<StreamWriter> write, Action<string, string> replace = null)
+        {
             var tmp = path + "." + Guid.NewGuid().ToString("N") + ".new";
+            bool complete = false;
             try
             {
                 using (var stream = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
-                { writer.Write(text); writer.Flush(); stream.Flush(true); }
+                { write(writer); writer.Flush(); stream.Flush(true); }
                 AgentStorage.Permissions.RestrictFile(tmp);
-                if (File.Exists(path)) File.Replace(tmp, path, null); else File.Move(tmp, path);
+                complete = true;
+                Replace(tmp, path, replace);
             }
-            finally { if (File.Exists(tmp)) File.Delete(tmp); }
+            finally
+            {
+                // A replace that deleted path but could not rename tmp into its place leaves tmp as the only copy.
+                if (File.Exists(tmp))
+                {
+                    if (!complete || File.Exists(path)) File.Delete(tmp);
+                    else try { File.Move(tmp, path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Puts tmp in the place of path. A reader of path (readers never share delete) makes File.Replace fail cleanly with a
+        /// sharing violation; readers finish within moments, so the replace is retried for a few seconds.
+        /// </summary>
+        private static void Replace(string tmp, string path, Action<string, string> replace)
+        {
+            replace = replace ?? ((from, to) =>
+            {
+                // With a backup name the replaced file is renamed, not deleted: under a reader that does share delete (another
+                // program; Server 2016 and older keep a deleted file's name while it is open) path is never left without a file.
+                var old = to + "." + Guid.NewGuid().ToString("N") + ".old";
+                File.Replace(from, to, old);
+                try { File.Delete(old); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            });
+            var until = DateTime.UtcNow.AddSeconds(5);
+            while (true)
+            {
+                try { if (File.Exists(path)) replace(tmp, path); else File.Move(tmp, path); return; }
+                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && DateTime.UtcNow < until && File.Exists(tmp)) { Thread.Sleep(100); }
+            }
         }
     }
 
@@ -244,10 +304,14 @@ namespace OpenSSHServerPNManager
         public TransferJournalState Journal = new TransferJournalState();
         public List<NotificationItem> Notifications = new List<NotificationItem>();
         public long NotificationSequence;
+        /// <summary>Undelivered alerts given up for good (NotificationOutbox.Prune), in all.</summary>
+        public long NotificationsDiscarded;
         public DateTime? LastWatchSuccessUtc, LastDailySuccessUtc;
         public string LastWatchError = "", LastDailyError = "", BlockingDegradedReason = "";
         /// <summary>Addresses the agent blocked: until when, how many times in the last week, and when the last one was.</summary>
         public Dictionary<string, BlockEntry> Blocks = new Dictionary<string, BlockEntry>();
+        /// <summary>Addresses an admin unblocked, and when: the failures already counted then must not block them again at once.</summary>
+        public Dictionary<string, DateTime> Pardons = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         /// <summary>Uploads waiting to be reported, per partner: "time|file|bytes".</summary>
         public Dictionary<string, List<string>> Pending = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
@@ -272,11 +336,17 @@ namespace OpenSSHServerPNManager
                 if (f.Length == 3 && DateTime.TryParseExact(f[0], Fmt, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out until) && int.TryParse(f[1], out strikes) && DateTime.TryParseExact(f[2], Fmt, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out last))
                     st.Blocks[kv.Key.Substring(6)] = new BlockEntry { Until = until, Strikes = strikes, LastStrike = last };
             }
+            foreach (var kv in d.Where(kv => kv.Key.StartsWith("pardon.", StringComparison.Ordinal)))
+            {
+                DateTime at;
+                if (DateTime.TryParseExact(kv.Value, Fmt, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out at)) st.Pardons[kv.Key.Substring(7)] = at;
+            }
             foreach (var kv in d.Where(kv => kv.Key.StartsWith("pending.", StringComparison.Ordinal)))
                 st.Pending[kv.Key.Substring(8)] = kv.Value.Split(new[] { '\t' }, StringSplitOptions.RemoveEmptyEntries).ToList();
             st.Journal = TransferJournalState.Load(d);
             foreach (var kv in d.Where(kv => kv.Key.StartsWith("notify.item.", StringComparison.Ordinal))) st.Notifications.Add(NotificationItem.Restore(kv.Value));
             if (d.TryGetValue("notify.sequence", out s) && long.TryParse(s, out id)) st.NotificationSequence = id;
+            if (d.TryGetValue("notify.discarded", out s) && long.TryParse(s, out id)) st.NotificationsDiscarded = id;
             DateTime utc;
             if (d.TryGetValue("health.watch.success", out s) && DateTime.TryParse(s, null, DateTimeStyles.RoundtripKind, out utc)) st.LastWatchSuccessUtc = utc;
             if (d.TryGetValue("health.daily.success", out s) && DateTime.TryParse(s, null, DateTimeStyles.RoundtripKind, out utc)) st.LastDailySuccessUtc = utc;
@@ -293,9 +363,11 @@ namespace OpenSSHServerPNManager
             t("alert.burst.last", LastBurstAlert); t("alert.disk.day", DiskAlertDay); t("disk.checked", LastDiskCheck);
             if (ArchivedUntil > DateTime.MinValue) t("archive.until", ArchivedUntil);
             foreach (var b in Blocks) d["block." + b.Key] = b.Value.Until.ToString(Fmt, CultureInfo.InvariantCulture) + "|" + b.Value.Strikes + "|" + b.Value.LastStrike.ToString(Fmt, CultureInfo.InvariantCulture);
+            foreach (var p in Pardons) d["pardon." + p.Key] = p.Value.ToString(Fmt, CultureInfo.InvariantCulture);
             foreach (var p in Pending.Where(p => p.Value.Count > 0)) d["pending." + p.Key] = string.Join("\t", p.Value.Select(x => x.Replace("\t", " ")));
             Journal.Save(d);
             d["notify.sequence"] = NotificationSequence.ToString(CultureInfo.InvariantCulture);
+            if (NotificationsDiscarded > 0) d["notify.discarded"] = NotificationsDiscarded.ToString(CultureInfo.InvariantCulture);
             foreach (var item in Notifications) d["notify.item." + item.Id] = item.Store();
             if (LastWatchSuccessUtc.HasValue) d["health.watch.success"] = LastWatchSuccessUtc.Value.ToString("o");
             if (LastDailySuccessUtc.HasValue) d["health.daily.success"] = LastDailySuccessUtc.Value.ToString("o");
@@ -307,7 +379,8 @@ namespace OpenSSHServerPNManager
 
     internal static class Agent
     {
-        internal const string StateLockName = "Global\\OpenSSHServerPNManager.AgentState";
+        /// <summary>Machine-wide. Unit tests set a lock of their own, so they never wait for or hold up the installed agent.</summary>
+        internal static string StateLockName = "Global\\OpenSSHServerPNManager.AgentState";
         public const string TaskFolder = "OpenSSH Server PN Manager";
         public static readonly string WatchTask = TaskFolder + "\\Watch", DailyTask = TaskFolder + "\\Daily";
         public static string LogPath { get { return Path.Combine(AlertSettings.Dir, "agent.log"); } }
@@ -417,20 +490,17 @@ namespace OpenSSHServerPNManager
 
             // Addresses blocked by the agent whose time is up.
             // (An entry stays a week after its block ends, with Until = MinValue, so that a new strike gets the next block time.)
-            var expired = st.Blocks.Where(b => b.Value.Until != DateTime.MinValue && b.Value.Until <= now).Select(b => b.Key).ToList();
-            if (expired.Count > 0)
-            {
-                Firewall.RemoveBlockedAddresses(expired);
-                foreach (var a in expired) { Note("unblocked " + a + " (its time is up)"); st.Blocks[a].Until = DateTime.MinValue; }
-            }
+            var unblockError = LiftExpired(st, now, Firewall.RemoveBlockedAddresses);
             foreach (var a in st.Blocks.Where(b => b.Value.Until == DateTime.MinValue && b.Value.LastStrike < now.AddDays(-7)).Select(b => b.Key).ToList()) st.Blocks.Remove(a);
 
             // Failed logins in the window: automatic blocking and bursts.
             if (s.AutoBlock || s.OnFailedLogins)
             {
-                var events = EventLogs.Read(20000, null, TimeSpan.FromMinutes(s.BlockWindowMinutes), CancellationToken.None);
+                string scanProblem;
+                var events = EventLogs.ReadFailures(TimeSpan.FromMinutes(s.BlockWindowMinutes), CancellationToken.None, out scanProblem);
+                if (scanProblem != null) Note(scanProblem);
                 var sources = EventLogs.FailedByAddress(events);
-                if (s.AutoBlock) Block(s, st, sources, now, server);
+                if (s.AutoBlock) Block(s, st, sources, now, server, checkpoint);
                 int total = sources.Sum(x => x.Count);
                 if (s.OnFailedLogins && total >= s.BurstThreshold && (st.LastBurstAlert == null || st.LastBurstAlert < now.AddMinutes(-15)))
                 {
@@ -440,6 +510,7 @@ namespace OpenSSHServerPNManager
                          string.Join("\n", sources.Take(10).Select(x => "  " + x.Address + ": " + x.Count + (x.Users.Count > 0 ? " (accounts tried: " + string.Join(", ", x.Users.Take(5)) + ")" : ""))), null, null, null);
                 }
             }
+            st.BlockingDegradedReason = BlockingReason(s.AutoBlock, st.BlockingDegradedReason, unblockError);
 
             if (checkpoint != null) checkpoint(); // preserve completed blocking/burst work before transfer collection
 
@@ -529,16 +600,60 @@ namespace OpenSSHServerPNManager
         /// that does not exist twice, so such attempts count double): 1 hour, then 24 hours, then 7 days within a week. Never
         /// blocked: the allow list, this computer, and addresses with a logged-in session.
         /// </summary>
-        internal static List<string> Block(AlertSettings s, AgentState st, List<EventLogs.FailedSource> sources, DateTime now, string server)
+        internal static List<string> Block(AlertSettings s, AgentState st, List<EventLogs.FailedSource> sources, DateTime now, string server, Action checkpoint = null)
         {
             var state = ServerState.Read(); HashSet<string> peers; string error;
             if (!state.Verified)
             { st.BlockingDegradedReason = state.Error; Note("automatic blocking deferred: " + state.Error); return new List<string>(); }
             if (!Sessions.TryLoggedInAddresses(state.Ports, out peers, out error))
             { st.BlockingDegradedReason = error; Note("automatic blocking deferred: " + error); return new List<string>(); }
+            var added = ApplyBlocks(s, st, sources, now, server, peers, state.FirewallPorts, Firewall.BlockedAddresses, Firewall.AddBlockedAddresses, checkpoint);
+            // Some sessions' addresses were unknown: every connected address was spared this run. Shown, not deferred.
+            if (error != null && st.BlockingDegradedReason.Length == 0) st.BlockingDegradedReason = error;
+            return added;
+        }
+
+        /// <summary>Block's firewall steps in their order, with the firewall passed in: read the rule, plan, save the schedule, add.</summary>
+        internal static List<string> ApplyBlocks(AlertSettings s, AgentState st, List<EventLogs.FailedSource> sources, DateTime now, string server, HashSet<string> peers, string ports,
+            Func<List<string>> readBlocked, Action<IEnumerable<string>, string> addBlocked, Action checkpoint)
+        {
+            HashSet<string> already;
+            try { already = new HashSet<string>(readBlocked()); }
+            catch (Exception ex)
+            {
+                // Rewriting the rule from an unread list would unblock every address already in it.
+                st.BlockingDegradedReason = "the firewall block rule could not be read: " + ex.Message;
+                Note("automatic blocking deferred: " + st.BlockingDegradedReason); return new List<string>();
+            }
             st.BlockingDegradedReason = "";
-            var already = new HashSet<string>(Firewall.BlockedAddresses());
+            var before = st.Blocks.ToDictionary(e => e.Key, e => new AgentState.BlockEntry { Until = e.Value.Until, Strikes = e.Value.Strikes, LastStrike = e.Value.LastStrike });
             var add = PlanBlocks(s, st, sources, now, already, peers, a => Firewall.NotBlockable(a) != null);
+            // Record the schedule before the firewall changes: a block whose expiry was never saved would last for ever.
+            if (add.Count > 0 && checkpoint != null) checkpoint();
+            // A listener change also updates the scope of existing blocks, even when no new address was added.
+            try { if (add.Count > 0 || already.Count > 0) addBlocked(add, ports); }
+            catch
+            {
+                // The write is several firewall calls and the first adds the addresses. An address the failed write did add keeps
+                // its timer, or it would stay blocked for ever; one it did not add gets no strike, or its next block would be longer.
+                if (add.Count > 0)
+                {
+                    List<string> inRule = null;
+                    try { inRule = readBlocked(); } catch { }
+                    foreach (var a in add)
+                    {
+                        AgentState.BlockEntry old;
+                        bool had = before.TryGetValue(a, out old);
+                        if (inRule != null && inRule.Any(r => SameAddress(r, a))) continue;
+                        // Not known whether it was added: the timer stays to lift it, without the strike.
+                        if (inRule == null) st.Blocks[a] = new AgentState.BlockEntry { Until = st.Blocks[a].Until, Strikes = had ? old.Strikes : 0, LastStrike = had ? old.LastStrike : DateTime.MinValue };
+                        else if (had) st.Blocks[a] = old;
+                        else st.Blocks.Remove(a);
+                    }
+                    if (checkpoint != null) checkpoint();
+                }
+                throw;
+            }
             foreach (var a in add)
             {
                 var x = sources.First(y => y.Address == a); var b = st.Blocks[a];
@@ -547,9 +662,68 @@ namespace OpenSSHServerPNManager
                     Queue(s, st, "auto-block", "Blocked " + a + " on " + server, a + " is blocked from SSH on " + server + " until " + b.Until.ToString("yyyy-MM-dd HH:mm") + " after " + x.Count + " failed logins in " + s.BlockWindowMinutes + " minutes" +
                          (x.Users.Count > 0 ? " (accounts tried: " + string.Join(", ", x.Users.Take(8)) + ")" : "") + ". The Logs tab of OpenSSH Server PN Manager unblocks it.", null, null, null);
             }
-            // A listener change also updates the scope of existing blocks, even when no new address was added.
-            if (add.Count > 0 || already.Count > 0) Firewall.SetBlockedAddresses(already.Concat(add).ToList(), state.FirewallPorts);
             return add;
+        }
+
+        /// <summary>
+        /// Lifts the agent's blocks whose time is up. When the firewall cannot be changed they stay due, to be lifted by a later
+        /// run, and the reason is returned: the rest of the run (alerts, transfers, disk) must go on.
+        /// </summary>
+        internal static string LiftExpired(AgentState st, DateTime now, Action<IEnumerable<string>> remove)
+        {
+            var expired = st.Blocks.Where(b => b.Value.Until != DateTime.MinValue && b.Value.Until <= now).Select(b => b.Key).ToList();
+            if (expired.Count == 0) return null;
+            try { remove(expired); }
+            catch (Exception ex)
+            {
+                Note("automatic unblocking deferred: " + ex.Message);
+                return "blocks whose time is up could not be lifted: " + ex.Message;
+            }
+            foreach (var a in expired) { Note("unblocked " + a + " (its time is up)"); st.Blocks[a].Until = DateTime.MinValue; }
+            return null;
+        }
+
+        /// <summary>Why automatic blocking is impaired after a run: Block's own reason only while it is on, and a failed expiry either way.</summary>
+        internal static string BlockingReason(bool autoBlock, string blockReason, string unblockError)
+        {
+            var reasons = new List<string>();
+            if (autoBlock && !string.IsNullOrEmpty(blockReason)) reasons.Add(blockReason);
+            if (unblockError != null) reasons.Add(unblockError);
+            return string.Join("; ", reasons);
+        }
+
+        /// <summary>
+        /// Ends the agent's timers for addresses an admin blocked or unblocked: its expiry then never lifts them. Strikes stay, so a
+        /// later automatic block still gets the next block time, and the entry goes after a quiet week. Returns how many ended.
+        /// </summary>
+        internal static int ClearTimers(AgentState st, IEnumerable<string> addresses)
+        {
+            int count = 0;
+            foreach (var address in addresses)
+                foreach (var entry in st.Blocks.Where(e => e.Value.Until != DateTime.MinValue && SameAddress(e.Key, address)).Select(e => e.Value).ToList())
+                { entry.Until = DateTime.MinValue; count++; }
+            return count;
+        }
+
+        /// <summary>
+        /// An admin unblocked these addresses: besides ending their timers, the failures that led to the block (still inside the
+        /// counting window) must not block them again a minute later, with a longer time. Failures after now count again once
+        /// the window has passed.
+        /// </summary>
+        internal static void Pardon(AgentState st, IEnumerable<string> addresses, DateTime now)
+        {
+            ClearTimers(st, addresses);
+            foreach (var address in addresses) st.Pardons[Firewall.WithoutZone(Firewall.NormaliseAddress((address ?? "").Trim()))] = now;
+        }
+
+        /// <summary>The firewall writes addresses in its own form ("1.2.3.4/255.255.255.255", IPv6 in other cases); the log does not.</summary>
+        private static bool SameAddress(string first, string second)
+        {
+            first = Firewall.WithoutZone(Firewall.NormaliseAddress((first ?? "").Trim())); second = Firewall.WithoutZone(Firewall.NormaliseAddress((second ?? "").Trim()));
+            IPAddress x, y;
+            if (IPAddress.TryParse(first, out x) && IPAddress.TryParse(second, out y))
+                return (x.IsIPv4MappedToIPv6 ? x.MapToIPv4() : x).Equals(y.IsIPv4MappedToIPv6 ? y.MapToIPv4() : y);
+            return string.Equals(first, second, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
@@ -560,10 +734,14 @@ namespace OpenSSHServerPNManager
         internal static List<string> PlanBlocks(AlertSettings s, AgentState st, List<EventLogs.FailedSource> sources, DateTime now, HashSet<string> already, HashSet<string> connected, Func<string, bool> notBlockable)
         {
             var allow = s.AllowListEntries().Select(a => { Network n; return Network.TryParse(a, out n) ? n : null; }).Where(n => n != null).ToList();
+            // Peers from the TCP table keep the zone of a link-local address (fe80::1%12); the log's addresses have none.
+            var live = new HashSet<string>(connected.Select(Firewall.WithoutZone), StringComparer.OrdinalIgnoreCase);
+            var pardoned = st.Pardons.Where(p => p.Value > now.AddMinutes(-s.BlockWindowMinutes)).Select(p => p.Key).ToList();
             var add = new List<string>();
             foreach (var x in sources.Where(x => x.Count >= s.BlockThreshold))
             {
-                if (already.Contains(x.Address) || notBlockable(x.Address) || allow.Any(n => n.Contains(x.Address)) || connected.Contains(x.Address)) continue;
+                if (already.Contains(x.Address) || notBlockable(x.Address) || allow.Any(n => n.Contains(x.Address)) || live.Contains(x.Address)) continue;
+                if (pardoned.Any(p => SameAddress(p, x.Address))) continue;
                 AgentState.BlockEntry b;
                 if (!st.Blocks.TryGetValue(x.Address, out b) || b.LastStrike < now.AddDays(-7)) b = new AgentState.BlockEntry();
                 b.Strikes = Math.Min(b.Strikes + 1, BlockTimes.Length); b.LastStrike = now; b.Until = now + BlockTimes[b.Strikes - 1];
@@ -600,9 +778,23 @@ namespace OpenSSHServerPNManager
         /// <summary>Watch and Daily advance the same journal, archive, and pending-upload transaction.</summary>
         internal static void CollectTransfers(AlertSettings s, AgentState st, DateTime now, TransferJournal.EventSource source = null, HashSet<string> partnerNames = null)
         {
-            if (!st.Journal.NotifyFromUtc.HasValue) st.Journal.NotifyFromUtc = now.ToUniversalTime().AddHours(-2);
+            if (!st.Journal.NotifyFromUtc.HasValue)
+            {
+                st.Journal.NotifyFromUtc = now.ToUniversalTime().AddHours(-2);
+                // Manager 2.2 and older archived transfers without this journal, from a start they did not record: no late start then.
+                if (st.ArchivedUntil == DateTime.MinValue && st.ReportedMonth.Length == 0) st.Journal.StartedUtc = now.ToUniversalTime();
+            }
+            var before = new Dictionary<string, string>(StringComparer.Ordinal); st.Journal.Save(before);
             var records = TransferJournal.Read(st.Journal, now, source);
-            Archive(records);
+            try { Archive(records); }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                // A month's file held open by another program (a spreadsheet): these records are read again next run, and
+                // the rest of the run (alerts already due, blocking, the disk check) goes on.
+                st.Journal = TransferJournalState.Load(before);
+                Note("transfers not archived this run, read again next run: " + ex.Message);
+                return;
+            }
             st.LastRecordId = st.Journal.LastRecordId; // retained for older managers reading their compatibility field
             if (s.OnUploads)
             {
@@ -635,15 +827,36 @@ namespace OpenSSHServerPNManager
             if (s.MonthlyReport && s.MailConfigured && st.ReportedMonth != key && st.Journal.Backlog == 0)
             {
                 var to = last.AddMonths(1);
-                var records = Transfers.Read(last, to, CancellationToken.None);
+                var problems = new List<string>();
+                var records = Transfers.Read(last, to, CancellationToken.None, problems);
+                foreach (var p in problems) Note("the monthly report of " + key + ": " + p);
+                // An archive file that cannot be read (open in another program) holds the report, which is tried again each night;
+                // after a week it goes out saying what it lacks.
+                if (problems.Count > 0 && now < to.AddDays(7)) return;
                 var companies = Partners.List(PartnerGroups.Default).ToDictionary(p => p.Name, p => p.Company, StringComparer.OrdinalIgnoreCase);
-                var html = Transfers.ReportHtml(records, last, to, Environment.MachineName, companies);
+                var html = Transfers.ReportHtml(records, last, to, Environment.MachineName, companies, ReportCaveats(st.Journal, last, to, problems));
                 var csv = string.Join("\r\n", new[] { string.Join(",", Transfers.CsvHeader) }.Concat(records.Select(Transfers.CsvLine))) + "\r\n";
                 var t = Transfers.Totals(records);
                 NotificationOutbox.Enqueue(st, s, "monthly-report", "SFTP transfers of " + Environment.MachineName + ", " + last.ToString("MMMM yyyy", CultureInfo.InvariantCulture) + ": " + t.Sum(x => x.Uploads) + " up, " + t.Sum(x => x.Downloads) + " down",
                     null, html, AlertSettings.Addresses(s.AdminTo), "sftp-transfers-" + key + ".csv", csv, now.ToUniversalTime(), true);
                 st.ReportedMonth = key; // queued durably with the report; retries no longer depend on another monthly run
             }
+        }
+
+        /// <summary>
+        /// What the report of a period may lack: a gap in the event history since the period began, a journal that began after it,
+        /// archive files that could not be read.
+        /// </summary>
+        internal static List<string> ReportCaveats(TransferJournalState journal, DateTime from, DateTime to, IEnumerable<string> problems)
+        {
+            Func<DateTime, string> local = utc => utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+            var l = new List<string>();
+            if (journal.Gap.Length > 0 && journal.GapUtc.HasValue && journal.GapUtc.Value >= from.ToUniversalTime())
+                l.Add("History gap noticed " + local(journal.GapUtc.Value) + ": " + journal.Gap + " The figures may be incomplete.");
+            if (journal.StartedUtc.HasValue && journal.StartedUtc.Value > from.ToUniversalTime())
+                l.Add("The background agent began collecting transfers " + local(journal.StartedUtc.Value) + "; earlier transfers of the period come only from what the event log still held.");
+            l.AddRange((problems ?? Enumerable.Empty<string>()).Select(p => "Not included: " + p));
+            return l;
         }
 
         /// <summary>Appends records to the monthly CSV files, leaving out those already there. Returns how many were added.</summary>
@@ -658,7 +871,8 @@ namespace OpenSSHServerPNManager
                 // and never rewrite an unreadable archive as though it were empty.
                 var existing = new List<TransferRecord>();
                 if (File.Exists(file))
-                    foreach (var line in File.ReadAllLines(file, Encoding.UTF8).Skip(1).Where(line => line.Length > 0))
+                    // Shared for writing: a spreadsheet that has the month open must not stop the read.
+                    foreach (var line in Ini.ReadLines(file, FileShare.ReadWrite).Skip(1).Where(line => line.Length > 0))
                     { var record = Transfers.FromCsv(line); if (record == null) throw new InvalidDataException("Invalid transfer archive record in " + file); existing.Add(record); }
                 var have = new HashSet<string>(existing.Select(r => r.Key));
                 bool changed = false;
@@ -673,20 +887,11 @@ namespace OpenSSHServerPNManager
                     changed = true;
                 }
                 if (!changed) continue;
-                var temp = file + "." + Guid.NewGuid().ToString("N") + ".new";
-                try
+                Ini.WriteReplacing(file, writer =>
                 {
-                    using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                    using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
-                    {
-                        writer.WriteLine(string.Join(",", Transfers.CsvHeader));
-                        foreach (var record in existing.OrderBy(r => r.Time)) writer.WriteLine(Transfers.CsvLine(record));
-                        writer.Flush(); stream.Flush(true);
-                    }
-                    AgentStorage.Permissions.RestrictFile(temp);
-                    if (File.Exists(file)) File.Replace(temp, file, null); else File.Move(temp, file);
-                }
-                finally { if (File.Exists(temp)) File.Delete(temp); }
+                    writer.WriteLine(string.Join(",", Transfers.CsvHeader));
+                    foreach (var record in existing.OrderBy(r => r.Time)) writer.WriteLine(Transfers.CsvLine(record));
+                });
             }
             return added;
         }
@@ -731,9 +936,20 @@ namespace OpenSSHServerPNManager
                 }
                 return quoted.Append('"').ToString();
             };
-            if (!teams) return "{\"text\":" + j(subject + "\n" + text) + "}";
+            // Account and file names in alerts are chosen by whoever connects. Alerts use no markup of their own, so none of the
+            // text may act as markup: no labelled links ("[Unlock](https://...)"), no Slack links or <!channel>, no @mentions.
+            Func<string, string> inert = v =>
+            {
+                v = Regex.Replace(v ?? "", @"\]\s*\(", "]​(");
+                v = Regex.Replace(v, @"@(?=\w)", "@​");
+                // Bare addresses are linked (and previewed) too: break "scheme://" and the dots of host names, not those of IPv4 addresses.
+                v = v.Replace("://", "://​");
+                v = Regex.Replace(v, @"(?<=[\p{L}\p{N}_-])\.(?=\p{L})", "​.");
+                return teams ? v : v.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+            };
+            if (!teams) return "{\"text\":" + j(inert(subject + "\n" + text)) + "}";
             return "{\"type\":\"message\",\"attachments\":[{\"contentType\":\"application/vnd.microsoft.card.adaptive\",\"content\":{\"$schema\":\"http://adaptivecards.io/schemas/adaptive-card.json\",\"type\":\"AdaptiveCard\",\"version\":\"1.4\",\"body\":[" +
-                   "{\"type\":\"TextBlock\",\"size\":\"Medium\",\"weight\":\"Bolder\",\"wrap\":true,\"text\":" + j(subject) + "},{\"type\":\"TextBlock\",\"wrap\":true,\"text\":" + j(text.Replace("\n", "\n\n")) + "}]}}]}";
+                   "{\"type\":\"TextBlock\",\"size\":\"Medium\",\"weight\":\"Bolder\",\"wrap\":true,\"text\":" + j(inert(subject)) + "},{\"type\":\"TextBlock\",\"wrap\":true,\"text\":" + j(inert(text).Replace("\n", "\n\n")) + "}]}}]}";
         }
 
         public static void SendHook(AlertSettings s, string subject, string text, string notificationId = null)
@@ -743,6 +959,8 @@ namespace OpenSSHServerPNManager
             var req = (HttpWebRequest)WebRequest.Create(s.Webhook);
             req.Method = "POST"; req.ContentType = "application/json; charset=utf-8"; req.Timeout = 30000; req.ContentLength = body.Length; req.ServicePoint.Expect100Continue = false; req.UserAgent = Program.AppName + "/" + Program.AppVersion;
             req.ReadWriteTimeout = 30000;
+            // A redirect would repeat the request as a GET without the alert, and its 200 would count as delivered.
+            req.AllowAutoRedirect = false;
             if (notificationId != null) req.Headers.Add("Idempotency-Key", notificationId);
             using (var rs = req.GetRequestStream()) rs.Write(body, 0, body.Length);
             using (var resp = (HttpWebResponse)req.GetResponse()) { if ((int)resp.StatusCode >= 300) throw new WebException("HTTP " + (int)resp.StatusCode); }
@@ -774,7 +992,8 @@ namespace OpenSSHServerPNManager
         internal static string TaskXml(string description, string exe, string arguments, bool everyMinute)
         {
             Func<string, string> x = System.Security.SecurityElement.Escape;
-            var start = DateTime.Today.ToString("yyyy-MM-ddT", CultureInfo.InvariantCulture) + (everyMinute ? "00:00:00" : "00:30:00");
+            // Daily starts half a minute after a Watch run, not with one: both take the state lock, and Watch gives up after a second.
+            var start = DateTime.Today.ToString("yyyy-MM-ddT", CultureInfo.InvariantCulture) + (everyMinute ? "00:00:00" : "00:30:30");
             var triggers = everyMinute
                 ? "<TimeTrigger><StartBoundary>" + start + "</StartBoundary><Enabled>true</Enabled><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition></TimeTrigger><BootTrigger><Enabled>true</Enabled><Delay>PT1M</Delay></BootTrigger>"
                 : "<CalendarTrigger><StartBoundary>" + start + "</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>";
@@ -842,6 +1061,17 @@ namespace OpenSSHServerPNManager
             try
             {
                 bool any = false;
+                // The recovery task goes with the package; a record left pending would refuse every save after a reinstall.
+                try
+                {
+                    var pending = ConfigurationRecovery.PendingInfo(Ssh.ConfigPath);
+                    if (pending != null && !pending.Damaged)
+                    {
+                        ConfigurationRecovery.OpenForPath(Ssh.ConfigPath).Abandon(pending.Id, "the package was uninstalled");
+                        Note("a pending configuration recovery was closed: the package is being uninstalled");
+                    }
+                }
+                catch (Exception ex) { Note("could not close the pending configuration recovery: " + ex.Message); }
                 foreach (var t in new[] { WatchTask, DailyTask, ConfigurationRecovery.TaskName }) if (SystemTasks.Exists(t)) { any = true; if (!SystemTasks.Delete(t)) throw new Exception("schtasks /Delete " + t + " failed"); }
                 DeleteTaskFolder();
                 if (any) Note("OpenSSH Server PN is being uninstalled: tasks removed");

@@ -37,6 +37,13 @@ namespace OpenSSHServerPNManager
         /// </summary>
         public string LoadedHash;
         public ConfigurationDependencies LoadedDependencies;
+        /// <summary>
+        /// Lines (from 1) whose bytes are not UTF-8, such as a comment Notepad saved in the ANSI code page. They read as
+        /// U+FFFD, and writing the text back would replace those bytes for good, so a save refuses it (NonUtf8Refusal).
+        /// </summary>
+        public List<int> InvalidUtf8Lines = new List<int>();
+        /// <summary>Only for a restored backup: these bytes are validated and written as they are, not Text.</summary>
+        public byte[] ExactBytes;
 
         /// <summary>Keywords whose lines add up in sshd (servconf.c appends each line to the list): all of them count.</summary>
         public static readonly string[] CumulativeKeywords = { "AllowUsers", "AllowGroups", "DenyUsers", "DenyGroups" };
@@ -51,13 +58,77 @@ namespace OpenSSHServerPNManager
             {
                 if (File.Exists(Ssh.DefaultConfigPath)) c.Path = Ssh.DefaultConfigPath; else return c;
             }
-            var text = File.ReadAllText(c.Path, Encoding.UTF8);
-            c.NewLine = text.Contains("\r\n") ? "\r\n" : "\n";
-            c.Lines = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None).ToList();
-            if (c.Lines.Count > 0 && c.Lines[c.Lines.Count - 1] == "") c.Lines.RemoveAt(c.Lines.Count - 1);
+            c.SetBytes(File.ReadAllBytes(c.Path));
             c.Path = path ?? Ssh.ConfigPath;
             c.LoadedDependencies = ConfigurationDependencies.Capture(c.Lines);
             return c;
+        }
+
+        /// <summary>A backup as it is on disk: saving it writes these exact bytes, whatever they contain.</summary>
+        public static SshdConfig LoadExact(string path)
+        {
+            var bytes = File.ReadAllBytes(path);
+            var c = new SshdConfig { Path = path, LoadedHash = ConfigurationDependencies.Hash(bytes), ExactBytes = bytes };
+            c.SetBytes(bytes);
+            c.LoadedDependencies = ConfigurationDependencies.Capture(c.Lines);
+            return c;
+        }
+
+        private void SetBytes(byte[] bytes)
+        {
+            var text = Decode(bytes, out InvalidUtf8Lines);
+            NewLine = text.Contains("\r\n") ? "\r\n" : "\n";
+            Lines = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None).ToList();
+            if (Lines.Count > 0 && Lines[Lines.Count - 1] == "") Lines.RemoveAt(Lines.Count - 1);
+        }
+
+        /// <summary>
+        /// The text of sshd_config bytes: strict UTF-8 (a BOM still selects its encoding, as File.ReadAllText did), and for
+        /// read-only callers a lenient decode with U+FFFD when lines are not UTF-8, which are reported.
+        /// </summary>
+        internal static string Decode(byte[] bytes, out List<int> invalidLines)
+        {
+            invalidLines = InvalidUtf8LineNumbers(bytes);
+            try
+            {
+                using (var reader = new StreamReader(new MemoryStream(bytes), new UTF8Encoding(false, true), true)) return reader.ReadToEnd();
+            }
+            catch (DecoderFallbackException)
+            {
+                using (var reader = new StreamReader(new MemoryStream(bytes), Encoding.UTF8, true)) return reader.ReadToEnd();
+            }
+        }
+
+        /// <summary>Lines (from 1) that are not valid UTF-8. A line break byte never occurs inside a UTF-8 sequence.</summary>
+        internal static List<int> InvalidUtf8LineNumbers(byte[] bytes)
+        {
+            var lines = new List<int>();
+            if (bytes.Length >= 2 && ((bytes[0] == 0xFF && bytes[1] == 0xFE) || (bytes[0] == 0xFE && bytes[1] == 0xFF))) return lines; // UTF-16: read by its BOM
+            var strict = new UTF8Encoding(false, true);
+            int start = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+            for (int line = 1; start <= bytes.Length; line++)
+            {
+                int end = Array.IndexOf(bytes, (byte)'\n', start);
+                if (end < 0) end = bytes.Length;
+                try { strict.GetCharCount(bytes, start, end - start); }
+                catch (DecoderFallbackException) { lines.Add(line); }
+                start = end + 1;
+            }
+            return lines;
+        }
+
+        /// <summary>
+        /// Why saving would destroy text that is not UTF-8, or null. A candidate read from such a file holds U+FFFD in its
+        /// place; a restored backup (ExactBytes) is written as it is. current: the file as it is now, for an editor text.
+        /// </summary>
+        internal static string NonUtf8Refusal(SshdConfig candidate, byte[] current)
+        {
+            if (candidate.ExactBytes != null || candidate.Text.IndexOf('�') < 0) return null;
+            var lines = candidate.InvalidUtf8Lines != null && candidate.InvalidUtf8Lines.Count > 0 ? candidate.InvalidUtf8Lines : current == null ? new List<int>() : InvalidUtf8LineNumbers(current);
+            if (lines.Count == 0) return null;
+            return "The configuration was NOT saved: sshd_config has text that is not UTF-8 on line" + (lines.Count > 1 ? "s " : " ") + string.Join(", ", lines.Take(10)) + (lines.Count > 10 ? " ..." : "") +
+                   ", probably saved in the ANSI code page by Notepad. The manager cannot show that text, and saving would replace it with � for good.\n\n" +
+                   "Open sshd_config in Notepad, save it with Save As and the encoding UTF-8, then reload it here and make the change again.";
         }
 
         /// <summary>SHA-256 of a file as hexadecimal, or "" when it does not exist.</summary>
@@ -72,7 +143,7 @@ namespace OpenSSHServerPNManager
         public string Text { get { return string.Join(NewLine, Lines) + NewLine; } }
 
         /// <summary>A copy to edit: changes reach the original only when the caller adopts the copy (after it was saved).</summary>
-        public SshdConfig Copy() { return new SshdConfig { Lines = Lines.ToList(), NewLine = NewLine, Path = Path, LoadedHash = LoadedHash, LoadedDependencies = LoadedDependencies }; }
+        public SshdConfig Copy() { return new SshdConfig { Lines = Lines.ToList(), NewLine = NewLine, Path = Path, LoadedHash = LoadedHash, LoadedDependencies = LoadedDependencies, InvalidUtf8Lines = InvalidUtf8Lines.ToList() }; }
 
         /// <summary>A Match line, or the start of the rules section of the Authentication tab or of the SFTP tab (whose first line is a comment).</summary>
         private static bool StartsMatchSection(string line)

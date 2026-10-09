@@ -19,6 +19,65 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
+## 10.5.8.0 / Manager 2.3.2 (not yet released)
+
+Corrections from the [follow-up review](AUDIT-2026-10-08-FOLLOWUP.md) of the 10.5.7.0 / 2.3.1
+sources. OpenSSH remains 10.5p1; the only native change is the `AuthorizedKeysFile` dump. Not
+released yet: the date and the release hashes are added when it is.
+
+- **Automatic blocking.** The exemption for addresses with a logged-in session never matched,
+  because the listening `sshd.exe` owns every connection in the TCP table; it now follows the
+  login `sshd` recorded for each session, and a session whose login has left the event log spares
+  every connected address instead of turning blocking off. A firewall rule that cannot be read is never rewritten
+  as if it were empty; additions merge with the rule as it is just before the write; the block
+  schedule is saved before the firewall changes and restored if the write fails; expiry of a
+  block no longer stops the rest of the minute's work when the firewall service is down; manual
+  blocks never expire by themselves; `sftp-server` events no longer crowd failures out of the scan.
+- **Alerts.** Client-chosen names and file names cannot act as links, mentions or Slack controls;
+  webhook redirects are not followed; a receipt waits up to two minutes for the state lock instead
+  of one second (fewer duplicates); a failing destination is skipped for the rest of a run; exhausted
+  alerts are kept 30 days, at most 200 per destination; the monthly report states gaps and archive
+  problems; the daily task starts at 00:30:30. State files are replaced safely on classic NTFS.
+- **Keys.** `authorized_keys` is parsed as `sshd` parses it (quoted options, `rsa-sha2-*` names);
+  removing a key no longer removes other lines. Key files are replaced by rename with their final
+  permissions from creation, retried while `sshd` reads them, and refused behind junctions or hard
+  links. PuTTY Ed25519 keys with a short private integer load; PEM keys on drives without
+  permissions are inspected; RFC 4716 exports carry the key's own comment; the setup wizard counts
+  only keys `sshd` can use and warns before key-only login.
+- **SFTP partners.** Setup no longer rewrites the login methods of every account; editing a partner
+  rule keeps its keys file; a new partner never adopts an existing folder (reuse asks and resets
+  its permissions) and never inherits an earlier account's keys; an unsafe partner root is
+  reported; domain controllers are refused; delete disables first, then disconnects; expired
+  partners can be edited; dates after 2106 are refused.
+- **Configuration and restarts.** `Services.Start/Stop` tolerate status races and fail at once when
+  a service stops while starting. Dashboard and tray restarts of a saved, never-run file go through
+  the confirmation and recovery; rollback restores what `sshd` actually ran; a recovery that cannot
+  finish can be resolved from the window; recovery is no longer a minute late; task definitions are
+  staged in an administrators-only folder; non-UTF-8 `sshd_config` text is never overwritten;
+  errors after a save no longer say "not saved"; saving only the default shell does not rewrite
+  `sshd_config`.
+- **Server window.** The wizard never narrows the firewall rule to a port `sshd` does not use; when
+  a `ListenAddress` port or an `Include` decides the port, it says so, and its summary names the
+  ports `sshd -T` reports for the new settings. *Fix selected* applies every selected fix; the tray stays current on the Sessions tab; F5 asks
+  before discarding unsaved Firewall and Alerts edits; destructive questions default to No;
+  Ctrl+1…9 follow the navigation; stored numbers outside a field's range no longer stop the window.
+- **Client workspace.** Works on a full-token administrator desktop (the built-in Administrator on
+  Windows Server) with a reduced token; ssh and sftp start in the profile folder and keep a failed
+  connection's console open; non-UTF-8 files no longer blank the tab; `%` in host names and paths
+  is handled as `ssh` expands it; trust and host edits keep unrelated lines.
+- **Dates** use Gregorian years under cultures with another calendar (th-TH showed 2569).
+- **Installer.** A failed upgrade or repair starts the services that ran before and undoes an
+  `SSHD_PORT` change, and so does a cancelled or failed uninstall or `REMOVE=Server` for the
+  services; an administrator's *Disabled* or delayed start type is kept; `ssh-agent` gets
+  its privilege restriction in client-only installs; the `SSHD_PORT` check requires `sshd` itself
+  on the port; `sshd_config` is replaced by rename with its permissions; `install-sshd.ps1` runs on
+  PowerShell 2.0. CI: the MSI signing-target check reads the MSI File table (it could never pass
+  on a signed tag before), and every release upload is checked.
+- **Native.** `sshd -T` quotes an `AuthorizedKeysFile` value that starts with `=`.
+
+Local validation: **290 manager unit tests**, **49 GUI checks**, **188 preinstall checks** and the
+build-reproducibility checks pass. Hosted runs are pending.
+
 ## 10.5.7.0 / Manager 2.3.1 (2026-10-08)
 
 Repairs the three kinds of installer acceptance failures found in the 10.5.6.0

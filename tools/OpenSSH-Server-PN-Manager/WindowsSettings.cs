@@ -101,33 +101,63 @@ namespace OpenSSHServerPNManager
         /// </summary>
         public static FirewallRule Get() { return Get(RuleName, ManagedRuleName); }
 
-        /// <summary>The first inbound rule with one of these names, or null (the names are tried in order).</summary>
+        /// <summary>The first inbound rule with one of these names, or null (the names are tried in order). A failed query is logged and also gives null.</summary>
         public static FirewallRule Get(params string[] names)
         {
-            try
-            {
-                dynamic policy = Policy();
-                foreach (var name in names)
-                {
-                    dynamic byName = null;
-                    // No rule of that name: through dynamic, the COM error comes as FileNotFoundException (0x80070002), and
-                    // must not end the search, or the second name is never tried.
-                    try { byName = policy.Rules.Item(name); } catch (Exception ex) when (ex is COMException || ex is FileNotFoundException) { continue; }
-                    if ((int)byName.Direction == 1) return FromRule(name, byName);
-                    foreach (dynamic r in policy.Rules)
-                    {
-                        try { if ((string)r.Name == name && (int)r.Direction == 1) return FromRule(name, r); }
-                        catch { }
-                    }
-                }
-            }
+            try { return Find(names); }
             catch (Exception ex) { Log.Error("Firewall query failed", ex, false); }
             return null;
         }
 
-        private static FirewallRule FromRule(string name, dynamic r)
+        /// <summary>Like Get, but a failed query throws: a caller that would create or rewrite the rule must not take it for "no rule".</summary>
+        public static FirewallRule Find() { return Find(RuleName, ManagedRuleName); }
+
+        public static FirewallRule Find(params string[] names)
         {
-            return CaptureRule((object)r);
+            object policy = Policy();
+            foreach (var name in names)
+            {
+                var rule = FindInbound(policy, name);
+                if (rule != null) return CaptureRule(rule);
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// The inbound rule of this name, or null when there is none. Get and Apply both pick the rule through here, in the same
+        /// order of names: when both names exist (the documented extra rule for the Domain profile, or the in-box rule next to a
+        /// package's), Apply must change the rule Get shows.
+        /// </summary>
+        internal static object FindInbound(object policyObject, string name)
+        {
+            dynamic policy = policyObject;
+            dynamic byName;
+            // No rule of that name: through dynamic, the COM error comes as FileNotFoundException (0x80070002), and must not end
+            // the search, or the second name is never tried. Any other failure is not "no rule".
+            try { byName = policy.Rules.Item(name); } catch (Exception ex) when (IsNotFound(ex)) { return null; }
+            if ((int)byName.Direction == 1) return (object)byName;
+            foreach (dynamic r in policy.Rules)
+            {
+                try { if ((string)r.Name == name && (int)r.Direction == 1) return (object)r; }
+                catch { }
+            }
+            return null;
+        }
+
+        /// <summary>The rule Apply changes: the one Get shows.</summary>
+        internal static object SelectManaged(object policy)
+        {
+            foreach (var name in new[] { RuleName, ManagedRuleName })
+            {
+                var rule = FindInbound(policy, name);
+                if (rule != null) return rule;
+            }
+            return null;
+        }
+
+        private static bool IsNotFound(Exception ex)
+        {
+            return ex is FileNotFoundException || (ex is COMException && ((COMException)ex).ErrorCode == unchecked((int)0x80070002));
         }
 
         internal static FirewallRule CaptureRule(object value)
@@ -282,11 +312,7 @@ namespace OpenSSHServerPNManager
         public static void Apply(bool enabled, int profiles, string ports)
         {
             dynamic policy = Policy();
-            dynamic rule = null;
-            foreach (dynamic r in policy.Rules)
-            {
-                try { if (((string)r.Name == RuleName || (string)r.Name == ManagedRuleName) && (int)r.Direction == 1) { rule = r; break; } } catch { }
-            }
+            dynamic rule = SelectManaged((object)policy);
             if (rule == null)
             {
                 rule = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FWRule"));
@@ -325,8 +351,10 @@ namespace OpenSSHServerPNManager
             var l = new List<KeyValuePair<string, dynamic>>();
             foreach (var n in new[] { BlockRuleName, LegacyBlockRuleName })
             {
-                // No such rule: through dynamic, the COM error comes as FileNotFoundException (0x80070002).
-                try { dynamic r = policy.Rules.Item(n); l.Add(new KeyValuePair<string, dynamic>(n, r)); } catch (Exception ex) when (ex is COMException || ex is FileNotFoundException) { }
+                // No such rule: through dynamic, the COM error comes as FileNotFoundException (0x80070002). Any other failure
+                // is not "nothing blocked": callers rewrite the rule from this list, which would unblock every other address.
+                try { dynamic r = policy.Rules.Item(n); l.Add(new KeyValuePair<string, dynamic>(n, r)); }
+                catch (Exception ex) when (IsNotFound(ex)) { }
             }
             return l;
         }
@@ -339,22 +367,20 @@ namespace OpenSSHServerPNManager
 
         /// <summary>
         /// The addresses in the block rule (empty when there is none). When both names exist (1.6.0 was started again after
-        /// 2.0.0), the addresses of both.
+        /// 2.0.0), the addresses of both. A rule that cannot be read throws: the list is written back with additions.
         /// </summary>
-        public static List<string> BlockedAddresses()
+        public static List<string> BlockedAddresses() { return AddressesOf(BlockRules((object)Policy())); }
+
+        private static List<string> AddressesOf(List<KeyValuePair<string, dynamic>> rules)
         {
-            try
+            var all = new List<string>();
+            foreach (var kv in rules)
             {
-                var all = new List<string>();
-                foreach (var kv in BlockRules((object)Policy()))
-                {
-                    var v = (string)kv.Value.RemoteAddresses;
-                    if (string.IsNullOrEmpty(v) || v == "*") continue;
-                    all.AddRange(v.Split(',').Select(a => NormaliseAddress(a.Trim())).Where(a => a.Length > 0));
-                }
-                return all.Distinct().ToList();
+                var v = (string)kv.Value.RemoteAddresses;
+                if (string.IsNullOrEmpty(v) || v == "*") continue;
+                all.AddRange(v.Split(',').Select(a => NormaliseAddress(a.Trim())).Where(a => a.Length > 0));
             }
-            catch (COMException) { return new List<string>(); }
+            return all.Distinct().ToList();
         }
 
         /// <summary>"1.2.3.4/255.255.255.255" (how Windows stores a single address) as "1.2.3.4"; ranges and subnets stay as they are.</summary>
@@ -365,14 +391,42 @@ namespace OpenSSHServerPNManager
             return a;
         }
 
+        /// <summary>An IPv6 address without its zone ("fe80::1%12" as "fe80::1"); anything else as it is.</summary>
+        public static string WithoutZone(string a)
+        {
+            a = a ?? "";
+            int zone = a.IndexOf('%');
+            return zone > 0 && a.IndexOf(':') >= 0 ? a.Substring(0, zone) : a;
+        }
+
         /// <summary>
         /// Writes the block rule: TCP to the given local ports from these addresses is blocked on every profile. An empty
         /// list removes the rule. When rules of both names exist, the first is written and the other removed afterwards.
         /// </summary>
         public static void SetBlockedAddresses(IList<string> addresses, string ports)
         {
-            dynamic policy = Policy();
-            var rules = BlockRules((object)policy);
+            object policy = Policy();
+            WriteBlockRules(policy, BlockRules(policy), addresses, ports);
+        }
+
+        /// <summary>
+        /// Adds addresses to the block rule and sets its ports (also with none to add: the listeners may have changed). The rule
+        /// is read again just before the write, so an address someone else blocked meanwhile stays: the agent and the Logs
+        /// dialog both add to it.
+        /// </summary>
+        public static void AddBlockedAddresses(IEnumerable<string> add, string ports) { AddBlockedAddresses((object)Policy(), add, ports); }
+
+        internal static void AddBlockedAddresses(object policy, IEnumerable<string> add, string ports)
+        {
+            var rules = BlockRules(policy);
+            var all = AddressesOf(rules);
+            foreach (var a in add) if (!all.Contains(a)) all.Add(a);
+            if (all.Count > 0) WriteBlockRules(policy, rules, all, ports);
+        }
+
+        private static void WriteBlockRules(object policyObject, List<KeyValuePair<string, dynamic>> rules, IList<string> addresses, string ports)
+        {
+            dynamic policy = policyObject;
             if (addresses == null || addresses.Count == 0) { foreach (var kv in rules) policy.Rules.Remove(kv.Key); return; }
             if (rules.Count > 0)
             {
@@ -421,9 +475,11 @@ namespace OpenSSHServerPNManager
             if (IPAddress.IsLoopback(ip)) return address + " is this computer (loopback)";
             try
             {
+                // By the bytes: a link-local address of this computer carries its zone here, the logged one does not.
                 foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
                     foreach (var ua in ni.GetIPProperties().UnicastAddresses)
-                        if (ua.Address.Equals(ip)) return address + " is an address of this computer";
+                        if (ua.Address.Equals(ip) || (ua.Address.AddressFamily == ip.AddressFamily && ua.Address.GetAddressBytes().SequenceEqual(ip.GetAddressBytes())))
+                            return address + " is an address of this computer";
             }
             catch { }
             return null;
@@ -458,7 +514,7 @@ namespace OpenSSHServerPNManager
                         {
                             string msg;
                             try { msg = rec.FormatDescription(); } catch { msg = null; }
-                            if (string.IsNullOrEmpty(msg)) { try { msg = string.Join(" ", rec.Properties.Select(p => Convert.ToString(p.Value))); } catch { msg = "(no message)"; } }
+                            if (string.IsNullOrEmpty(msg)) { try { msg = FallbackText(rec.Properties.Select(p => p.Value)); } catch { msg = "(no message)"; } }
                             msg = msg.Replace("\r", " ").Replace("\n", " ").Trim();
                             if (!string.IsNullOrEmpty(filter) && msg.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
                             string level; try { level = rec.LevelDisplayName; } catch { level = rec.Level.ToString(); }
@@ -472,11 +528,83 @@ namespace OpenSSHServerPNManager
             return l;
         }
 
+        /// <summary>An event's text from its values when it cannot be formatted: as the manifest's message "%1: %2" (process: text).</summary>
+        internal static string FallbackText(IEnumerable<object> values) { return string.Join(": ", values.Select(v => Convert.ToString(v))); }
+
+        /// <summary>The most failed logins one scan keeps (ReadFailures).</summary>
+        internal const int MaxFailures = 20000;
+
+        /// <summary>The events of the failure scan: those of the last period, without sftp-server's (internal-sftp logs as sftp-server too).</summary>
+        internal static string FailureQuery(TimeSpan period, bool withoutSftp)
+        {
+            var time = "TimeCreated[timediff(@SystemTime) <= " + (long)period.TotalMilliseconds + "]";
+            return withoutSftp ? "*[System[" + time + "] and EventData[Data[@Name='process']!='sftp-server']]" : "*[System[" + time + "]]";
+        }
+
+        /// <summary>
+        /// The failed logins of the last period, newest first, for automatic blocking and burst alerts. Unlike Read, the events
+        /// scanned are not limited in number (transfer logging and LogLevel VERBOSE fill the log with other lines): only failures
+        /// are kept, at most MaxFailures, within a time budget. problem says what was cut short or could not be read, or is null.
+        /// </summary>
+        public static List<LogEvent> ReadFailures(TimeSpan period, CancellationToken cancel, out string problem)
+        {
+            problem = null; bool truncated; List<LogEvent> l;
+            var budget = TimeSpan.FromSeconds(30);
+            try
+            {
+                try { l = CollectFailures(Records(FailureQuery(period, true), cancel), MaxFailures, budget, out truncated); }
+                // An event query that does not take "!=": the same scan, with sftp-server's events left out here.
+                catch (EventLogException ex) when (!(ex is EventLogNotFoundException)) { l = CollectFailures(Records(FailureQuery(period, false), cancel), MaxFailures, budget, out truncated); }
+            }
+            catch (EventLogNotFoundException) { return new List<LogEvent>(); }
+            catch (Exception ex) { problem = "failed logins could not be read: " + ex.Message; return new List<LogEvent>(); }
+            if (truncated) problem = "the failed-login scan was cut short: only the newest " + l.Count + " failures of the last " + (int)period.TotalMinutes + " minutes were counted";
+            return l;
+        }
+
+        /// <summary>The failed logins among (process, event) pairs, newest first: sftp-server's skipped, at most max kept, the scan stopped after budget.</summary>
+        internal static List<LogEvent> CollectFailures(IEnumerable<KeyValuePair<string, LogEvent>> newestFirst, int max, TimeSpan budget, out bool truncated)
+        {
+            var l = new List<LogEvent>(); truncated = false;
+            var clock = Stopwatch.StartNew();
+            foreach (var e in newestFirst)
+            {
+                if (clock.Elapsed > budget) { truncated = true; break; }
+                string user;
+                if (e.Key == "sftp-server" || FailedLoginAddress(e.Value.Message, out user) == null) continue;
+                if (l.Count >= max) { truncated = true; break; }
+                l.Add(e.Value);
+            }
+            return l;
+        }
+
+        private static IEnumerable<KeyValuePair<string, LogEvent>> Records(string xpath, CancellationToken cancel)
+        {
+            using (var reader = new EventLogReader(new EventLogQuery(LogName, PathType.LogName, xpath) { ReverseDirection = true }))
+            {
+                EventRecord rec;
+                while (!cancel.IsCancellationRequested && (rec = reader.ReadEvent()) != null)
+                    using (rec)
+                    {
+                        // The manifest's two values (process, text) are the message without its "process: " prefix, and much
+                        // cheaper to read than the formatted message.
+                        string process = "", msg = null;
+                        try { if (rec.Properties.Count >= 2) { process = Convert.ToString(rec.Properties[0].Value) ?? ""; msg = Convert.ToString(rec.Properties[1].Value); } } catch { }
+                        if (msg == null) try { msg = rec.FormatDescription(); } catch { }
+                        if (string.IsNullOrEmpty(msg)) continue;
+                        yield return new KeyValuePair<string, LogEvent>(process, new LogEvent { Time = rec.TimeCreated ?? DateTime.MinValue, Id = rec.Id, Level = "", Message = msg.Replace("\r", " ").Replace("\n", " ").Trim() });
+                    }
+            }
+        }
+
         private static readonly Regex FailurePattern = new Regex(
             // The address is taken from the END of the message: a user name may contain spaces, so "ssh -l 'x from 10.1.2.3
             // port 22' server" makes sshd log "Invalid user x from 10.1.2.3 port 22 from <real address> port <n>". The user
-            // groups are greedy and the address must be followed only by the port, "ssh2" and "[preauth]".
-            @"(?:^|: )(?:(?:Failed \S+ for (?:invalid user )?(?<user>.*)|Invalid user (?<user>.*)|maximum authentication attempts exceeded for (?:invalid user )?(?<user>.*)) from|(?:Connection closed by|Disconnected from) (?:authenticating|invalid) user (?<user>.*)|Timeout before authentication for) (?<addr>[0-9A-Fa-f.:]+) port \d+(?: ssh2)?(?: \[preauth\])?\s*$",
+            // groups are greedy and the address must be followed only by the port, "ssh2" and "[preauth]". A link-local
+            // address comes with its zone (fe80::1%12), which is left out of the address.
+            // "Failed publickey ... ssh2: <key>" is deliberately not counted: under LogLevel VERBOSE sshd logs it for every
+            // key a legitimate client offers before the right one, and blocking would catch such clients.
+            @"(?:^|: )(?:(?:Failed \S+ for (?:invalid user )?(?<user>.*)|Invalid user (?<user>.*)|maximum authentication attempts exceeded for (?:invalid user )?(?<user>.*)) from|(?:Connection closed by|Disconnected from) (?:authenticating|invalid) user (?<user>.*)|Timeout before authentication for) (?<addr>[0-9A-Fa-f.:]+)(?:%[0-9A-Za-z._-]+)? port \d+(?: ssh2)?(?: \[preauth\])?\s*$",
             RegexOptions.IgnoreCase);
 
         /// <summary>

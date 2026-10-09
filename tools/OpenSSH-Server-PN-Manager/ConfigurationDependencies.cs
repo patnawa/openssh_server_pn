@@ -63,10 +63,17 @@ namespace OpenSSHServerPNManager
 
         internal static ConfigurationDependencies Combine(ConfigurationDependencies first, ConfigurationDependencies second)
         {
+            foreach (var item in new[] { first, second }.Where(x => x != null)) item.RequireUnchanged();
+            return Union(first, second);
+        }
+
+        /// <summary>Both snapshots together, not checked again: the caller has just verified each of them.</summary>
+        internal static ConfigurationDependencies Union(ConfigurationDependencies first, ConfigurationDependencies second)
+        {
             var result = new ConfigurationDependencies();
             foreach (var item in new[] { first, second }.Where(x => x != null))
             {
-                item.RequireUnchanged();
+                if (item._error != null) result._error = item._error;
                 foreach (var file in item._files) result._files[file.Key] = file.Value;
                 foreach (var selector in item._selectors) result._selectors[selector.Key] = selector.Value.ToArray();
             }

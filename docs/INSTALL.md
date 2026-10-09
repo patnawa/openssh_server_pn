@@ -122,9 +122,14 @@ installed and clears it before it copies a single file:
    upgrade with an open session ended with "restart required" and the old binaries in use.
 4. **The in-box Windows *OpenSSH Server* capability** is removed if present (section 6).
 5. Files, services, firewall rule and registry entries are re-created and the services started.
+   From 10.5.8.0 on, a service an administrator set to *Disabled* or *Automatic (delayed
+   start)* keeps that start type, and a disabled service stays stopped, also when the previous
+   package had another architecture or folder. A registration that pointed at the in-box OpenSSH
+   gets the package's defaults, since its start types are Windows' own.
 
 All of this runs inside one Windows Installer transaction: if the install fails, the previous
-package is restored, and since 10.5.2.0 also its firewall settings. The pre-install
+package is restored, and since 10.5.2.0 also its firewall settings. From 10.5.8.0 on it also
+starts again the services that ran before, and undo an `SSHD_PORT` change to `sshd_config`. The pre-install
 steps are not undone: sessions it ended stay ended, and a removed in-box *OpenSSH Server*
 capability stays removed (`Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0`
 brings it back). Pass `ACTIVE_SESSIONS=abort` to stop an install instead of ending sessions.
@@ -385,7 +390,38 @@ From 10.5.4.0 on, it also removes the scheduled tasks of the manager's Alerts ta
 `%ProgramData%\ssh` (configuration, host keys, logs, the manager's alert settings and transfer
 archive in `manager`, the partners' keys in `partner_keys`) in place; delete it manually if you
 want a clean slate. Partner accounts, their groups and their folders stay too: delete the partners
-on the Partners tab first if they should go.
+on the Partners tab first if they should go. From 10.5.8.0 on, an uninstall or
+`REMOVE=Server` that is cancelled or fails starts `sshd` and `ssh-agent` again if they were
+running; sessions it ended stay ended.
+
+**Windows' own OpenSSH after the uninstall.** The package takes over the `ssh-agent` service of
+the in-box *OpenSSH Client* capability, which Windows 10 1809 and later, Windows 11 and Windows
+Server 2019 and later have by default, and with `KEEP_INBOX_OPENSSH=1` the `sshd` service of the
+in-box server (section 6). The uninstall deletes these services by name, whoever registered them
+first. Afterwards the in-box `ssh-add` reports *Error connecting to agent*, `Get-Service ssh-agent`
+finds nothing, and *Settings* still lists the capability as installed. A later Windows update of
+the capability may register them again. To give the services back to
+`%SystemRoot%\System32\OpenSSH` now, run these lines in an elevated PowerShell. Type `sc.exe`, not
+`sc`: in PowerShell, `sc` is the alias of `Set-Content`, which would write files named `create`,
+`sdset` and `privs` instead. The security descriptor and the privileges are the ones the package
+sets (`shared.wxs`, `server.wxs`); the start types are Windows' defaults (*Disabled* for the agent,
+*Manual* for the server).
+
+```powershell
+$inbox = "$env:SystemRoot\System32\OpenSSH"
+sc.exe create ssh-agent binPath= "$inbox\ssh-agent.exe" start= disabled obj= LocalSystem DisplayName= "OpenSSH Authentication Agent"
+sc.exe description ssh-agent "Agent to hold private keys used for public key authentication."
+sc.exe sdset ssh-agent "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)(A;;RP;;;AU)"
+sc.exe privs ssh-agent SeAssignPrimaryTokenPrivilege/SeTcbPrivilege/SeBackupPrivilege/SeRestorePrivilege/SeImpersonatePrivilege
+# Only after an install with KEEP_INBOX_OPENSSH=1, while $inbox\sshd.exe is still there:
+sc.exe create sshd binPath= "$inbox\sshd.exe" start= demand obj= LocalSystem DisplayName= "OpenSSH SSH Server"
+sc.exe privs sshd SeAssignPrimaryTokenPrivilege/SeTcbPrivilege/SeBackupPrivilege/SeRestorePrivilege/SeImpersonatePrivilege
+```
+
+To use the in-box agent, then run `Set-Service ssh-agent -StartupType Automatic` and
+`Start-Service ssh-agent`. If `sc.exe create` fails with error 1072, the service is still marked
+for deletion: close *Services* and any other program that has it open, or restart, and run the
+line again.
 
 ## 8. Troubleshooting
 

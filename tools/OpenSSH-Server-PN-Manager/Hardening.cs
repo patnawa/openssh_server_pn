@@ -143,8 +143,10 @@ namespace OpenSSHServerPNManager
 
             var sshd = Services.Status("sshd");
             add("sshd service", sshd.Status == "Running" && sshd.StartMode.StartsWith("Auto"), "running, automatic start", "status " + sshd.Status + ", start mode " + sshd.StartMode);
-            var fw = Firewall.Get();
-            add("Firewall rule", fw != null && fw.Enabled, fw == null ? "" : "enabled for " + fw.ProfilesText, fw == null ? "no inbound rule for sshd; remote clients cannot connect" : "rule disabled");
+            FirewallRule fw = null; string fwError = null;
+            try { fw = Firewall.Find(); } catch (Exception ex) { fwError = ex.Message; }
+            if (fwError != null) l.Add(new CheckResult { Name = "Firewall rule", Status = "INFO", Detail = "not checked: " + fwError });
+            else add("Firewall rule", fw != null && fw.Enabled, fw == null ? "" : "enabled for " + fw.ProfilesText, fw == null ? "no inbound rule for sshd; remote clients cannot connect" : "rule disabled");
             var hk = HostKeys.List();
             add("Host keys", hk.Count >= 1 && hk.All(k => k.Fingerprint != null && k.Fingerprint.StartsWith("SHA256:")), hk.Count + " host key(s) present", "host keys missing or unreadable; use 'Generate missing host keys'");
             // Windows servicing of an in-box OpenSSH capability (adding it, or an update to it) points the sshd or
@@ -174,7 +176,9 @@ namespace OpenSSHServerPNManager
             {
                 var pub = SecurityAudit.PublicNetworks();
                 bool exposed = fw != null && fw.Enabled && (fw.Profiles & 4) != 0 && pub.Count > 0;
-                add("Public network exposure", !exposed, pub.Count == 0 ? "no connected network is public" : "the sshd rule does not apply to the public network " + string.Join(", ", pub),
+                // An unread rule says nothing about exposure: without it, a public network is not judged "OK".
+                if (fwError != null && pub.Count > 0) l.Add(new CheckResult { Name = "Public network exposure", Status = "INFO", Detail = "not checked: the firewall rule could not be read (" + fwError + ")" });
+                else add("Public network exposure", !exposed, pub.Count == 0 ? "no connected network is public" : "the sshd rule does not apply to the public network " + string.Join(", ", pub),
                     "SSH is reachable on the public network " + string.Join(", ", pub) + "; untick Public on the Firewall tab unless the server must be reachable there");
             }
             catch (Exception ex) { l.Add(new CheckResult { Name = "Public network exposure", Status = "INFO", Detail = "not checked: " + ex.Message }); }

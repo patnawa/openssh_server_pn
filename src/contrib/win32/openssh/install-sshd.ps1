@@ -136,7 +136,8 @@ if (Test-Path $moduliPath -PathType Leaf)
 }
 
 # Fix permissions for executables and DLLs in the script directory
-Get-ChildItem -Path (Join-Path $scriptdir '*') -Include *.exe, *.dll -File | ForEach-Object {
+# (PSIsContainer instead of -File, which PowerShell 2.0 does not have; the services are already deleted here)
+Get-ChildItem -Path (Join-Path $scriptdir '*') -Include *.exe, *.dll | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
     Repair-ApplicationFilePermission -FilePath $_.FullName @psBoundParameters
 }
 

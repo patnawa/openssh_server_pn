@@ -42,9 +42,19 @@ namespace OpenSSHServerPNManager
             {
                 Log.Info("Configuration rejected: " + error.Message);
                 if (!Program.Unattended) MessageBox.Show(this, error.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                Status("Not saved: configuration rejected"); return;
+                Status(ConfigErrorStatus(error)); return;
             }
             Log.Error("Operation failed", error, show); Status("Error: " + error.Message);
+        }
+
+        /// <summary>
+        /// The status line after a refused or interrupted operation: its message's own first line, since some come after
+        /// the file was saved ("Settings were saved, but ...") and must not read as "not saved".
+        /// </summary>
+        internal static string ConfigErrorStatus(Exception error)
+        {
+            var first = (error.Message ?? "").Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+            return "Stopped: " + (first.Length > 160 ? first.Substring(0, 157) + "..." : first);
         }
 
         private Task TrackOperation(Task task)

@@ -51,6 +51,13 @@ namespace OpenSSHServerPNManager
                 AuditGuiTests.Run(test, tmpDir);
                 ClientRegressionTests.Run(test, tmpDir);
                 AuditInfrastructureTests.Run(test, tmpDir);
+                FollowUpAuditTests.Run(test, tmpDir);
+                FollowUpKeysTests.Run(test, tmpDir);
+                FollowUpPartnerTests.Run(test, tmpDir);
+                FollowUpAgentTests.Run(test, tmpDir);
+                FollowUpConfigTests.Run(test, tmpDir);
+                FollowUpGuiTests.Run(test, tmpDir);
+                FollowUpClientTests.Run(test, tmpDir);
                 if (!unitOnly) Server(test, tmpDir);
             }
             finally { try { Directory.Delete(tmpDir, true); } catch { } }
@@ -1634,13 +1641,22 @@ namespace OpenSSHServerPNManager
                 if (left.Length > 0) throw new Exception("left behind: " + string.Join(", ", left));
                 return "same answer for " + me + " in " + sw.Elapsed.TotalSeconds.ToString("0.0") + " s";
             });
+            test("scheduled tasks: SYSTEM task definitions are staged where only administrators can write", () =>
+            {
+                if (!Elevation.IsAdministrator()) return "skipped: not elevated";
+                var dir = SystemTasks.StagingDir(Guid.NewGuid().ToString("N"));
+                Acl.CreatePrivateFolder(dir);
+                try { ConfigurationRecovery.RequireTrustedPath(dir); }
+                finally { Directory.Delete(dir, true); }
+                return null;
+            });
             test("login methods: lock-out warning for the current account", () =>
             {
                 if (!Elevation.IsAdministrator()) return "skipped: not elevated";
                 var baseCfg = SshdConfig.Load();
                 var me = Accounts.AsciiLower(KeyGen.LoginName());
-                var file = Ssh.AuthorizedKeysFileFor(me, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
-                int keys = 0; try { if (file != null) keys = Keys.Read(file).Count(k => k.Type != "?"); } catch { }
+                // Counted as LockoutWarning counts: every configured file, usable keys only.
+                int keys = 0; try { keys = Keys.UsableCount(Ssh.AuthorizedKeysFilesFor(me, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile))); } catch { }
                 Func<AuthMethods, string> warn = g =>
                 {
                     var c = new SshdConfig { Lines = baseCfg.Lines.ToList(), NewLine = baseCfg.NewLine };

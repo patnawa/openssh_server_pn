@@ -7,14 +7,16 @@
 # No action runs and nothing is installed.
 # - InstallExecuteSequence: the ACTIVE_SESSIONS check before InstallValidate; the firewall save step
 #   (and its rollback) between InstallInitialize and InstallExecute, with RemoveExistingProducts
-#   immediately after InstallExecute (ICE63, error 2613); the firewall step after the WiX action
-#   that creates the rule, its commit after it; the SSHD_PORT step after StartServices.
+#   immediately after InstallExecute (ICE63, error 2613), for the server and for the agent (it also
+#   carries the services over); the firewall step after the WiX action that creates the rule, its
+#   commit after it; the SSHD_PORT step and its rollback after StartServices, the step that sets the
+#   kept start types after both; the ssh-agent privileges whenever the agent is installed.
 # - CustomAction types (immediate / deferred / rollback / commit, no impersonation, return code).
 # - The powershell.exe command lines: -InputFormat None (without it Windows PowerShell 2.0 waits for the end of the
 #   standard input that WixQuietExec keeps open, and the installation hangs on Windows 7 and Server 2008 R2); every
 #   CustomAction.Target within its 255 characters.
 # - ServiceInstall: ErrorControl normal; SecureCustomProperties.
-# - LaunchCondition: SSHD_PORT and ACTIVE_SESSIONS values accepted and refused.
+# - LaunchCondition: SSHD_PORT, ACTIVE_SESSIONS and INSTALLFOLDER values accepted and refused.
 param([string]$Msi = '')
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -104,24 +106,47 @@ Before 'OpenSSHFirewallProfiles' 'OpenSSHFirewallCommit'
 Before 'StartServices' 'OpenSSHSshdPort'
 Before 'OpenSSHSshdPort' 'InstallFinalize'
 Check 'OpenSSHSshdPort condition' ($cond['OpenSSHSshdPort'] -eq 'SSHD_PORT AND &Server = 3') $cond['OpenSSHSshdPort']
-foreach ($a in @('OpenSSHFirewallSave', 'OpenSSHFirewallSaveRollback', 'OpenSSHFirewallProfiles', 'OpenSSHFirewallCommit')) { Check ($a + ' condition') ($cond[$a] -eq '&Server = 3') $cond[$a] }
-Check 'the save step: keep when a package of this series is installed' ($cond['SetOpenSSHFirewallSaveKeep'] -match '^Installed OR OPENSSH_PREVIOUS_INSTALLED OR OPENSSH_NEWER_INSTALLED' -and $target['SetOpenSSHFirewallSaveKeep'] -match 'fwsave -Previous keep"$')
-Check 'the save step: fresh otherwise' ($cond['SetOpenSSHFirewallSaveFresh'] -eq ('NOT (' + $cond['SetOpenSSHFirewallSaveKeep'] + ')') -and $target['SetOpenSSHFirewallSaveFresh'] -match 'fwsave -Previous none"$')
+# the port change is undone by a rollback; registered before the step, so it runs after the step's effects are undone
+Before 'StartServices' 'OpenSSHSshdPortRollback'
+Before 'OpenSSHSshdPortRollback' 'OpenSSHSshdPort'
+Check 'OpenSSHSshdPortRollback condition: that of the port step' ($cond['OpenSSHSshdPortRollback'] -eq $cond['OpenSSHSshdPort']) $cond['OpenSSHSshdPortRollback']
+# kept start types: after the services are started and after the port step's restart
+Before 'StartServices' 'OpenSSHServicesRestore'
+Before 'OpenSSHSshdPort' 'OpenSSHServicesRestore'
+Before 'OpenSSHServicesRestore' 'InstallFinalize'
+Check 'OpenSSHFirewallProfiles condition' ($cond['OpenSSHFirewallProfiles'] -eq '&Server = 3') $cond['OpenSSHFirewallProfiles']
+# the save, its rollback and commit, and the restore step also run for the agent (client-only, repair); the save,
+# rollback and commit also for an uninstall or REMOVE=Server, so that a cancelled one starts the stopped services again,
+# but not while an upgrade removes this package (the upgrading package keeps its own record)
+Check 'OpenSSHServicesRestore condition: the server or the agent is installed' ($cond['OpenSSHServicesRestore'] -eq '&Server = 3 OR $SshAgentComponent = 3') $cond['OpenSSHServicesRestore']
+foreach ($a in @('OpenSSHFirewallSave', 'OpenSSHFirewallSaveRollback', 'OpenSSHFirewallCommit')) {
+    Check ($a + ' condition: installed, or removed other than by an upgrade') ($cond[$a] -eq '&Server = 3 OR $SshAgentComponent = 3 OR ((OpenSSHServerAction = "remove" OR OpenSSHSharedAction = "remove") AND NOT UPGRADINGPRODUCTCODE)') $cond[$a]
+}
+Check 'the save step: keep when a package of this series is installed' ($cond['SetOpenSSHFirewallSaveKeep'] -match '^Installed OR OPENSSH_PREVIOUS_INSTALLED OR OPENSSH_NEWER_INSTALLED' -and $target['SetOpenSSHFirewallSaveKeep'] -match 'fwsave -Previous keep \[OpenSSHFeatureArguments\]"$')
+Check 'the save step: fresh otherwise' ($cond['SetOpenSSHFirewallSaveFresh'] -eq ('NOT (' + $cond['SetOpenSSHFirewallSaveKeep'] + ')') -and $target['SetOpenSSHFirewallSaveFresh'] -match 'fwsave -Previous none \[OpenSSHFeatureArguments\]"$')
+Before 'SetOpenSSHFeatureArguments' 'SetOpenSSHFirewallSaveKeep'
+Check 'the restore step runs phase svcrestore' ($target['SetOpenSSHServicesRestore'] -match "'' '' svcrestore`"$") $target['SetOpenSSHServicesRestore']
+Check 'the port rollback runs phase portrollback' ($target['SetOpenSSHSshdPortRollback'] -match "'' '' portrollback`"$") $target['SetOpenSSHSshdPortRollback']
 
 # custom action types: 0x400 in script, 0x800 no impersonation, 0x100 rollback, 0x200 commit, 0x40 ignore exit code
-foreach ($a in @('OpenSSHPreInstall', 'OpenSSHFirewallSave', 'OpenSSHFirewallProfiles', 'OpenSSHSshdPort')) {
+foreach ($a in @('OpenSSHPreInstall', 'OpenSSHFirewallSave', 'OpenSSHFirewallProfiles', 'OpenSSHSshdPort', 'OpenSSHServicesRestore')) {
     Check ($a + ': deferred, no impersonation, exit code ignored') (($type[$a] -band 0xF40) -eq 0xC40) ([string]$type[$a])
 }
-Check 'OpenSSHFirewallSaveRollback: rollback, no impersonation' (($type['OpenSSHFirewallSaveRollback'] -band 0xF00) -eq 0xD00) ([string]$type['OpenSSHFirewallSaveRollback'])
+foreach ($a in @('OpenSSHFirewallSaveRollback', 'OpenSSHSshdPortRollback')) {
+    Check ($a + ': rollback, no impersonation, exit code ignored') (($type[$a] -band 0xF40) -eq 0xD40) ([string]$type[$a])
+}
 Check 'OpenSSHFirewallCommit: commit, no impersonation' (($type['OpenSSHFirewallCommit'] -band 0xF00) -eq 0xE00) ([string]$type['OpenSSHFirewallCommit'])
-foreach ($a in @('SetOpenSSHFirewallSaveKeep', 'SetOpenSSHFirewallSaveRollback', 'SetOpenSSHFirewallCommit', 'SetOpenSSHFirewallProfiles', 'SetOpenSSHSshdPort')) {
+foreach ($a in @('SetOpenSSHFirewallSaveKeep', 'SetOpenSSHFirewallSaveRollback', 'SetOpenSSHFirewallCommit', 'SetOpenSSHFirewallProfiles', 'SetOpenSSHSshdPort', 'SetOpenSSHSshdPortRollback', 'SetOpenSSHServicesRestore')) {
     Check ($a + ' uses the firewall script') ($target[$a] -match '"\[FirewallCommand\] ')
 }
 Check 'the firewall step gets SSHD_PORT' ($target['SetOpenSSHFirewallProfiles'] -match "-SshdPort '\[SSHD_PORT\]'")
+# The ssh-agent privileges follow the agent service: a client-only install restricts them too.
+Check 'SetPrivilegesOnSshAgent runs whenever the agent is installed' ($cond['SetPrivilegesOnSshAgent'] -eq '$SshAgentComponent = 3 OR &Server = 3') $cond['SetPrivilegesOnSshAgent']
+Before 'InstallServices' 'SetPrivilegesOnSshAgent'
 
 # powershell.exe command lines
 $psActions = @($target.Keys | Where-Object { $target[$_] -match 'powershell\.exe"' } | Sort-Object)
-Check 'the eight command lines that start powershell.exe' (($psActions -join ',') -eq 'SetOpenSSHCheckSessionsCommand,SetOpenSSHFirewallCommit,SetOpenSSHFirewallProfiles,SetOpenSSHFirewallSaveFresh,SetOpenSSHFirewallSaveKeep,SetOpenSSHFirewallSaveRollback,SetOpenSSHPreInstall,SetOpenSSHSshdPort') ($psActions -join ',')
+Check 'the ten command lines that start powershell.exe' (($psActions -join ',') -eq 'SetOpenSSHCheckSessionsCommand,SetOpenSSHFirewallCommit,SetOpenSSHFirewallProfiles,SetOpenSSHFirewallSaveFresh,SetOpenSSHFirewallSaveKeep,SetOpenSSHFirewallSaveRollback,SetOpenSSHPreInstall,SetOpenSSHServicesRestore,SetOpenSSHSshdPort,SetOpenSSHSshdPortRollback') ($psActions -join ',')
 foreach ($a in $psActions) {
     Check ($a + ': -NoProfile -NonInteractive -InputFormat None -Command') ($target[$a] -match 'powershell\.exe" -NoProfile -NonInteractive -InputFormat None -Command "') $target[$a]
 }
@@ -182,8 +207,10 @@ Check 'a first installation: the condition of the fresh firewall step' ($cond['S
 $launch = Rows 'SELECT `Condition`, `Description` FROM `LaunchCondition`'
 $portCond = ($launch | Where-Object { $_[1] -like 'SSHD_PORT*' } | Select-Object -First 1)
 $sessCond = ($launch | Where-Object { $_[1] -like 'ACTIVE_SESSIONS*' } | Select-Object -First 1)
+$folderCond = ($launch | Where-Object { $_[1] -like 'INSTALLFOLDER*' } | Select-Object -First 1)
 Check 'SSHD_PORT launch condition present' ($portCond -ne $null)
 Check 'ACTIVE_SESSIONS launch condition present' ($sessCond -ne $null)
+Check 'INSTALLFOLDER launch condition present' ($folderCond -ne $null)
 [System.Runtime.InteropServices.Marshal]::ReleaseComObject($db) | Out-Null
 $db = $null
 SetP $installer 'UILevel' @(2)   # msiUILevelNone
@@ -200,6 +227,12 @@ foreach ($c in @(@('', 1), @('22', 1), @('1', 1), @('2222', 1), @('65535', 1), @
 foreach ($c in @(@('', 1), @('close', 1), @('abort', 1), @('ABORT', 1), @('Close', 1), @('stop', 0), @('abort ', 0), @("abort'", 0), @('1', 0))) {
     $got = Eval 'ACTIVE_SESSIONS' $c[0] $sessCond[0]
     Check ("ACTIVE_SESSIONS='" + $c[0] + "' " + $(if ($c[1] -eq 1) { 'accepted' } else { 'refused' })) ($got -eq $c[1]) ('EvaluateCondition=' + $got)
+}
+# The folder lands in single-quoted PowerShell strings, which the typographic single quotes end too.
+foreach ($c in @(@('C:\Program Files\OpenSSH\', 1), @('D:\Apps (x)\Open SSH\', 1), @("D:\Bob's\OpenSSH\", 0),
+                 @(('D:\Bob' + [char]0x2018 + 's\OpenSSH\'), 0), @(('D:\Bob' + [char]0x2019 + 's\OpenSSH\'), 0), @(('D:\Bob' + [char]0x201A + 's\OpenSSH\'), 0))) {
+    $got = Eval 'INSTALLFOLDER' $c[0] $folderCond[0]
+    Check ("INSTALLFOLDER='" + $c[0] + "' (" + ((($c[0].ToCharArray() | Where-Object { [int]$_ -gt 126 }) | ForEach-Object { 'U+{0:X4}' -f [int]$_ }) -join ' ') + ") " + $(if ($c[1] -eq 1) { 'accepted' } else { 'refused' })) ($got -eq $c[1]) ('EvaluateCondition=' + $got)
 }
 # The check itself only runs for abort, whatever the case.
 SetP $session 'Property' @('OpenSSHServerAction', 'install')

@@ -52,9 +52,9 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Management console of OpenSSH Server PN: service, configuration, login methods, SFTP, keys, firewall, logs and hardening")]
 [assembly: System.Reflection.AssemblyCompany(OpenSSHServerPNManager.Program.Publisher)]
 [assembly: System.Reflection.AssemblyCopyright(OpenSSHServerPNManager.Program.Copyright)]
-[assembly: System.Reflection.AssemblyVersion("2.3.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.3.1.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("2.3.1")]
+[assembly: System.Reflection.AssemblyVersion("2.3.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("2.3.2.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("2.3.2")]
 
 namespace OpenSSHServerPNManager
 {
@@ -64,7 +64,7 @@ namespace OpenSSHServerPNManager
     internal static class Program
     {
         public const string AppName = "OpenSSH Server PN Manager";
-        public const string AppVersion = "2.3.1";
+        public const string AppVersion = "2.3.2";
         public const string Publisher = "patnawa";
         public const string Copyright = "Copyright © 2026 patnawa";
         public const string Website = "https://github.com/patnawa/openssh_server_pn";
@@ -93,9 +93,31 @@ namespace OpenSSHServerPNManager
             FreeConsole();
         }
 
+        /// <summary>
+        /// Dates are written as yyyy-MM-dd everywhere: lists, logs, e-mails, file names. Under a culture with another calendar
+        /// (th-TH counts in the Buddhist era: 2569 for 2026) the window and alerts showed 2569 next to logs and reports in 2026.
+        /// The culture's names and formats stay; only its calendar becomes the Gregorian one it offers.
+        /// </summary>
+        internal static void UseGregorianCalendar()
+        {
+            try
+            {
+                var current = System.Globalization.CultureInfo.CurrentCulture;
+                if (current.Calendar is System.Globalization.GregorianCalendar) return;
+                var gregorian = current.OptionalCalendars.OfType<System.Globalization.GregorianCalendar>().FirstOrDefault();
+                if (gregorian == null) return;
+                var culture = (System.Globalization.CultureInfo)current.Clone();
+                culture.DateTimeFormat.Calendar = gregorian;
+                System.Globalization.CultureInfo.DefaultThreadCurrentCulture = culture;
+                Thread.CurrentThread.CurrentCulture = culture;
+            }
+            catch (Exception ex) { Log.Error("Could not switch to the Gregorian calendar", ex, false); }
+        }
+
         [STAThread]
         private static int Main(string[] args)
         {
+            UseGregorianCalendar();
             // SSH_ASKPASS helper for the key generator: ssh-keygen and ssh run this program with the prompt as argument
             // and read the answer from standard output. The answer comes from an environment variable that the
             // generator sets only for its own child processes, so a passphrase never appears on a command line
@@ -105,7 +127,13 @@ namespace OpenSSHServerPNManager
             { Unattended = true; return ConfigurationRecovery.Run(); }
             if (args.Any(a => a.Equals("--start-client-agent", StringComparison.OrdinalIgnoreCase)))
             {
-                if (!Elevation.IsAdministrator()) return Elevation.Relaunch("--start-client-agent") ? 0 : 1;
+                if (!Elevation.IsAdministrator())
+                {
+                    if (Elevation.Relaunch("--start-client-agent")) return 0;
+                    MessageBox.Show("The ssh-agent service was not started: Windows did not give this program administrator rights (User Account Control may be turned off).\n\nStart OpenSSH Server PN Manager as an administrator, or run Start-Service ssh-agent in an administrator PowerShell.",
+                        AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return 1;
+                }
                 try { Services.SetStartMode("ssh-agent", "auto"); Services.Start("ssh-agent"); return 0; }
                 catch (Exception ex) { Log.Error("Could not start the SSH authentication agent", ex, true); return 1; }
             }
