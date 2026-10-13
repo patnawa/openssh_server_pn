@@ -1,10 +1,10 @@
 # Security policy
 
-Current regular releases: **product 10.5.8.0 / Manager 2.3.2**, unsigned.
-Manager downloads: [EXE](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.2/OpenSSHServerPNManager.exe)
-and [required `.exe.config`](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.2/OpenSSHServerPNManager.exe.config);
-keep them together and compare the release's [checksums](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.2/SHA256SUMS.txt).
-Both were published on **9 October 2026**, with **Manager 2.3.2 marked Latest**.
+Current regular releases: **product 10.5.9.0 / Manager 2.3.3**, unsigned.
+Manager downloads: [EXE](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.3/OpenSSHServerPNManager.exe)
+and [required `.exe.config`](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.3/OpenSSHServerPNManager.exe.config);
+keep them together and compare the release's [checksums](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.3/SHA256SUMS.txt).
+Both were published on **13 October 2026**, with **Manager 2.3.3 marked Latest**.
 All required hosted gates passed; fresh downloads of all 19 published assets matched
 the accepted staging-file hashes.
 
@@ -40,21 +40,20 @@ not replace the current supported regular release.
 
 ## Integrity of the packages
 
-Product **10.5.8.0** and Manager **2.3.2** use the owner-authorized, manually published
-`release-v10.5.8.0` and `release-manager-v2.3.2` regular-release channel. Their bytes come
+Product **10.5.9.0** and Manager **2.3.3** use the owner-authorized, manually published
+`release-v10.5.9.0` and `release-manager-v2.3.3` regular-release channel. Their bytes come
 from the exact GitHub-hosted branch build artifacts for source
-[ec50173](https://github.com/patnawa/openssh_server_pn/commit/ec50173df04ece893ea486aae26d385fd8d9d8c5), with checksums,
+[6674bc3](https://github.com/patnawa/openssh_server_pn/commit/6674bc3c8e8999e1e22eefba2ce9997723281a74), with checksums,
 compiler metadata, run records and a product SBOM. **They are unsigned and have no
 cryptographic build attestation.** Hosted origin recorded by an Actions run is different
 from a signed attestation or Authenticode publisher trust; a regular/Latest label supplies
 neither. See [the release policy](docs/RELEASING.md#unsigned-regular-releases).
 
-Hosted manager validation passed 290 unit tests, 49 GUI checks and 13 installer-fixture
-checks; its SHA-256 is `AA95AB26CD9DE297A37D90D55D55F31566637353F52A128B5A9852E40AA516E6`.
-The [manager run](https://github.com/patnawa/openssh_server_pn/actions/runs/37915311314)
-and [product run](https://github.com/patnawa/openssh_server_pn/actions/runs/37915311883)
-passed their required gates, including native build/unit/crypto/configuration checks and
-all four installation lanes. Each lane passed 339/339 installed self-tests, actual SYSTEM
+Hosted manager validation passed 315 unit tests, 49 GUI checks and 13 installer-fixture
+checks; its SHA-256 is `7D29C4F1F2CD70D946D8400DC08E4FED7815B94537DEEC6FDE8269525FB49AA0`.
+The [product run, including Manager validation](https://github.com/patnawa/openssh_server_pn/actions/runs/38365470440),
+passed all required gates, including native build/unit/crypto/configuration checks and
+all four installation lanes. Each lane passed 364/364 installed self-tests, actual SYSTEM
 process-termination recovery and wizard checks; client-only, authentication, SSH/SFTP and
 installer lifecycle checks passed. Signing, actual reboot and GUI-click recovery,
 other-account UAC, manual accessibility/multiple-monitor acceptance and a failed or cancelled
@@ -66,7 +65,7 @@ the fresh executable, sign and retest it, and embed those same bytes in the MSIs
 extraction verifies payload identity and signatures. Those signing gates are unchanged;
 the manual `release-*` namespace does not run or weaken them. An owner still needs to
 configure a signing identity as described in [RELEASING.md](docs/RELEASING.md). No signed
-release is claimed for 10.5.8.0 / 2.3.2.
+release is claimed for 10.5.9.0 / 2.3.3.
 
 Historical releases have their own signature and provenance records. The locally built
 `preview-*-r3` files remain unchanged, unsigned prereleases with their original hashes;

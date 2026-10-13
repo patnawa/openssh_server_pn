@@ -1,45 +1,45 @@
 # OpenSSH Server PN
 
-## Downloads: 10.5.8.0 / Manager 2.3.2
+## Downloads: 10.5.9.0 / Manager 2.3.3
 
-Published **9 October 2026** as unsigned regular releases. **Manager 2.3.2 is Latest.**
+Published **13 October 2026** as unsigned regular releases. **Manager 2.3.3 is Latest.**
 
-**Manager 2.3.2:** [Download the EXE](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.2/OpenSSHServerPNManager.exe)
-and its **[required `.exe.config` file](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.2/OpenSSHServerPNManager.exe.config)**.
-Save both files in the same folder. [Manager release notes](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.2)
-and [SHA256SUMS.txt](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.2/SHA256SUMS.txt).
+**Manager 2.3.3:** [Download the EXE](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.3/OpenSSHServerPNManager.exe)
+and its **[required `.exe.config` file](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.3/OpenSSHServerPNManager.exe.config)**.
+Save both files in the same folder. [Manager release notes](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.3)
+and [SHA256SUMS.txt](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.3/SHA256SUMS.txt).
 
-**Server and client packages 10.5.8.0:** [x64 MSI](https://github.com/patnawa/openssh_server_pn/releases/download/release-v10.5.8.0/OpenSSH-Win64-v10.5.8.0.msi),
-[x86 MSI](https://github.com/patnawa/openssh_server_pn/releases/download/release-v10.5.8.0/OpenSSH-Win32-v10.5.8.0.msi),
-[ARM64 MSI](https://github.com/patnawa/openssh_server_pn/releases/download/release-v10.5.8.0/OpenSSH-ARM64-v10.5.8.0.msi).
-[Product release notes](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.8.0)
-and [SHA256SUMS.txt](https://github.com/patnawa/openssh_server_pn/releases/download/release-v10.5.8.0/SHA256SUMS.txt).
+**Server and client packages 10.5.9.0:** [x64 MSI](https://github.com/patnawa/openssh_server_pn/releases/download/release-v10.5.9.0/OpenSSH-Win64-v10.5.9.0.msi),
+[x86 MSI](https://github.com/patnawa/openssh_server_pn/releases/download/release-v10.5.9.0/OpenSSH-Win32-v10.5.9.0.msi),
+[ARM64 MSI](https://github.com/patnawa/openssh_server_pn/releases/download/release-v10.5.9.0/OpenSSH-ARM64-v10.5.9.0.msi).
+[Product release notes](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.9.0)
+and [SHA256SUMS.txt](https://github.com/patnawa/openssh_server_pn/releases/download/release-v10.5.9.0/SHA256SUMS.txt).
 
 These are **unsigned regular releases**, assembled from the exact GitHub-hosted branch
-build artifacts for source [ec50173](https://github.com/patnawa/openssh_server_pn/commit/ec50173df04ece893ea486aae26d385fd8d9d8c5).
+build artifacts for source [6674bc3](https://github.com/patnawa/openssh_server_pn/commit/6674bc3c8e8999e1e22eefba2ce9997723281a74).
 They have no Authenticode publisher signature or cryptographic build attestation.
 The Actions run records, compiler metadata and checksums document their origin; compare
 download hashes with the release's `SHA256SUMS.txt`. See the
 [release policy](docs/RELEASING.md#unsigned-regular-releases).
 
-[Hosted manager validation](https://github.com/patnawa/openssh_server_pn/actions/runs/37915311314)
-passed **290 unit tests, 49 GUI checks and 13 installer-fixture checks**, with the same
-executable hash as the reviewed local build. The [full product run](https://github.com/patnawa/openssh_server_pn/actions/runs/37915311883)
+[Hosted manager validation](https://github.com/patnawa/openssh_server_pn/actions/runs/38365470440)
+passed **315 unit tests, 49 GUI checks and 13 installer-fixture checks**, with the same
+executable hash as the reviewed local build. The [full product run](https://github.com/patnawa/openssh_server_pn/actions/runs/38365470440)
 passed all required gates: x64/x86/ARM64 builds, native unit/crypto/configuration tests,
 188 installer script checks per architecture, and all four installation lanes (Server 2022,
-Server 2025, PowerShell 2.0 and Windows 11 ARM64). Each lane passed **339 installed
+Server 2025, PowerShell 2.0 and Windows 11 ARM64). Each lane passed **364 installed
 self-tests**, actual SYSTEM process-termination recovery and wizard launch, alongside
 client-only, authentication, SSH/SFTP and installer lifecycle checks. Signing, actual reboot
 and GUI-click recovery, other-account UAC, manual accessibility/multiple-monitor acceptance and
-a failed or cancelled uninstall remain pending. See the [follow-up review](docs/AUDIT-2026-10-08-FOLLOWUP.md),
-the [changelog](docs/CHANGELOG.md) and the [VM validation guide](docs/VALIDATION.md).
+a failed or cancelled uninstall remain pending. See the [validation record and VM guide](docs/VALIDATION.md)
+and the [changelog](docs/CHANGELOG.md).
 
 | Release file | SHA-256 |
 |---|---|
-| `OpenSSHServerPNManager.exe` (2.3.2) | `AA95AB26CD9DE297A37D90D55D55F31566637353F52A128B5A9852E40AA516E6` |
-| `OpenSSH-Win64-v10.5.8.0.msi` | `2790ab3930cf1987254c26191ec8ee5891919b56e93a8626d93f04be80558707` |
-| `OpenSSH-Win32-v10.5.8.0.msi` | `53808db1df1d9ec4e947854544e204ab5ecc326a8ca1f6a4ccbb70464287c91b` |
-| `OpenSSH-ARM64-v10.5.8.0.msi` | `f6a9356243e365d16fc1dff324a796e7adcefdb5919962ff2d613426999ed31b` |
+| `OpenSSHServerPNManager.exe` (2.3.3) | `7D29C4F1F2CD70D946D8400DC08E4FED7815B94537DEEC6FDE8269525FB49AA0` |
+| `OpenSSH-Win64-v10.5.9.0.msi` | `cb27cf66bce46554525e95a411eb6a01416295e6391e4693718d100bedf4990b` |
+| `OpenSSH-Win32-v10.5.9.0.msi` | `8c4e2655dda04e439de54e989f9eeab2299e8af21038fd070c49ce812a0e3fa7` |
+| `OpenSSH-ARM64-v10.5.9.0.msi` | `77fd636ab5563305f2ab05c5482ed474d10a13d52ebea6f30f7cce625b9ee73a` |
 
 The manager extracted from each of the three MSIs matches the tested executable hash above.
 
@@ -189,7 +189,7 @@ off). Details: [docs/INSTALL.md](docs/INSTALL.md).
 
 ```powershell
 # install (elevated)
-msiexec /i .\OpenSSH-Win64-v10.5.8.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
+msiexec /i .\OpenSSH-Win64-v10.5.9.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
 
 # verify
 ssh -V                                  # OpenSSH_for_Windows_10.5p1 OpenSSH-Server-PN, LibreSSL 4.3.2

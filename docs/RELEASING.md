@@ -4,50 +4,49 @@ How a release is made since the packages are built by GitHub Actions: what the w
 person still does, how to set up code signing, and how anyone can verify the published files. The
 manual build in [BUILDING.md](BUILDING.md) stays the reference for building on your own machine.
 
-The current regular releases are **product 10.5.8.0** and **Manager 2.3.2**,
-published on **9 October 2026**.
+The current regular releases are **product 10.5.9.0** and **Manager 2.3.3**,
+published on **13 October 2026**.
 They use the owner-authorized unsigned manual process below. The separate `v*` and
 `manager-v*` tag workflows still require Authenticode signing, a timestamp and verification
 of every executable payload. Their signing gates are unchanged. Signing remains pending;
 no signed release is claimed here.
 
-Manager assets: [EXE](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.2/OpenSSHServerPNManager.exe)
-and [required `.exe.config`](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.2/OpenSSHServerPNManager.exe.config)
+Manager assets: [EXE](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.3/OpenSSHServerPNManager.exe)
+and [required `.exe.config`](https://github.com/patnawa/openssh_server_pn/releases/download/release-manager-v2.3.3/OpenSSHServerPNManager.exe.config)
 (keep them together). The published files and **Manager's Latest** designation have
 been verified.
 
 ### Unsigned regular releases
 
-The owner authorized regular, unsigned publication under `release-v10.5.8.0` and
-`release-manager-v2.3.2`, with **Manager 2.3.2 marked Latest** (and before them
-`release-v10.5.7.0` / `release-manager-v2.3.1`). These namespaces do not
+The owner authorized regular, unsigned publication under `release-v10.5.9.0` and
+`release-manager-v2.3.3`, with **Manager 2.3.3 marked Latest** (following product
+10.5.8.0 / Manager 2.3.2 and product 10.5.7.0 / Manager 2.3.1). These namespaces do not
 trigger the signed `v*` / `manager-v*` tag workflows. Publication is manual and consumes
-the exact artifacts from a successful hosted `main` branch build, rather than rebuilding
+the exact artifacts from a successful hosted branch build, rather than rebuilding
 or replacing its tested bytes. A regular/Latest label is a release-channel decision;
 it does not add a publisher signature or a cryptographic attestation.
 
-Source: [ec50173](https://github.com/patnawa/openssh_server_pn/commit/ec50173df04ece893ea486aae26d385fd8d9d8c5)
-(the squash merge of pull request #15).
-Hosted manager checks: **290 unit tests, 49 GUI checks, 13 installer-fixture checks**.
-Manager SHA-256: `AA95AB26CD9DE297A37D90D55D55F31566637353F52A128B5A9852E40AA516E6`,
+Source branch: `codex/installer-manager-validation-20261013`.
+Source: [6674bc3](https://github.com/patnawa/openssh_server_pn/commit/6674bc3c8e8999e1e22eefba2ce9997723281a74).
+Hosted manager checks: **315 unit tests, 49 GUI checks, 13 installer-fixture checks**.
+Manager SHA-256: `7D29C4F1F2CD70D946D8400DC08E4FED7815B94537DEEC6FDE8269525FB49AA0`,
 identical to a local pinned build of the same commit.
-The [manager run](https://github.com/patnawa/openssh_server_pn/actions/runs/37915311314)
-and [product run 37915311883](https://github.com/patnawa/openssh_server_pn/actions/runs/37915311883)
+The [product run, including Manager validation](https://github.com/patnawa/openssh_server_pn/actions/runs/38365470440),
 completed successfully. All 14 expected product jobs passed; tag-only signing/release
 jobs were skipped as intended for a branch build. x64/x86/ARM64 build, native unit,
 crypto and configuration gates and 188 installer script checks per architecture passed.
 All four installation lanes (Server 2022, Server 2025, PowerShell 2.0 and Windows 11 ARM64)
-passed 339/339 installed self-tests, actual SYSTEM process-termination recovery, wizard
+passed 364/364 installed self-tests, actual SYSTEM process-termination recovery, wizard
 launch, client-only, authentication, SSH/SFTP and installer lifecycle checks. The
 release-files gate passed. Informational Pester: 159 passed, 0 failures, 1 ignored.
 
-The [product release](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.8.0)
-and [Manager release](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.2)
-are published regular releases (`isDraft=false`, `isPrerelease=false`) at source `ec50173`.
+The [product release](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.9.0)
+and [Manager release](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.3)
+are published regular releases (`isDraft=false`, `isPrerelease=false`) at source `6674bc3`.
 The manager inside each MSI was extracted from its cabinet and matched the standalone file.
 All 11 product and 8 Manager assets were downloaded afresh from the drafts before publication
-and anonymously afterward; all 19 hashes matched the staging files. Manager is Latest,
-the product is not, and GitHub's `/releases/latest` link was verified to open Manager 2.3.2.
+and again after publication; all 19 hashes matched the staging files. GitHub's Latest
+release was verified as Manager 2.3.3; the product is not marked Latest.
 
 1. Select the frozen source commit and wait for every required manager, native and
    installation job on that commit. Keep the broader informational Pester result clearly
@@ -307,7 +306,7 @@ manager 1.5.0) have no attestations; their hashes are in the changelog.
 
 - **winget.** [`packaging/winget`](../packaging/winget) retains historical manifests for 10.5.4.0 and
   10.5.5.0 under the proposed identifier `Patnawa.OpenSSHServerPN` (reviewers may ask for another).
-  Manifest updates for 10.5.7.0 and 10.5.8.0 remain pending. For a new version, copy a version folder, update
+  Manifest updates for 10.5.7.0, 10.5.8.0 and 10.5.9.0 remain pending. For a new version, copy a version folder, update
   the version, URLs, SHA-256 and product codes, run
   `winget validate --manifest <folder>`, and submit it to
   [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) (for example with

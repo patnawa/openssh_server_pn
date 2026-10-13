@@ -2,10 +2,12 @@
 
 All builds of this project, newest first. Each entry lists the source, the library versions,
 every change to the packaging, and how the result was verified. The current regular
-releases are [product 10.5.8.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.8.0)
-and [Manager 2.3.2](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.2).
-Both were published on **9 October 2026**, with **Manager 2.3.2 marked Latest**.
+releases are [product 10.5.9.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.9.0)
+and [Manager 2.3.3](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.3).
+Both were published on **13 October 2026**, with **Manager 2.3.3 marked Latest**.
 Earlier regular GitHub releases:
+[release-v10.5.8.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.8.0) (with Manager 2.3.2),
+[release-manager-v2.3.2](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.2),
 [release-v10.5.7.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.7.0) (with
 Manager 2.3.1), [release-manager-v2.3.1](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.1),
 [v10.5.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/v10.5.5.0) (with Manager
@@ -21,11 +23,11 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
-## 10.5.9.0 / Manager 2.3.3 (release candidate)
+## 10.5.9.0 / Manager 2.3.3 (2026-10-13)
 
 The maintenance fixes below follow the published 10.5.8.0 / Manager 2.3.2 releases.
 The product's third version field advances for MSI upgrades; OpenSSH and native dependencies
-are unchanged. Final versioned artifacts are being rebuilt and validated before publication.
+are unchanged. The final versioned artifacts were rebuilt, validated and published as unsigned regular releases.
 
 - **SFTP configuration.** Recognize quoted subsystem names and match their case exactly as sshd
   does. Disabling SFTP removes duplicate definitions from the main file. Editing a subsystem
@@ -60,7 +62,7 @@ Independent pinned builds and LF/CRLF checkout builds produced identical executa
 and metadata files. The tracked manager executable was replaced with those tested bytes.
 The upstream patch inventory also passed.
 
-The subsequent [hosted rebuild](https://github.com/patnawa/openssh_server_pn/actions/runs/38360329356)
+The initial [candidate rebuild before the version bump](https://github.com/patnawa/openssh_server_pn/actions/runs/38360329356)
 from `a601cb6077b8381058c87758329c5b9d15f7eaec` passed **14 jobs**, with the two release-only
 jobs intentionally skipped. x64, x86 and ARM64 each passed **767 native tests**, **139 configuration
 dump checks** and the required crypto probes. All four installation environments (Server 2022,
@@ -72,6 +74,27 @@ scenarios. Pester passed **159 tests**, with **0 failures and 1 skipped**. The r
 [validation evidence and package hashes](VALIDATION.md). Actual reboot/pending-file-replacement
 tests remain pending because no disposable Windows VM was found. Physical mixed-monitor,
 screen-reader, GUI-click recovery and other-account UAC acceptance remain untested.
+
+The final **10.5.9.0 / Manager 2.3.3** [release run](https://github.com/patnawa/openssh_server_pn/actions/runs/38365470440), from
+source [6674bc3](https://github.com/patnawa/openssh_server_pn/commit/6674bc3c8e8999e1e22eefba2ce9997723281a74), also passed all **14 expected jobs** after the version
+bump: **315 Manager unit tests**, **49 GUI checks**, **767 native tests and 139 configuration
+checks per architecture**, and **364 installed self-tests in each of four environments**.
+The authentication, SSH/SFTP integrity, recovery, coexistence and installer lifecycle gates passed.
+Pester reported **159 passed, 0 failures and 1 skipped**. The exact hosted Manager and configuration
+were verified in all three MSIs, and the local deterministic build matched the hosted artifact.
+
+Published [product 10.5.9.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.9.0) and
+[Manager 2.3.3](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.3) as unsigned regular releases,
+with Manager marked Latest. All **19 assets** were downloaded before publication and publicly
+afterward; every hash matched the accepted staging files. No cryptographic build attestation is
+supplied. Manual test limitations listed above remain pending. Winget manifests are not updated.
+
+| Release file | SHA-256 |
+|---|---|
+| `OpenSSHServerPNManager.exe` (2.3.3) | `7d29c4f1f2cd70d946d8400dc08e4fed7815b94537deec6fde8269525fb49aa0` |
+| `OpenSSH-Win64-v10.5.9.0.msi` | `cb27cf66bce46554525e95a411eb6a01416295e6391e4693718d100bedf4990b` |
+| `OpenSSH-Win32-v10.5.9.0.msi` | `8c4e2655dda04e439de54e989f9eeab2299e8af21038fd070c49ce812a0e3fa7` |
+| `OpenSSH-ARM64-v10.5.9.0.msi` | `77fd636ab5563305f2ab05c5482ed474d10a13d52ebea6f30f7cce625b9ee73a` |
 
 ## 10.5.8.0 / Manager 2.3.2 (2026-10-09)
 

@@ -1,5 +1,37 @@
 # Disposable Windows acceptance runs
 
+## Published 10.5.9.0 / Manager 2.3.3 — 13 October 2026
+
+[Run 38365470440](https://github.com/patnawa/openssh_server_pn/actions/runs/38365470440) completed successfully for source
+[6674bc3c8e8999e1e22eefba2ce9997723281a74](https://github.com/patnawa/openssh_server_pn/commit/6674bc3c8e8999e1e22eefba2ce9997723281a74). All **14 expected jobs passed**; the two release-only
+jobs were intentionally skipped. The source was frozen on `codex/installer-manager-validation-20261013`.
+
+- Manager: **315 unit tests, 49 GUI checks**, independent deterministic builds and LF/CRLF checks.
+- x64, x86 and ARM64: **767 native tests and 139 configuration dump checks each**, plus crypto probes.
+- Server 2022 x64, Server 2025 x64, Server 2022 with PowerShell 2.0 and Windows 11 ARM64:
+  **364 installed self-tests each**, key/authentication, SSH/SFTP integrity, client-only coexistence,
+  actual SYSTEM process-termination recovery, wizard launch and installer lifecycle checks.
+- Informational Pester: **159 passed, 0 failed, 1 skipped, 0 pending**.
+- Read-only local MSI inspection passed for all architectures, including extraction and byte-for-byte
+  comparison of the tested Manager and configuration. All 16 required executable/DLL files were present.
+
+Published unsigned [product](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.9.0) and
+[Manager](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.3) releases, with Manager Latest. All **19 assets**
+matched the staging hashes after fresh draft downloads and public downloads. Evidence is retained in
+`dist/release-10.5.9.0/` and attached release records. There is no cryptographic build attestation.
+
+| Release file | SHA-256 |
+|---|---|
+| `OpenSSHServerPNManager.exe` (2.3.3) | `7d29c4f1f2cd70d946d8400dc08e4fed7815b94537deec6fde8269525fb49aa0` |
+| `OpenSSH-Win64-v10.5.9.0.msi` | `cb27cf66bce46554525e95a411eb6a01416295e6391e4693718d100bedf4990b` |
+| `OpenSSH-Win32-v10.5.9.0.msi` | `8c4e2655dda04e439de54e989f9eeab2299e8af21038fd070c49ce812a0e3fa7` |
+| `OpenSSH-ARM64-v10.5.9.0.msi` | `77fd636ab5563305f2ab05c5482ed474d10a13d52ebea6f30f7cce625b9ee73a` |
+
+Actual reboot/pending-file replacement remains unrun because no disposable Windows VM was found.
+GUI-click recovery, other-account UAC, physical mixed-monitor/screen-reader acceptance and a live
+failed/cancelled uninstall remain outstanding. The commands below retain their historical 10.5.8.0
+fixture values; select the matching artifacts and versions when running a new disposable-VM sequence.
+
 ## Candidate rebuild — 13 October 2026
 
 Product **10.5.8.0**, with the updated **Manager 2.3.2**, was rebuilt from
