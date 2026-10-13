@@ -21,7 +21,11 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
-## Unreleased maintenance — 13 October 2026
+## 10.5.9.0 / Manager 2.3.3 (release candidate)
+
+The maintenance fixes below follow the published 10.5.8.0 / Manager 2.3.2 releases.
+The product's third version field advances for MSI upgrades; OpenSSH and native dependencies
+are unchanged. Final versioned artifacts are being rebuilt and validated before publication.
 
 - **SFTP configuration.** Recognize quoted subsystem names and match their case exactly as sshd
   does. Disabling SFTP removes duplicate definitions from the main file. Editing a subsystem
