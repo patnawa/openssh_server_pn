@@ -95,15 +95,8 @@ namespace OpenSSHServerPNManager
         /// <summary>The -l level given to sftp-server in a command ("sftp-server.exe -l INFO", "-lVERBOSE"), or null.</summary>
         internal static string LogLevel(string command)
         {
-            string err; var args = SshdArgs.Split(command, out err);
-            if (args == null) return null;
-            string level = null;
-            for (int i = 1; i < args.Count; i++)
-            {
-                if (args[i] == "-l" && i + 1 < args.Count) level = args[++i];
-                else if (args[i].StartsWith("-l") && args[i].Length > 2) level = args[i].Substring(2);
-            }
-            return level;
+            var parsed = LoggingOptions.Read(command);
+            return parsed.Error == null ? parsed.Level : null;
         }
 
         internal static bool LogsTransfers(string command)
@@ -119,18 +112,73 @@ namespace OpenSSHServerPNManager
         /// </summary>
         internal static string WithLogging(string command, bool log)
         {
-            string err; var args = SshdArgs.Split(command, out err);
-            if (args == null || args.Count == 0) throw new ConfigException("The Subsystem sftp line cannot be read (" + (err ?? "no program") + "). Correct it on the sshd_config (text) tab.");
-            if (LogsTransfers(command) == log) return command;
-            var kept = new List<string> { args[0] };
-            for (int i = 1; i < args.Count; i++)
+            var parsed = LoggingOptions.Read(command);
+            if (parsed.Error != null) throw new ConfigException("The Subsystem sftp logging options cannot be edited safely (" + parsed.Error + "). Correct them on the sshd_config (text) tab.");
+            if ((parsed.Level != null && TransferLevels.Contains(parsed.Level, StringComparer.OrdinalIgnoreCase)) == log) return command;
+            if (log) parsed.Kept.InsertRange(parsed.OptionsEnd, new[] { "-l", TransferLogLevel });
+            return SshdArgs.Join(parsed.Kept);
+        }
+
+        /// <summary>The sftp-server.c getopt grammar, shared by the checkbox reader and writer.</summary>
+        private sealed class LoggingOptions
+        {
+            internal string Level, Error;
+            internal readonly List<string> Kept = new List<string>();
+            internal int OptionsEnd;
+
+            internal static LoggingOptions Read(string command)
             {
-                if (args[i] == "-l") { i++; continue; }
-                if (args[i].StartsWith("-l") && args[i].Length > 2) continue;
-                kept.Add(args[i]);
+                var result = new LoggingOptions();
+                var args = SshdArgs.Split(command, out result.Error);
+                if (args == null) return result;
+                if (args.Count == 0 || args[0].Length == 0) { result.Error = "no program"; return result; }
+                result.Kept.Add(args[0]);
+                for (int i = 1; i < args.Count; i++)
+                {
+                    var arg = args[i];
+                    if (arg.Length < 2 || arg[0] != '-' || arg == "--")
+                    {
+                        result.OptionsEnd = result.Kept.Count;
+                        result.Kept.AddRange(args.Skip(i));
+                        return result;
+                    }
+                    bool kept = false;
+                    for (int j = 1; j < arg.Length; j++)
+                    {
+                        char option = arg[j];
+                        // -c ignores all remaining arguments, including flags in the same group. Place new logging
+                        // options before it, just as before -- or the first operand, so the server will read them.
+                        if (option == 'c')
+                        {
+                            result.OptionsEnd = result.Kept.Count;
+                            result.Kept.AddRange(args.Skip(i));
+                            return result;
+                        }
+                        if ("dflPpQu".IndexOf(option) >= 0)
+                        {
+                            bool attached = j + 1 < arg.Length;
+                            if (!attached && i + 1 == args.Count) { result.Error = "missing argument for -" + option; return result; }
+                            var value = attached ? arg.Substring(j + 1) : args[++i];
+                            if (option == 'l')
+                            {
+                                result.Level = value;
+                                if (j > 1) result.Kept.Add(arg.Substring(0, j));
+                            }
+                            else
+                            {
+                                result.Kept.Add(arg);
+                                if (!attached) result.Kept.Add(value);
+                            }
+                            kept = true;
+                            break;
+                        }
+                        if ("ehR".IndexOf(option) < 0) { result.Error = "unsupported option -" + option; return result; }
+                    }
+                    if (!kept) result.Kept.Add(arg);
+                }
+                result.OptionsEnd = result.Kept.Count;
+                return result;
             }
-            if (log) { kept.Add("-l"); kept.Add(TransferLogLevel); }
-            return SshdArgs.Join(kept);
         }
 
         /// <summary>A line that starts the section (trimmed).</summary>
@@ -304,7 +352,9 @@ namespace OpenSSHServerPNManager
             if (!enabled) { if (current != null) cfg.SetSubsystem("sftp", null); }
             else
             {
-                var wanted = WithLogging(current ?? DefaultServer, logTransfers);
+                // A custom subsystem can have its own option grammar. Preserve it when only the rules changed;
+                // interpret the server's logging options only when the user actually asks to change logging.
+                var wanted = current != null && LogsTransfers(current) == logTransfers ? current : WithLogging(current ?? DefaultServer, logTransfers);
                 if (wanted != current) cfg.SetSubsystem("sftp", wanted);
             }
             if (rules == null) return;

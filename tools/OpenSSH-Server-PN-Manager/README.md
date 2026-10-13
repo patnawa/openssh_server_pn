@@ -208,6 +208,11 @@ Match all
   SFTP-only or not, download only, and the folder it sees as `/` (and whether it exists).
 - A section edited by hand in a way the tab does not write is left alone, and the tab says why.
   `ForceCommand` and `ChrootDirectory` elsewhere in the file are listed as a note.
+- Subsystem names follow sshd's case-sensitive matching, including quoted names. Disabling SFTP
+  removes every matching definition in the main file, so a duplicate cannot reactivate it.
+  The logging toggle understands grouped flags, option arguments and `--`; other options are kept.
+  Unsupported command options require a text edit when changing logging. An unchanged custom
+  subsystem command stays intact when editing account rules.
 - Speed: the client chooses the cipher. With LibreSSL's AES-NI code in use (10.5.3.0 and later),
   `aes128-gcm@openssh.com` and `aes256-gcm@openssh.com` move files over SFTP about 3.5 times as fast
   as with the 10.5.2.0 packages, and up to twice as fast as `chacha20-poly1305@openssh.com`, the first
@@ -281,6 +286,12 @@ Alerts tab switched on, both Watch and Daily advance a shared checkpoint and kee
 retains events already collected when the event log is cleared or full. Missing events
 are reported as a history gap; events lost before collection cannot be recovered. A CSV cell that starts with `=`, `+`, `-` or
 `@` gets a `'` first, so that a spreadsheet does not run a file name as a formula.
+New CSV files add a `TextEncoding` column with value `2`: a literal leading apostrophe is
+doubled, allowing the Manager to recover it separately from a formula escape. Older seven-
+and eleven-column archives remain readable and are upgraded when the month is next written;
+their original ambiguous apostrophes cannot be reconstructed. Archive updates reject damaged
+headers, incomplete rows and invalid event identifiers, preserving the original file for repair.
+Earlier Manager versions do not decode the new apostrophe encoding.
 
 ## Alerts and automatic blocking
 
@@ -475,7 +486,7 @@ then tests and packages those exact bytes.
 | File | Contents |
 |---|---|
 | `Program.cs`, `UserProcessLauncher.cs` | Entry point, command line, client/server mode and desktop-user launch |
-| `SelfTest.cs` | `--unittest` and `--selftest` |
+| `SelfTest.cs`, `SftpConfigurationTests.cs`, `RemainingAreaTests.cs` | `--unittest` and `--selftest`, including SFTP syntax, archive integrity, client editing, sorting and backup regressions |
 | `UiRegressionTests.cs`, `AsyncOperationTests.cs` | Off-screen scale/layout checks and asynchronous operation regressions |
 | `Platform.cs` | Elevation, log, process runner, ACLs and file owners |
 | `Ssh.cs` | Paths and versions, the services, listeners, banners and sessions |

@@ -2,23 +2,11 @@
 
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Diagnostics;
-using System.Diagnostics.Eventing.Reader;
-using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Net;
-using System.Net.NetworkInformation;
-using System.Runtime.InteropServices;
-using System.Security.AccessControl;
-using System.Security.Principal;
-using System.ServiceProcess;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading;
-using System.Windows.Forms;
-using Microsoft.Win32;
 
 namespace OpenSSHServerPNManager
 {
@@ -317,24 +305,38 @@ namespace OpenSSHServerPNManager
         {
             foreach (var s in GetAll("Subsystem"))
             {
-                var parts = s.Value.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length == 2 && parts[0].Equals(name, StringComparison.OrdinalIgnoreCase)) return parts[1];
+                string command;
+                if (SubsystemCommand(s.Value, name, out command)) return command;
             }
             return null;
+        }
+
+        private static bool SubsystemCommand(string value, string name, out string command)
+        {
+            command = null;
+            string error; int nameEnd;
+            var args = SshdArgs.Split(value, out error, out nameEnd);
+            // servconf.c compares subsystem names with strcmp. Keep the original command text so a read alone
+            // never changes its quoting or spacing, or makes the GUI report unsaved edits.
+            if (args == null || args.Count < 2 || args[0] != name) return false;
+            command = value.Substring(nameEnd).TrimStart(' ', '\t');
+            return true;
         }
 
         public void SetSubsystem(string name, string command)
         {
             if ((command ?? "").Any(c => c != '\t' && char.IsControl(c))) throw new ConfigException("Subsystem " + name + ": the command must be a single line.");
-            int idx = -1;
-            foreach (var s in GetAll("Subsystem"))
+            var matches = GetAll("Subsystem").Where(s => { string existing; return SubsystemCommand(s.Value, name, out existing); }).ToList();
+            // sshd uses the first definition of each name. Removing only that line would activate a later duplicate.
+            if (string.IsNullOrWhiteSpace(command)) { foreach (var match in matches.AsEnumerable().Reverse()) Lines.RemoveAt(match.Key); return; }
+            var line = "Subsystem\t" + SshdArgs.Quote(name) + "\t" + command.Trim();
+            if (matches.Count > 0)
             {
-                var parts = s.Value.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 1 && parts[0].Equals(name, StringComparison.OrdinalIgnoreCase)) { idx = s.Key; break; }
+                int idx = matches[0].Key;
+                string key, value, comment; Split(Lines[idx], out key, out value, out comment);
+                Lines[idx] = line + (string.IsNullOrEmpty(comment) ? "" : " " + comment);
+                return;
             }
-            if (string.IsNullOrWhiteSpace(command)) { if (idx >= 0) Lines.RemoveAt(idx); return; }
-            var line = "Subsystem\t" + name + "\t" + command.Trim();
-            if (idx >= 0) { Lines[idx] = line; return; }
             var sftp = GetAll("Subsystem").FirstOrDefault();
             int at = sftp.Value != null ? sftp.Key + 1 : FirstMatchIndex();
             Lines.Insert(at, line);
@@ -371,8 +373,8 @@ namespace OpenSSHServerPNManager
         /// <summary>
         /// Validates with sshd -t on a temporary copy, backs up the live file and writes. Returns the backup path.
         /// Throws ConfigChangedException, and writes nothing, when the file changed since it was read (LoadedHash), unless
-        /// overwrite is true. The new text is written to a temporary file next to sshd_config and swapped in (ReplaceFile keeps
-        /// the file's permissions), so a crash or a full disk never leaves a half-written sshd_config.
+        /// overwrite is true. The new text is written to a temporary file next to sshd_config with the original security
+        /// and swapped in by rename, so a crash or a full disk never leaves a half-written sshd_config.
         /// </summary>
         public string SaveValidated(bool overwrite = false) { return ConfigurationTransaction.Save(this, overwrite); }
 
@@ -395,10 +397,17 @@ namespace OpenSSHServerPNManager
             var dir = System.IO.Path.GetDirectoryName(path); var name = System.IO.Path.GetFileName(path);
             if (!Directory.Exists(dir)) return new List<string>();
             return Directory.GetFiles(dir, name + ".bak.*")
-                .Select(f => new { f, m = BackupName.Match(System.IO.Path.GetFileName(f)) })
-                .Where(x => x.m.Success && System.IO.Path.GetFileName(x.f).Length == name.Length + x.m.Length)
-                .OrderByDescending(x => x.m.Groups[1].Value, StringComparer.Ordinal)
-                .ThenByDescending(x => x.m.Groups[2].Success ? int.Parse(x.m.Groups[2].Value) : 1)
+                .Select(f =>
+                {
+                    var m = BackupName.Match(System.IO.Path.GetFileName(f)); DateTime time = default(DateTime); int sequence = 1;
+                    bool valid = m.Success && System.IO.Path.GetFileName(f).Length == name.Length + m.Length &&
+                        DateTime.TryParseExact(m.Groups[1].Value, "yyyyMMdd-HHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out time) &&
+                        (!m.Groups[2].Success || (int.TryParse(m.Groups[2].Value, NumberStyles.None, CultureInfo.InvariantCulture, out sequence) && sequence >= 2));
+                    return new { f, valid, time, sequence };
+                })
+                .Where(x => x.valid)
+                .OrderByDescending(x => x.time)
+                .ThenByDescending(x => x.sequence)
                 .Select(x => x.f).ToList();
         }
 
@@ -414,8 +423,8 @@ namespace OpenSSHServerPNManager
         }
 
         /// <summary>
-        /// Writes text (UTF-8, no BOM) to a temporary file in the same folder and swaps it in with ReplaceFile, which keeps
-        /// the permissions of the file it replaces. A file that does not exist yet is moved into place.
+        /// Writes text (UTF-8, no BOM) to a temporary file in the same folder with the original security and swaps it in
+        /// by rename. A file that does not exist yet is moved into place.
         /// </summary>
         public static void WriteReplacing(string path, string text) { ConfigurationTransaction.AtomicWrite(path, text); }
 
@@ -439,7 +448,14 @@ namespace OpenSSHServerPNManager
         /// <summary>The arguments of a value, or null with a message when sshd would reject it.</summary>
         public static List<string> Split(string value, out string error)
         {
-            error = null;
+            int firstArgumentEnd;
+            return Split(value, out error, out firstArgumentEnd);
+        }
+
+        /// <summary>Also returns the first argument's end in the source, for edits that preserve the remaining text.</summary>
+        internal static List<string> Split(string value, out string error, out int firstArgumentEnd)
+        {
+            error = null; firstArgumentEnd = 0;
             var s = value ?? ""; var args = new List<string>(); int i = 0;
             while (i < s.Length)
             {
@@ -457,6 +473,7 @@ namespace OpenSSHServerPNManager
                 }
                 if (quote != '\0') { error = "a quotation mark (" + quote + ") is not closed"; return null; }
                 args.Add(sb.ToString());
+                if (args.Count == 1) firstArgumentEnd = i;
             }
             return args;
         }

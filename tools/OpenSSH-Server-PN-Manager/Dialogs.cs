@@ -641,7 +641,8 @@ namespace OpenSSHServerPNManager
             ok.Click += (s, e) =>
             {
                 int port;
-                if (Pattern.Length == 0) { MessageBox.Show(this, "Enter the host name you want to type after ssh.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                var hostProblem = SshClient.HostPatternProblem(_pattern.Text);
+                if (hostProblem != null) { MessageBox.Show(this, hostProblem, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
                 if (_fields["Port"].Text.Trim().Length > 0 && (!int.TryParse(_fields["Port"].Text.Trim(), out port) || port < 1 || port > 65535)) { MessageBox.Show(this, "The port must be a number from 1 to 65535.", Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
                 var percent = SshClient.PercentProblem(existing, Values);
                 if (percent != null) { MessageBox.Show(this, percent, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }

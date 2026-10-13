@@ -1033,6 +1033,11 @@ namespace OpenSSHServerPNManager
         private string FileValue(Field f)
         {
             var v = _cfg.Get(f.Key) ?? "";
+            if (f.Numeric || f.Choices != null)
+            {
+                string error; var scalar = SshdArgs.Split(v, out error);
+                if (scalar != null && scalar.Count == 1) return scalar[0];
+            }
             if (!f.List) return v;
             string err; var args = _cfg.GetCombinedArgs(f.Key, out err);
             return (args == null ? null : SshdArgs.FormatTyped(args)) ?? v;

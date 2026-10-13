@@ -58,6 +58,8 @@ namespace OpenSSHServerPNManager
                 FollowUpConfigTests.Run(test, tmpDir);
                 FollowUpGuiTests.Run(test, tmpDir);
                 FollowUpClientTests.Run(test, tmpDir);
+                SftpConfigurationTests.Run(test);
+                RemainingAreaTests.Run(test, tmpDir);
                 if (!unitOnly) Server(test, tmpDir);
             }
             finally { try { Directory.Delete(tmpDir, true); } catch { } }

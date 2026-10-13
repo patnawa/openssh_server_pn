@@ -46,10 +46,13 @@ namespace OpenSSHServerPNManager
 
         internal static int CompareText(string a, string b)
         {
-            double da, db;
-            if (double.TryParse(a, NumberStyles.Float, CultureInfo.InvariantCulture, out da) && double.TryParse(b, NumberStyles.Float, CultureInfo.InvariantCulture, out db)) return da.CompareTo(db);
-            DateTime ta, tb;
-            if (DateTime.TryParseExact(a, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out ta) && DateTime.TryParseExact(b, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out tb)) return ta.CompareTo(tb);
+            // Classify each cell independently: pairwise numeric/text fallback can form comparison cycles.
+            // Decimal also keeps adjacent Int64 byte counts distinct. ISO date text already sorts chronologically.
+            decimal da, db;
+            bool na = decimal.TryParse(a, NumberStyles.Float, CultureInfo.InvariantCulture, out da);
+            bool nb = decimal.TryParse(b, NumberStyles.Float, CultureInfo.InvariantCulture, out db);
+            if (na != nb) return na ? -1 : 1;
+            if (na) return da.CompareTo(db);
             return string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
         }
     }

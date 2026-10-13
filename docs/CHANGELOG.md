@@ -19,6 +19,43 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
+## Unreleased maintenance — 13 October 2026
+
+- **SFTP configuration.** Recognize quoted subsystem names and match their case exactly as sshd
+  does. Disabling SFTP removes duplicate definitions from the main file. Editing a subsystem
+  keeps its inline comment and leaves differently named subsystems alone.
+- **Transfer logging.** Read and rewrite the same option grammar as `sftp-server`: grouped flags,
+  option operands, repeated log levels and argument terminators. Toggling logging no longer
+  deletes a directory such as `-landing` or adds an ignored `-l INFO` after `--`. Unsupported
+  options are refused when changing logging; unchanged custom commands still permit rule edits.
+- **Settings GUI.** Display quoted numeric and choice values without false validation errors or
+  pending edits; preserve the original lines until a field is changed.
+- **Transfer archive.** Reject torn CSV quoting, incomplete identity metadata, invalid record
+  IDs and damaged headers before rewriting a month. Check each row against its header so a
+  truncated new record cannot be read as an older format. New rows declare `TextEncoding=2`
+  and escape literal leading apostrophes separately from spreadsheet formula escapes, fixing
+  changed file names and duplicate transfers after replay. Older seven- and eleven-column
+  archives remain readable and upgrade on write; their ambiguous apostrophes cannot be recovered.
+- **Client editor.** Validate Host argument quoting and reject empty arguments before closing
+  the editor or writing the file. Keep valid wildcards, negations, quotes and inline comments.
+- **GUI sorting and recovery.** Use a consistent order for mixed numeric/text columns and retain
+  precision for large integer counters. Ignore backup names with overflowing sequence numbers
+  or invalid calendar dates, preventing recovery-selector failures and accidental pruning.
+- **Cleanup.** Share option parsing between the logging reader and writer, remove unused config
+  imports, correct stale build/elevation and atomic-write comments, and ignore generated local
+  build metadata. Add focused configuration and GUI regressions to the normal unit suite.
+
+Verification on Windows x64: **315 unit tests**, **49 GUI checks**, **186 installer-script
+checks** and **13 installer-fixture checks** passed. The 10 initial focused regressions failed
+before the fixes; an additional compatibility check protects unchanged custom SFTP commands.
+The continued audit added 14 regressions: 10 reproduced failures before the second set of fixes,
+and four protect valid client patterns, legacy archives and encoding migration/truncation.
+Independent pinned builds and LF/CRLF checkout builds produced identical executable, config
+and metadata files. The tracked manager executable was replaced with those tested bytes.
+The upstream patch inventory also passed. No `sshd` service is installed on this workstation;
+live/elevated `--selftest`, `--keytest`, `--authtest`, native builds and MSI installation were not
+run for this pass. Physical mixed-monitor and screen-reader acceptance remain untested.
+
 ## 10.5.8.0 / Manager 2.3.2 (not yet released)
 
 Corrections from the [follow-up review](AUDIT-2026-10-08-FOLLOWUP.md) of the 10.5.7.0 / 2.3.1

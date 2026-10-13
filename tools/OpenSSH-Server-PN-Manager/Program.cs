@@ -11,8 +11,8 @@
 // Source: one file per area in this folder (Program, SelfTest, Platform, Ssh, SshdConfig, Keys,
 // KeyGen, KeyFiles, KeyDialogs, Auth, AuthTest, Sftp, Partners, PartnerDialogs, Transfers, Agent, WindowsSettings,
 // Hardening, Sessions, Client, MainForm, Dialogs, Wizard, Theme, Widgets, Prefs), compiled into one
-// executable by build.ps1 (the Roslyn C# compiler from Visual Studio Build Tools). Runs elevated
-// (see app.manifest).
+// executable by build.ps1 with hash-verified pinned Roslyn and .NET Framework reference packages.
+// The asInvoker manifest keeps client work unelevated; server administration requests elevation.
 //
 // Command line (an optional file name receives the report):
 //   --unittest   tests of the program logic alone: no sshd, no service, no administrator rights

@@ -1,4 +1,5 @@
 tools/OpenSSH-Server-PN-Manager/obj/
+tools/OpenSSH-Server-PN-Manager/bin/build-info.json
 *.msi
 *.log
 vcpkg/

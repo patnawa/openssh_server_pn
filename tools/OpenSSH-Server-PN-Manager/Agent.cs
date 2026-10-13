@@ -872,7 +872,7 @@ namespace OpenSSHServerPNManager
                 var existing = new List<TransferRecord>();
                 if (File.Exists(file))
                     // Shared for writing: a spreadsheet that has the month open must not stop the read.
-                    foreach (var line in Ini.ReadLines(file, FileShare.ReadWrite).Skip(1).Where(line => line.Length > 0))
+                    foreach (var line in TransferArchive.Rows(file))
                     { var record = Transfers.FromCsv(line); if (record == null) throw new InvalidDataException("Invalid transfer archive record in " + file); existing.Add(record); }
                 var have = new HashSet<string>(existing.Select(r => r.Key));
                 bool changed = false;

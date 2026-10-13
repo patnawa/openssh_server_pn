@@ -334,35 +334,38 @@ namespace OpenSSHServerPNManager
         }
 
         // ---------------- CSV ----------------
-        public static readonly string[] CsvHeader = { "Time", "Account", "Address", "Action", "File", "Bytes", "Detail", "EventChannel", "EventGeneration", "EventRecordId", "EventIdentity" };
+        public static readonly string[] CsvHeader = { "Time", "Account", "Address", "Action", "File", "Bytes", "Detail", "EventChannel", "EventGeneration", "EventRecordId", "EventIdentity", "TextEncoding" };
 
         public static string CsvLine(TransferRecord r)
         {
             return string.Join(",", new[] { r.Time.ToString("o", CultureInfo.InvariantCulture), r.User, r.Address, r.Action, r.File, r.Bytes.ToString(CultureInfo.InvariantCulture), r.Detail,
-                r.EventChannel, r.EventGeneration, r.EventRecordId.ToString(CultureInfo.InvariantCulture), r.EventIdentity }.Select(CsvField));
+                r.EventChannel, r.EventGeneration, r.EventRecordId.ToString(CultureInfo.InvariantCulture), r.EventIdentity, "2" }.Select(CsvField));
         }
 
-        /// <summary>A CSV field: quoted when needed; a leading = + - @ gets a ' so that spreadsheets do not run it as a formula.</summary>
+        /// <summary>A CSV field: formula starters get an apostrophe, and literal leading apostrophes are doubled (text encoding 2).</summary>
         public static string CsvField(string s)
         {
             s = s ?? "";
             if (s.Any(char.IsControl)) s = new string(s.Select(c => char.IsControl(c) ? '?' : c).ToArray()); // one record per line in the archive
-            if (s.Length > 0 && "=+-@\t\r".IndexOf(s[0]) >= 0 && !Regex.IsMatch(s, @"^-?\d+$")) s = "'" + s;
+            if (s.Length > 0 && (s[0] == '\'' || ("=+-@\t\r".IndexOf(s[0]) >= 0 && !Regex.IsMatch(s, @"^-?\d+$")))) s = "'" + s;
             return s.IndexOfAny(new[] { ',', '"', '\r', '\n' }) >= 0 ? "\"" + s.Replace("\"", "\"\"") + "\"" : s;
         }
 
-        /// <summary>Splits one CSV line as CsvLine writes it.</summary>
+        /// <summary>Splits one CSV line, or returns null for a torn or malformed field.</summary>
         public static List<string> CsvSplit(string line)
         {
-            var l = new List<string>(); var sb = new StringBuilder(); bool quoted = false;
+            if (line == null) return null;
+            var l = new List<string>(); var sb = new StringBuilder(); bool quoted = false, closed = false;
             for (int i = 0; i < line.Length; i++)
             {
                 char c = line[i];
-                if (quoted) { if (c == '"') { if (i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; } else quoted = false; } else sb.Append(c); }
-                else if (c == '"') quoted = true;
-                else if (c == ',') { l.Add(sb.ToString()); sb.Clear(); }
+                if (quoted) { if (c == '"') { if (i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; } else { quoted = false; closed = true; } } else sb.Append(c); }
+                else if (c == ',') { l.Add(sb.ToString()); sb.Clear(); closed = false; }
+                else if (closed) return null;
+                else if (c == '"') { if (sb.Length != 0) return null; quoted = true; }
                 else sb.Append(c);
             }
+            if (quoted) return null;
             l.Add(sb.ToString());
             return l;
         }
@@ -370,11 +373,14 @@ namespace OpenSSHServerPNManager
         public static TransferRecord FromCsv(string line)
         {
             var f = CsvSplit(line);
-            if (f.Count < 7) return null;
+            if (f == null || (f.Count != 7 && f.Count != 11 && f.Count != 12) || (f.Count == 12 && f[11] != "2")) return null;
             DateTime t; long b;
             if (!DateTime.TryParseExact(f[0], new[] { "o", "yyyy-MM-dd HH:mm:ss" }, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out t) || !long.TryParse(f[5], NumberStyles.None, CultureInfo.InvariantCulture, out b)) return null;
-            Func<string, string> un = s => s.StartsWith("'") && s.Length > 1 && "=+-@\t\r".IndexOf(s[1]) >= 0 ? s.Substring(1) : s;
-            long id = 0; if (f.Count >= 11) long.TryParse(f[9], NumberStyles.None, CultureInfo.InvariantCulture, out id);
+            // Legacy archives did not distinguish a literal apostrophe from a spreadsheet escape. Preserve their
+            // decoding, while each new row declares its reversible encoding (including during archive migration).
+            string escaped = f.Count == 12 ? "'=+-@\t\r" : "=+-@\t\r";
+            Func<string, string> un = s => s.StartsWith("'") && s.Length > 1 && escaped.IndexOf(s[1]) >= 0 ? s.Substring(1) : s;
+            long id = 0; if (f.Count >= 11 && !long.TryParse(f[9], NumberStyles.None, CultureInfo.InvariantCulture, out id)) return null;
             return new TransferRecord { Time = t, User = un(f[1]), Address = un(f[2]), Action = un(f[3]), File = un(f[4]), Bytes = b, Detail = un(f[6]),
                 EventChannel = f.Count >= 11 ? un(f[7]) : "", EventGeneration = f.Count >= 11 ? un(f[8]) : "", EventRecordId = id, EventIdentity = f.Count >= 11 ? un(f[10]) : "" };
         }
@@ -414,6 +420,21 @@ namespace OpenSSHServerPNManager
         public const int KeepDays = 365;
         public static string FileOf(DateTime month) { return Path.Combine(Dir, "transfers-" + month.ToString("yyyy-MM", CultureInfo.InvariantCulture) + ".csv"); }
 
+        /// <summary>Checks the header before either a report or an archive update consumes the records.</summary>
+        internal static IEnumerable<string> Rows(string path)
+        {
+            var lines = Ini.ReadLines(path, FileShare.ReadWrite);
+            var header = lines.Count == 0 ? null : Transfers.CsvSplit(lines[0]);
+            if (header == null || (header.Count != 7 && header.Count != 11 && header.Count != Transfers.CsvHeader.Length) ||
+                !header.SequenceEqual(Transfers.CsvHeader.Take(header.Count))) throw new InvalidDataException("Invalid transfer archive header in " + path);
+            return lines.Skip(1).Where(line => line.Length > 0).Select(line =>
+            {
+                var fields = Transfers.CsvSplit(line);
+                if (fields == null || fields.Count != header.Count) throw new InvalidDataException("Incomplete transfer archive record in " + path);
+                return line;
+            });
+        }
+
         /// <summary>The archived transfers of a period. A file or line that cannot be read is logged and, when given, added to problems.</summary>
         public static List<TransferRecord> Read(DateTime from, DateTime to, List<string> problems = null)
         {
@@ -427,7 +448,7 @@ namespace OpenSSHServerPNManager
                     // Never shared for delete, as the agent replaces the file (Ini.ReadLines); shared for writing, so a
                     // spreadsheet that has the file open does not keep it from the report.
                     int bad = 0;
-                    foreach (var line in Ini.ReadLines(f, FileShare.ReadWrite).Skip(1).Where(line => line.Length > 0))
+                    foreach (var line in Rows(f))
                     {
                         var r = Transfers.FromCsv(line);
                         if (r == null) bad++;

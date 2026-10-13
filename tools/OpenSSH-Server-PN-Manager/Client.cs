@@ -182,6 +182,16 @@ namespace OpenSSHServerPNManager
         /// <summary>The keywords the host editor shows; other lines of a block stay as they are.</summary>
         public static readonly string[] EditedKeywords = { "HostName", "User", "Port", "IdentityFile", "ProxyJump" };
 
+        internal static string HostPatternProblem(string pattern)
+        {
+            if (string.IsNullOrWhiteSpace(pattern)) return "Enter a name for the host (the name you type after ssh).";
+            if (pattern.Any(char.IsControl)) return "Host names must be a single line.";
+            string error; var args = SshdArgs.Split(pattern, out error);
+            if (args == null) return "The Host pattern is invalid: " + error + ".";
+            if (args.Count == 0 || args.Any(arg => arg.Length == 0)) return "Enter at least one host pattern; quoted empty names are not allowed.";
+            return null;
+        }
+
         /// <summary>
         /// A configuration with one Host block added or changed: the Host line and the edited keywords are written, every
         /// other line of the block is kept. New profiles precede defaults. Empty supplied values remove that keyword;
@@ -189,9 +199,9 @@ namespace OpenSSHServerPNManager
         /// </summary>
         public static List<string> WithHost(IList<string> lines, ClientHost existing, string pattern, IDictionary<string, string> values)
         {
-            pattern = (pattern ?? "").Trim();
-            if (pattern.Length == 0) throw new ConfigException("Enter a name for the host (the name you type after ssh).");
-            if (pattern.Any(char.IsControl)) throw new ConfigException("Host names must be a single line.");
+            var hostProblem = HostPatternProblem(pattern);
+            if (hostProblem != null) throw new ConfigException(hostProblem);
+            pattern = pattern.Trim();
             foreach (var pair in values)
                 if ((pair.Value ?? "").Any(c => char.IsControl(c) && !(pair.Key.Equals("IdentityFile", StringComparison.OrdinalIgnoreCase) && (c == '\r' || c == '\n')))) throw new ConfigException("Values must be single lines (one identity path per line).");
             var problem = PercentProblem(existing, values);
