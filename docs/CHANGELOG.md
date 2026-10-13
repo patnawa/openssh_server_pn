@@ -52,9 +52,20 @@ The continued audit added 14 regressions: 10 reproduced failures before the seco
 and four protect valid client patterns, legacy archives and encoding migration/truncation.
 Independent pinned builds and LF/CRLF checkout builds produced identical executable, config
 and metadata files. The tracked manager executable was replaced with those tested bytes.
-The upstream patch inventory also passed. No `sshd` service is installed on this workstation;
-live/elevated `--selftest`, `--keytest`, `--authtest`, native builds and MSI installation were not
-run for this pass. Physical mixed-monitor and screen-reader acceptance remain untested.
+The upstream patch inventory also passed.
+
+The subsequent [hosted rebuild](https://github.com/patnawa/openssh_server_pn/actions/runs/38360329356)
+from `a601cb6077b8381058c87758329c5b9d15f7eaec` passed **14 jobs**, with the two release-only
+jobs intentionally skipped. x64, x86 and ARM64 each passed **767 native tests**, **139 configuration
+dump checks** and the required crypto probes. All four installation environments (Server 2022,
+Server 2025, Server 2022 with PowerShell 2.0, and Windows 11 ARM64) passed **364 installed
+self-tests each**, key and authentication checks, SSH/SFTP integrity, SYSTEM recovery after process
+termination, client-only coexistence and the install/upgrade/repair/rollback/downgrade/uninstall
+scenarios. Pester passed **159 tests**, with **0 failures and 1 skipped**. The rebuilt unsigned
+10.5.8.0 MSIs contain the exact tested Manager bytes; no release was published. See
+[validation evidence and package hashes](VALIDATION.md). Actual reboot/pending-file-replacement
+tests remain pending because no disposable Windows VM was found. Physical mixed-monitor,
+screen-reader, GUI-click recovery and other-account UAC acceptance remain untested.
 
 ## 10.5.8.0 / Manager 2.3.2 (not yet released)
 

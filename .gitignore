@@ -4,3 +4,4 @@ tools/OpenSSH-Server-PN-Manager/bin/build-info.json
 *.log
 vcpkg/
 tools/wix314/
+/dist/

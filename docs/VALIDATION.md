@@ -1,5 +1,45 @@
 # Disposable Windows acceptance runs
 
+## Candidate rebuild — 13 October 2026
+
+Product **10.5.8.0**, with the updated **Manager 2.3.2**, was rebuilt from
+[`a601cb6077b8381058c87758329c5b9d15f7eaec`](https://github.com/patnawa/openssh_server_pn/commit/a601cb6077b8381058c87758329c5b9d15f7eaec)
+on branch `codex/installer-manager-validation-20261013` by
+[run 38360329356](https://github.com/patnawa/openssh_server_pn/actions/runs/38360329356).
+The run completed successfully: **14 jobs passed**, with the two release-only jobs intentionally
+skipped. These are unsigned branch artifacts; no release was published.
+
+- The freshly built Manager passed **315 unit tests and 49 GUI checks**, including independent
+  reproducibility and LF/CRLF checkout checks. Its executable, configuration and build metadata
+  match the locally tested files byte for byte.
+- x64, x86 and ARM64 native builds passed. Each architecture passed **767 native tests**,
+  **139 AuthorizedKeysFile configuration-dump checks**, and the required crypto probes.
+- Downloaded MSI checksums matched the hosted `SHA256SUMS.txt`. Local package inspection passed
+  **161 checks for x64**, **161 for x86**, and **162 for ARM64**. CAB inspection confirmed the
+  exact tested Manager executable and configuration, plus all 16 required executable/DLL payloads.
+- Server 2022 x64, Server 2025 x64, Server 2022 with PowerShell 2.0 and Windows 11 ARM64 passed
+  **364 installed self-tests each**, `--check`, `--keytest`, `--authtest`, SSH/SFTP integrity,
+  client-only coexistence, actual SYSTEM recovery after process termination, installation,
+  upgrade, repair, rollback, downgrade, active-session handling, uninstall and wizard launch.
+- The informational Pester suite passed **159 tests**, with **0 failures, 1 skipped and 0 pending**
+  (the suite skips forced pseudo-terminal allocation with `-t`).
+
+The packages and local inspection evidence are retained under
+`dist/installer-validation-20261013/`. Package SHA-256 values:
+
+| Package | SHA-256 |
+|---|---|
+| `OpenSSH-Win64-v10.5.8.0.msi` | `c9fa32e5bcd6af473f58358da19c4e487c0b161c8f4220236d0295221a44e3e5` |
+| `OpenSSH-Win32-v10.5.8.0.msi` | `cef3589608006b3b6ba2fef2dfd2da0a949b843d6e34514f922716b796c353a6` |
+| `OpenSSH-ARM64-v10.5.8.0.msi` | `6da69b5069a8b564b071f6f44b21cf923888316671b0b5613d3e78653b739304` |
+
+Actual reboot and pending-file-replacement acceptance remain unrun. The workstation has WSL
+Ubuntu but no registered Windows VM; Hyper-V and Windows Sandbox are disabled, and no VMware
+or VirtualBox installation was found. The hosted lanes do not reboot. Physical mixed-monitor,
+screen-reader, GUI-click recovery and other-account UAC acceptance remain separate manual checks.
+
+## Previous release evidence — 8 October 2026
+
 These drivers target **10.5.7.0 / Manager 2.3.1** at source
 `098e124122438ae9b123af881a3897ba6487d8b4`. Use the driver checkout and artifacts from
 the same tested revision. Local manual VM/reboot acceptance remains deferred; do not
