@@ -2,9 +2,9 @@
 
 A second review of the sources released as **10.5.7.0 / Manager 2.3.1** (starting revision
 `b1ac978bd`), made after [the first audit](AUDIT-2026-10-08.md) of the same day. The
-corrections are on branch `bughunt-2026-10-08` as **Manager 2.3.2** and product **10.5.8.0**.
-They are **not released** yet: installer, native and elevated checks run only in CI (see
-[Verification](#verification)).
+corrections were merged as `ec50173` (pull request #15) and published on 9 October 2026 as
+**product 10.5.8.0** and **Manager 2.3.2**, unsigned regular releases built by the hosted
+workflow (see [Verification](#verification)).
 
 ## Method
 
@@ -131,6 +131,14 @@ Only the hosted workflows can prove: the MSI changes (sequencing and conditions 
 and rollback actions, upgrade/repair/rollback/uninstall lanes, client-only installs), the
 `servconf.c` dump change and its round trips, elevated `--selftest`/`--authtest`/`--keytest`, the
 SAFER token path with a real full-token desktop, and the logged-in-peer mapping with real sessions.
+
+Hosted, on `ec50173`: the [product run](https://github.com/patnawa/openssh_server_pn/actions/runs/37915311883)
+passed all 14 expected jobs. The x64/x86/ARM64 builds, unit, crypto and `AuthorizedKeysFile`
+round-trip gates passed, as did 188 installer script checks per architecture and the package
+checks of the new action conditions. All four installation lanes passed, each with 339/339
+installed self-tests and the upgrade, repair, rollback, uninstall and client-only checks. The
+pull request's first run found one test assumption that held only locally (an SDDL compared with
+its auto-inherited flag); it was corrected before the merge.
 
 ## Residual risks
 
