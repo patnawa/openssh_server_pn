@@ -129,7 +129,7 @@ jobs:
           persist-credentials: false
 
       - name: Download the tested manager
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: manager-tested
           path: ${{ runner.temp }}/manager
@@ -231,7 +231,7 @@ jobs:
 
       - name: Upload the build logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-logs-${{ matrix.arch }}
           path: |
@@ -399,7 +399,7 @@ jobs:
           exit 0
 
       - name: Upload the MSI
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: msi-${{ matrix.arch }}
           path: ${{ env.OUT_DIR }}/${{ matrix.msi }}-v${{ env.VERSION }}.msi
@@ -409,7 +409,7 @@ jobs:
 
       - name: Upload the upgrade-test MSI
         if: matrix.upgrade-msi
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: upgradetest-msi-${{ matrix.arch }}
           path: ${{ runner.temp }}/upgrade/*.msi
@@ -418,7 +418,7 @@ jobs:
           retention-days: 7
 
       - name: Upload the binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bin-${{ matrix.arch }}
           path: src/bin/${{ matrix.folder }}/Release/
@@ -452,7 +452,7 @@ jobs:
             tools/OpenSSH-Server-PN-Manager
 
       - name: Download the binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: bin-${{ matrix.arch }}
           path: ${{ runner.temp }}/bin
@@ -521,13 +521,13 @@ jobs:
             tools/OpenSSH-Server-PN-Manager
 
       - name: Download the MSI
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: msi-${{ matrix.arch }}
           path: ${{ runner.temp }}/msi
 
       - name: Download the upgrade-test MSI
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: upgradetest-msi-${{ matrix.arch }}
           path: ${{ runner.temp }}/msi
@@ -665,7 +665,7 @@ jobs:
 
       - name: Upload the logs
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: install-logs-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.powershell && format('-powershell{0}', matrix.powershell) || '' }}
           path: ${{ runner.temp }}/logs/
@@ -692,13 +692,13 @@ jobs:
           persist-credentials: false
 
       - name: Download the binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: bin-x64
           path: src/bin/x64/Release
 
       - name: Download the MSI
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: msi-x64
           path: ${{ runner.temp }}/msi
@@ -758,7 +758,7 @@ jobs:
 
       - name: Upload the test results
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-results-x64
           path: C:\OpenSSHTests\
@@ -779,14 +779,14 @@ jobs:
           persist-credentials: false
 
       - name: Download the MSIs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: msi-*
           merge-multiple: true
           path: dist
 
       - name: Download the tested manager
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: manager-tested
           path: ${{ runner.temp }}/manager
@@ -817,7 +817,7 @@ jobs:
         run: sha256sum -c SHA256SUMS.txt
 
       - name: Upload the release files
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-files
           path: dist/
@@ -840,7 +840,7 @@ jobs:
       SIGNED: ${{ vars.SIGNING_METHOD != '' }}
     steps:
       - name: Download the release files
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-files
           path: dist
