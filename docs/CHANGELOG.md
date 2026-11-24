@@ -2,10 +2,12 @@
 
 All builds of this project, newest first. Each entry lists the source, the library versions,
 every change to the packaging, and how the result was verified. The current regular
-releases are [product 10.5.9.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.9.0)
-and [Manager 2.3.3](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.3).
-Both were published on **13 October 2026**, with **Manager 2.3.3 marked Latest**.
+releases are [product 10.5.10.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.10.0)
+and [Manager 2.3.4](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.4).
+Both were published on **24 November 2026**, with **Manager 2.3.4 marked Latest**.
 Earlier regular GitHub releases:
+[release-v10.5.9.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.9.0) (with Manager 2.3.3),
+[release-manager-v2.3.3](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.3),
 [release-v10.5.8.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.8.0) (with Manager 2.3.2),
 [release-manager-v2.3.2](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.2),
 [release-v10.5.7.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.7.0) (with
@@ -77,6 +79,34 @@ OpenSSH stays at 10.5p1. The product's third version field advances for MSI upgr
 sshd (inherited from the Windows port: an existing folder only produces a permissions warning). Until
 the installer checks this, on multi-user machines confirm before installing that `%ProgramData%\ssh`
 either does not exist or is owned by SYSTEM or Administrators and not writable by other users.
+
+**Published** on 24 November 2026 as unsigned regular releases
+[release-v10.5.10.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.10.0) and
+[release-manager-v2.3.4](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.4)
+(Manager marked Latest), from source `f600c2187ffa00203a87e65ae6814f46a23939c1`: the exact artifacts of
+[run 45421491647](https://github.com/patnawa/openssh_server_pn/actions/runs/45421491647). The first run
+(45416776414) passed every build, unit and Manager gate but failed one install check in each lane because
+the committed Manager executable was still 2.3.3; the tested 2.3.4 executable was committed and the full
+run repeated.
+
+Verification: Manager 317 unit tests and 49 GUI checks, reproducible build, 13 installer-fixture checks;
+x64/x86/ARM64 767 native unit tests, crypto probes (ARM64 bignum/EC/RSA/Ed25519 with LibreSSL 4.3.5 and
+without the removed local patch), 139 configuration round trips and 188 installer script checks each;
+four installation lanes (Server 2022, Server 2025, PowerShell 2.0, Windows 11 ARM64) with 366/366
+installed self-tests, independent SYSTEM recovery, SSH/SFTP integrity and upgrade, repair, rollback,
+downgrade, session and uninstall checks. Pester (informational): 159 passed, 0 failed, 1 skipped. Every MSI
+carries `libcrypto.dll` 4.3.5.0 and the tested Manager. All 19 assets were compared byte for byte with the
+staging files as drafts and again after publication.
+
+| File | SHA-256 |
+|---|---|
+| `OpenSSH-Win64-v10.5.10.0.msi` | `6cba7abe29cf145d06cd2537545a0fa35fdfa85439c8bedf27970bc33634416a` |
+| `OpenSSH-Win32-v10.5.10.0.msi` | `e3aa0b1e76a20e4343ceade8c6772ebcde8e7266bde03dc8eb602d90eb6592f5` |
+| `OpenSSH-ARM64-v10.5.10.0.msi` | `edc6c1009f63e47d8dfa0f9982de45a45077f8fa5d327420ce73310dc9281e1c` |
+| `OpenSSHServerPNManager.exe` (2.3.4) | `710ab22f1d482d0e95e46e80a7825ff5531300d6f9aebf4387a9476ad1b20bb6` |
+
+Product codes: Win64 `{06C7DBBC-9F0E-4C23-8AE5-BE0DA2E4ADA1}`, Win32 `{2D18F310-9C32-4B50-8C11-BF89B1E0114E}`,
+ARM64 `{5A9B19B6-C069-4135-A3B6-8F9A4E735341}`. Not signed; no cryptographic build attestation.
 
 ## 10.5.9.0 / Manager 2.3.3 (2026-10-13)
 
