@@ -457,7 +457,7 @@ struct w32_io*
 fileio_open(const char *path_utf8, int flags, mode_t mode)
 {
 	struct w32_io* pio = NULL;
-	struct createFile_flags cf_flags;
+	struct createFile_flags cf_flags = { 0 };
 	HANDLE handle = INVALID_HANDLE_VALUE;
 	wchar_t *path_utf16 = NULL;
 	int nonfs_dev = 0; /* opening a non file system device */
@@ -505,7 +505,7 @@ fileio_open(const char *path_utf8, int flags, mode_t mode)
 	
 	pio = (struct w32_io*)malloc(sizeof(struct w32_io));
 	if (pio == NULL) {
-		CloseHandle(handle);
+		/* handle is still valid here; cleanup closes it */
 		errno = ENOMEM;
 		debug3("fileio_open(), failed to allocate memory error:%d", errno);
 		goto cleanup;

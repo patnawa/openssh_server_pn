@@ -604,7 +604,10 @@ namespace OpenSSHServerPNManager
             // address comes with its zone (fe80::1%12), which is left out of the address.
             // "Failed publickey ... ssh2: <key>" is deliberately not counted: under LogLevel VERBOSE sshd logs it for every
             // key a legitimate client offers before the right one, and blocking would catch such clients.
-            @"(?:^|: )(?:(?:Failed \S+ for (?:invalid user )?(?<user>.*)|Invalid user (?<user>.*)|maximum authentication attempts exceeded for (?:invalid user )?(?<user>.*)) from|(?:Connection closed by|Disconnected from) (?:authenticating|invalid) user (?<user>.*)|Timeout before authentication for) (?<addr>[0-9A-Fa-f.:]+)(?:%[0-9A-Za-z._-]+)? port \d+(?: ssh2)?(?: \[preauth\])?\s*$",
+            // The message must start with the failure, after nothing but "word: " prefixes (process, "error: "): messages whose
+            // end the client writes ("Received disconnect from <client> port <n>:11: <its text> [preauth]", "Their offer: <its
+            // list>") would otherwise make a client's text "Invalid user x from <any address> port 22" block that address.
+            @"^(?:\S+: )*(?:(?:Failed \S+ for (?:invalid user )?(?<user>.*)|Invalid user (?<user>.*)|maximum authentication attempts exceeded for (?:invalid user )?(?<user>.*)) from|(?:Connection closed by|Disconnected from) (?:authenticating|invalid) user (?<user>.*)|Timeout before authentication for) (?<addr>[0-9A-Fa-f.:]+)(?:%[0-9A-Za-z._-]+)? port \d+(?: ssh2)?(?: \[preauth\])?\s*$",
             RegexOptions.IgnoreCase);
 
         /// <summary>

@@ -186,7 +186,7 @@ double-clicking the MSI or running `msiexec` from an elevated prompt works.
 ## 4. Verify
 
 ```powershell
-ssh -V                                                     # OpenSSH_for_Windows_10.5p1 ..., LibreSSL 4.3.2
+ssh -V                                                     # OpenSSH_for_Windows_10.5p1 ..., LibreSSL 4.3.5
 Get-Service sshd, ssh-agent | Select-Object Name, Status, StartType
 sc.exe qfailure sshd                                       # RESTART actions present
 Get-NetTCPConnection -LocalPort 22 -State Listen           # 0.0.0.0:22 and [::]:22

@@ -23,6 +23,61 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
+## 10.5.10.0 / Manager 2.3.4 (2026-11-24)
+
+Security maintenance release: updated native libraries and three fixes from a security review.
+OpenSSH stays at 10.5p1. The product's third version field advances for MSI upgrades.
+
+**Libraries** (`libcrypto.dll` and the statically linked libraries of every native executable):
+
+- **LibreSSL 4.3.2 → 4.3.5.** Includes the security fixes of 4.3.3 and 4.3.4: OCSP responder
+  authorization bypass (libtls/ocspcheck), DTLS fragment size checks and handshake buffering limits,
+  hostname-mismatch visibility for verify callbacks, removal of CRL distribution point
+  RelativeDistinguishedName support, and removal of the emSign ECC Root CA - G3 from `cert.pem`.
+  4.3.3 also ships the MSVC ARM64 constant-time bignum workaround (libressl/portable#1403), so the
+  overlay patch `msvc-arm64-bn-ct-ne-zero.patch` is removed; `modify-cmakelists.patch` is rebased
+  with identical changes. The x64 CPU-capability patch is kept.
+- **libcbor 0.14.0 → 0.14.1.** Security release: GHSA-frh9-3gqx-pqg2 and GHSA-pj89-8hch-p7vp
+  (`cbor_stream_decode` length checks). 0.15.0 was not taken: it breaks the ABI.
+- **zlib 1.3.2 → 1.4.** Security fixes including CVE-2026-85091 (non-blocking `gzwrite` overflow),
+  the `inflateGetDictionary` overflow after a header with an invalid window size, and bounds fixes in
+  `inflateSync`, `inflatePrime` and `deflatePrime`. The MSVC static library is now `libzs.lib`
+  (`libzsd.lib` for Debug); `paths.targets` links it under the new name.
+- libfido2 stays at 1.17.0 (latest). vcpkg baseline `10541e31` → `2f8bf7a5` (2026-11-24) for the
+  zlib 1.4 and libcbor 0.14.1 ports. `tools/release/upstream-patches.json` lists eight overlay patches.
+- **OpenSSH 10.6p2** ("avoid password authn bypass") was reviewed: the fix is in the Unix
+  `crypt()` password path (`sys_auth_passwd`), which the Windows build never reaches; password
+  logins go through `windows_password_auth` (LogonUser). Merging OpenSSH 10.6 remains separate work.
+
+**Manager 2.3.4:**
+
+- **Automatic blocking could be aimed at any address.** The failed-login pattern accepted the
+  failure text after any `": "` in a message, including text that a client chooses: the reason of a
+  disconnect message (`Received disconnect from <client> port <n>:11: Invalid user x from <victim>
+  port 22`) or the algorithm list in `Their offer: ...`. An unauthenticated client could make the
+  agent, running as SYSTEM, count failures for, and block, an address of its choice (an administrator
+  or a partner). The failure must now start the message, after nothing but `word: ` prefixes
+  (process name, `error: `). The same parser drives the failed-login dialog and the tray counter.
+- **SFTP folder permissions could land on a junction's target.** When a rule's folder already
+  existed, Apply on the SFTP tab granted the account Modify on it by name, following a junction or
+  symbolic link. A standard user who made `C:\SFTP\<name>` or `%h\sftp` a junction to a system
+  folder got Modify rights there once an administrator applied the rule. `SftpConfig.PrepareFolder`
+  now refuses a folder that is a link, mount point or an entry it cannot examine, as the Partners
+  path already did.
+
+**Native (win32compat):**
+
+- `fileio_open` freed an uninitialized security descriptor when the flags or mode were refused
+  before `CreateFile` (for example `O_WRONLY|O_RDWR`, or mode `04755`), and closed the file handle
+  twice when memory ran out. `cf_flags` is now zero-initialized and the handle is closed once.
+  Unit test added to `file_tests.c`.
+
+**Known, not changed in this release (next release):** a standard user who creates
+`%ProgramData%\ssh` with their own `sshd_config` before the server is first installed is trusted by
+sshd (inherited from the Windows port: an existing folder only produces a permissions warning). Until
+the installer checks this, on multi-user machines confirm before installing that `%ProgramData%\ssh`
+either does not exist or is owned by SYSTEM or Administrators and not writable by other users.
+
 ## 10.5.9.0 / Manager 2.3.3 (2026-10-13)
 
 The maintenance fixes below follow the published 10.5.8.0 / Manager 2.3.2 releases.

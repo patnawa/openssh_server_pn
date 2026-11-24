@@ -438,6 +438,10 @@ namespace OpenSSHServerPNManager
             var rights = readOnly ? FileSystemRights.ReadAndExecute : FileSystemRights.Modify;
             var inherit = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
             path = Path.GetFullPath(path);
+            // The rights would be set by name on whatever a link leads to: an account that made C:\SFTP\<name> or %h\sftp a
+            // junction to a program or system folder would get modify rights there.
+            var link = LinkKind(path);
+            if (link != null) throw new ConfigException(path + " is " + link + ": rights given to it would land on whatever it leads to, which whoever made it decides. Remove it, or choose another folder.");
             if (!Directory.Exists(path))
             {
                 // One folder at a time: Directory.CreateDirectory(path, security) of the .NET Framework gives every

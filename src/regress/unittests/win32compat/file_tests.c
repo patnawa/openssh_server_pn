@@ -489,6 +489,14 @@ file_miscellaneous_tests()
 	close(f);
 	retValue = unlink(tmp_filename);
 	ASSERT_INT_EQ(retValue, 0);	
+
+	/* arguments refused before CreateFile must fail cleanly (no uninitialized security descriptor is freed) */
+	f = open(tmp_filename, O_WRONLY | O_CREAT, 04755);
+	ASSERT_INT_EQ(f, -1);
+	ASSERT_INT_EQ(errno, ENOTSUP);
+	f = open(tmp_filename, O_WRONLY | O_RDWR);
+	ASSERT_INT_EQ(f, -1);
+	ASSERT_INT_EQ(errno, EINVAL);
 out:
 	TEST_DONE();
 }

@@ -53,7 +53,7 @@ you have set up keys; the manager's setup wizard switches them off for administr
 
 | Folder | Contents |
 |---|---|
-| `src/` | The server and client source: OpenSSH 10.5p1 with the Windows port, the vendored-library manifest (LibreSSL 4.3.2, libfido2 1.17.0) and the WiX installer. The repository history starts on 26 September 2026; the earlier history, with upstream OpenSSH's, is kept outside the repository for merging new OpenSSH releases ([BUILDING.md](docs/BUILDING.md#2-layout)) |
+| `src/` | The server and client source: OpenSSH 10.5p1 with the Windows port, the vendored-library manifest (LibreSSL 4.3.5, libfido2 1.17.0, libcbor 0.14.1, zlib 1.4) and the WiX installer. The repository history starts on 26 September 2026; the earlier history, with upstream OpenSSH's, is kept outside the repository for merging new OpenSSH releases ([BUILDING.md](docs/BUILDING.md#2-layout)) |
 | `tools/OpenSSH-Server-PN-Manager/` | [OpenSSH Server PN Manager](tools/OpenSSH-Server-PN-Manager/README.md), the management console (C# source, build script, the built executable) |
 | `docs/` | Installation, compatibility, building, releasing, changelog, feature audit and roadmap |
 | `.github/`, `tools/release/` | CI (build, unit and install tests of the packages, the management console), release tooling (SBOM, upstream version check) |
@@ -151,15 +151,15 @@ shows that a file was built by this repository's workflow. Anyone can rebuild th
 [docs/BUILDING.md](docs/BUILDING.md). Installed, the product appears as *OpenSSH Server PN* in
 *Apps & features*, and the server identifies itself as `SSH-2.0-OpenSSH_for_Windows_10.5 OpenSSH-Server-PN`.
 
-Component versions recorded for 10.5.5.0:
+Component versions of 10.5.10.0:
 
 | Component | Version | Note |
 |---|---|---|
-| OpenSSH | 10.5p1, file version 10.5.5.0 | Three releases ahead of the Windows port's `latestw_all` branch (10.2p1). How the 10.3, 10.4 and 10.5 releases were merged is in the changelog |
-| LibreSSL | 4.3.2 (2026-05-26) | The official 10.0.0.0 Windows package shipped 4.2.0, without AES-NI. x64: with the CPU detection for Visual Studio builds, so AES-NI and PCLMULQDQ are used. ARM64: with LibreSSL's workaround for the compiler defect ([libressl/portable#1403](https://github.com/libressl/portable/issues/1403)) |
+| OpenSSH | 10.5p1, file version 10.5.10.0 | Three releases ahead of the Windows port's `latestw_all` branch (10.2p1). How the 10.3, 10.4 and 10.5 releases were merged is in the changelog |
+| LibreSSL | 4.3.5 (2026-11-11) | The official 10.0.0.0 Windows package shipped 4.2.0, without AES-NI. x64: with the CPU detection for Visual Studio builds, so AES-NI and PCLMULQDQ are used. ARM64: with LibreSSL's own workaround (since 4.3.3) for the compiler defect ([libressl/portable#1403](https://github.com/libressl/portable/issues/1403)) |
 | libfido2 | 1.17.0 (2026-04-15) | Includes YSA-2026-01 (restricted `webauthn.dll` search path) |
-| libcbor, zlib | 0.14.0, 1.3.2 | |
-| Installer | WiX 3.14 | Removes whatever is installed first, installs OpenSSH Server PN Manager 2.2.1; see below |
+| libcbor, zlib | 0.14.1, 1.4 | Both security releases (libcbor GHSA-frh9-3gqx-pqg2 and GHSA-pj89-8hch-p7vp; zlib CVE-2026-85091 and others) |
+| Installer | WiX 3.14 | Removes whatever is installed first, installs OpenSSH Server PN Manager 2.3.4; see below |
 
 Highlights of OpenSSH 10.3 to 10.5 on the server side: a GSSAPI pre-authentication
 denial-of-service fix, complete `PubkeyAcceptedAlgorithms` enforcement for ECDSA keys, the
@@ -192,7 +192,7 @@ off). Details: [docs/INSTALL.md](docs/INSTALL.md).
 msiexec /i .\OpenSSH-Win64-v10.5.9.0.msi /qn /norestart /l*v "$env:TEMP\openssh-install.log"
 
 # verify
-ssh -V                                  # OpenSSH_for_Windows_10.5p1 OpenSSH-Server-PN, LibreSSL 4.3.2
+ssh -V                                  # OpenSSH_for_Windows_10.5p1 OpenSSH-Server-PN, LibreSSL 4.3.5
 Get-Service sshd, ssh-agent             # Running, StartType Automatic
 Test-NetConnection localhost -Port 22   # TcpTestSucceeded : True
 ```

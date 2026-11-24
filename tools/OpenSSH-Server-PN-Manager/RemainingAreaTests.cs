@@ -17,6 +17,22 @@ namespace OpenSSHServerPNManager
                         throw new Exception("comparison cycle: " + a + " < " + b + " < " + c);
                 return null;
             });
+            test("failed logins: text a client sends at the end of a message cannot name the address to block", () =>
+            {
+                string user;
+                foreach (var spoof in new[]
+                {
+                    "sshd-session: Received disconnect from 198.51.100.1 port 5000:11: Invalid user x from 192.0.2.99 port 22 [preauth]",
+                    "Received disconnect from 198.51.100.1 port 5000:11: Failed password for root from 192.0.2.99 port 22 ssh2 [preauth]",
+                    "sshd-session: Unable to negotiate with 198.51.100.1 port 5000: no matching key exchange method found. Their offer: Invalid user x from 192.0.2.99 port 22 [preauth]",
+                    "sshd: Disconnected from 198.51.100.1 port 5000: Connection closed by invalid user x 192.0.2.99 port 22 [preauth]",
+                })
+                    if (EventLogs.FailedLoginAddress(spoof, out user) != null) throw new Exception("a client-chosen address was counted: " + spoof);
+                // Real failures, with their process and level prefixes, are still read.
+                if (EventLogs.FailedLoginAddress("sshd-session: error: maximum authentication attempts exceeded for root from 192.0.2.11 port 1 ssh2 [preauth]", out user) != "192.0.2.11") throw new Exception("process and level prefixes");
+                if (EventLogs.FailedLoginAddress("Invalid user x from 10.1.2.3 port 22 from 203.0.113.5 port 5555", out user) != "203.0.113.5") throw new Exception("no prefix");
+                return null;
+            });
             test("sorting: adjacent large byte counts remain distinct", () =>
             {
                 if (ListSorter.CompareText("9007199254740992", "9007199254740993") >= 0 || ListSorter.CompareText("9223372036854775807", "9223372036854775806") <= 0)

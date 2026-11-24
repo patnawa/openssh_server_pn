@@ -119,6 +119,25 @@ namespace OpenSSHServerPNManager
                 finally { RemoveLinks(new[] { link }); }
                 return null;
             });
+            test("SFTP: a rule's folder that is a junction is refused, and the folder it leads to keeps its permissions", () =>
+            {
+                var id = Id();
+                var target = Path.Combine(tmpDir, "jtarget-" + id); var link = Path.Combine(tmpDir, "jlink-" + id);
+                Directory.CreateDirectory(target);
+                var users = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
+                try
+                {
+                    Junction(link, target);
+                    Func<bool> granted = () => Directory.GetAccessControl(target).GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+                        .Any(r => r.AccessControlType == AccessControlType.Allow && users.Equals(r.IdentityReference) && (r.FileSystemRights & FileSystemRights.Modify) == FileSystemRights.Modify);
+                    if (granted()) throw new Exception("the target already grants modify rights");
+                    try { SftpConfig.PrepareFolder(link, users, false); throw new Exception("a junction was prepared"); }
+                    catch (ConfigException ex) { if (ex.Message.IndexOf("link", StringComparison.Ordinal) < 0) throw new Exception("refused for another reason: " + ex.Message); }
+                    if (granted()) throw new Exception("the folder behind the junction got modify rights");
+                }
+                finally { RemoveLinks(new[] { link }); }
+                return null;
+            });
             test("partners: a new folder is made in one step that fails when it exists", () =>
             {
                 var path = Path.Combine(tmpDir, "made-" + Id());
