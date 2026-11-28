@@ -578,6 +578,20 @@ namespace OpenSSHServerPNManager
             return l;
         }
 
+        /// <summary>
+        /// True for an event that sshd itself can have written about a login that failed: by SYSTEM (the service and its
+        /// monitor), by sshd's own virtual account (S-1-5-111-..., the unprivileged pre-authentication process), or by a
+        /// service account. Any account may write events under the OpenSSH provider's name (sftp-server and a session's
+        /// processes do, as the signed-in user): without this, a local account could write "Invalid user x from <address>"
+        /// ten times and have that address blocked. An event that names no account is kept, as before.
+        /// </summary>
+        internal static bool TrustedFailureWriter(SecurityIdentifier writer)
+        {
+            if (writer == null) return true;
+            var sid = writer.Value;
+            return sid == "S-1-5-18" || sid == "S-1-5-19" || sid == "S-1-5-20" || sid.StartsWith("S-1-5-111-", StringComparison.Ordinal) || sid.StartsWith("S-1-5-80-", StringComparison.Ordinal);
+        }
+
         private static IEnumerable<KeyValuePair<string, LogEvent>> Records(string xpath, CancellationToken cancel)
         {
             using (var reader = new EventLogReader(new EventLogQuery(LogName, PathType.LogName, xpath) { ReverseDirection = true }))
@@ -589,6 +603,9 @@ namespace OpenSSHServerPNManager
                         // The manifest's two values (process, text) are the message without its "process: " prefix, and much
                         // cheaper to read than the formatted message.
                         string process = "", msg = null;
+                        SecurityIdentifier writer = null;
+                        try { writer = rec.UserId; } catch { }
+                        if (!TrustedFailureWriter(writer)) continue;
                         try { if (rec.Properties.Count >= 2) { process = Convert.ToString(rec.Properties[0].Value) ?? ""; msg = Convert.ToString(rec.Properties[1].Value); } } catch { }
                         if (msg == null) try { msg = rec.FormatDescription(); } catch { }
                         if (string.IsNullOrEmpty(msg)) continue;

@@ -144,6 +144,7 @@ namespace OpenSSHServerPNManager
         {
             path = Path.GetFullPath(path);
             var dir = Path.GetDirectoryName(path);
+            if (Ssh.ConfigDirOverride == null && string.Equals(dir.TrimEnd('\\'), Path.GetFullPath(Ssh.ConfigDir).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) Acl.EnsureConfigFolder(dir);
             Directory.CreateDirectory(dir);
             using (OpenVerifiedFolder(dir))
             {
@@ -617,6 +618,7 @@ namespace OpenSSHServerPNManager
         /// <summary>Generates any missing host keys (ssh-keygen -A) and applies the required ACL.</summary>
         public static string GenerateMissing()
         {
+            if (Ssh.ConfigDirOverride == null) Acl.EnsureConfigFolder(Ssh.ConfigDir); // --selftest's scratch folder keeps plain permissions
             Directory.CreateDirectory(Ssh.ConfigDir);
             var r = Proc.Run(Ssh.Exe("ssh-keygen.exe"), "-A", 60000, Ssh.InstallDir);
             foreach (var f in Directory.GetFiles(Ssh.ConfigDir, "ssh_host_*_key")) { try { Acl.Restrict(f, null); } catch { } }

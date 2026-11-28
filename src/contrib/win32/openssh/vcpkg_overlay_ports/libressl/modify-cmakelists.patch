@@ -1,9 +1,9 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 16c01dc..91bb81b 100644
+index adfdacf..352a50f 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -60,10 +60,8 @@ set(OPENSSLDIR ${OPENSSLDIR} CACHE PATH "Set the default openssl directory" FORC
- set(TLS_DEFAULT_CA_FILE ${TLS_DEFAULT_CA_FILE} CACHE PATH "Set the default CA file" FORCE)
+@@ -70,10 +70,8 @@ set(OPENSSLDIR ${OPENSSLDIR} CACHE PATH "Set the default openssl directory" FORC
+ set(TLS_DEFAULT_CA_FILE ${TLS_DEFAULT_CA_FILE} CACHE PATH "Set the default CA file for libtls" FORCE)
  set(LIBRESSL_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/LibreSSL" CACHE STRING "Installation directory for the CMake targets")
  
 -option(USE_STATIC_MSVC_RUNTIMES "Use /MT instead of /MD in MSVC" OFF)
@@ -15,7 +15,7 @@ index 16c01dc..91bb81b 100644
  
  if(NOT LIBRESSL_SKIP_INSTALL)
  	set( ENABLE_LIBRESSL_INSTALL ON )
-@@ -175,26 +173,26 @@ if(MSVC)
+@@ -287,26 +285,26 @@ if(MSVC)
  
  	if(CMAKE_C_COMPILER_ID MATCHES "MSVC" OR CMAKE_C_COMPILER_ID MATCHES "Clang")
  		set(MSVC_DISABLED_WARNINGS_LIST
@@ -47,7 +47,7 @@ index 16c01dc..91bb81b 100644
  			        # Instead, use the ISO C and C++ conformant name
  		)
  	elseif(CMAKE_C_COMPILER_ID MATCHES "Intel")
-@@ -414,8 +412,10 @@ if (WIN32 AND (NOT CMAKE_GENERATOR_PLATFORM STREQUAL ""))
+@@ -598,8 +596,10 @@ if (WIN32 AND (NOT CMAKE_GENERATOR_PLATFORM STREQUAL ""))
  endif()
  
  if(CMAKE_SYSTEM_PROCESSOR MATCHES "(aarch64|arm64|ARM64)")

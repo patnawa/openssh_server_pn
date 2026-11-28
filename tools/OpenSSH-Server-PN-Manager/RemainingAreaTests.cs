@@ -33,6 +33,30 @@ namespace OpenSSHServerPNManager
                 if (EventLogs.FailedLoginAddress("Invalid user x from 10.1.2.3 port 22 from 203.0.113.5 port 5555", out user) != "203.0.113.5") throw new Exception("no prefix");
                 return null;
             });
+            test("failed logins: only events sshd can have written count, not one an ordinary account wrote", () =>
+            {
+                foreach (var sid in new[] { "S-1-5-18", "S-1-5-111-3847866527-469524349-687026318-516638107-1125189541-4242", "S-1-5-80-1-2-3-4-5", "S-1-5-19", "S-1-5-20" })
+                    if (!EventLogs.TrustedFailureWriter(new System.Security.Principal.SecurityIdentifier(sid))) throw new Exception("refused sshd's own writer " + sid);
+                if (!EventLogs.TrustedFailureWriter(null)) throw new Exception("refused an event that names no account");
+                foreach (var sid in new[] { "S-1-5-21-1004336348-1177238915-682003330-1001", "S-1-5-32-545", "S-1-5-7", "S-1-1-0", "S-1-5-11", "S-1-12-1-1-2-3-4" })
+                    if (EventLogs.TrustedFailureWriter(new System.Security.Principal.SecurityIdentifier(sid))) throw new Exception("counted an event written by " + sid);
+                return null;
+            });
+            test("locks: a lock another account created is not waited for", () =>
+            {
+                var me = System.Security.Principal.WindowsIdentity.GetCurrent().User;
+                var admins = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
+                var system = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
+                var other = new System.Security.Principal.SecurityIdentifier("S-1-5-21-1004336348-1177238915-682003330-1001");
+                if (!Acl.TrustedLockOwner(me, me) || !Acl.TrustedLockOwner(admins, me) || !Acl.TrustedLockOwner(system, me)) throw new Exception("refused its own, Administrators' or SYSTEM's lock");
+                if (Acl.TrustedLockOwner(other, me) || Acl.TrustedLockOwner(null, me) || Acl.TrustedLockOwner(other, null)) throw new Exception("trusted another account's lock");
+                // The same lock taken twice in one process: the second opens the first one's mutex and must still be let in.
+                var name = "Local\\OpenSSHServerPNManager.Test." + Guid.NewGuid().ToString("N");
+                bool inner = false;
+                if (!Agent.WithStateLock(name, 1000, () => { var t = new System.Threading.Thread(() => { inner = !Agent.WithStateLock(name, 0, () => { }); }); t.Start(); t.Join(); })) throw new Exception("the lock was not taken");
+                if (!inner) throw new Exception("a held lock of this account was refused or taken twice");
+                return null;
+            });
             test("sorting: adjacent large byte counts remain distinct", () =>
             {
                 if (ListSorter.CompareText("9007199254740992", "9007199254740993") >= 0 || ListSorter.CompareText("9223372036854775807", "9223372036854775806") <= 0)

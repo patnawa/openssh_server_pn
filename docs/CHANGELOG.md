@@ -25,6 +25,71 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
+## 10.5.11.0 / Manager 2.3.5 (not released yet)
+
+Prepared on 2026-11-28 on the branch `release/10.5.11.0`. A key-generator fix, LibreSSL 4.4.1 and three
+fixes from a security review of the Manager. OpenSSH stays at 10.5p1 (10.6p2 is available upstream and
+is not merged here). The product's third version field advances for MSI upgrades.
+
+**Verification so far.** The Manager was compiled with the pinned compiler (Roslyn 4.14.0 `csc.dll` on
+.NET 9, Linux) and the pinned reference assemblies, warnings as errors. The same procedure applied to
+the 2.3.4 source gives the published 2.3.4 executable byte for byte (`710AB22F…`), so the committed
+`bin/` executable is what `build.ps1` produces. **Nothing here has run on Windows yet**: the Manager
+unit and GUI tests, the native build with LibreSSL 4.4.1, the crypto probes and the installation
+tests are for the hosted workflows to pass before a release.
+
+**Key generator**
+
+- **A key made on the Key generator tab did not log in from another computer.** *Allow this key to
+  log in to this server* was unticked by default, so *Generate key pair* created and verified the
+  pair, reported it in green, and never added the public key to the account's authorized keys: the
+  server refused the key wherever its private key was copied to. The box is now ticked by default
+  (untick it for a key meant for other servers only). A key that is not allowed to log in is shown
+  in orange and says so, and the result names what the other computer needs: the private key
+  (*Export*) and the login name.
+- **A failed authorization hid the new key.** When adding the key to the authorized keys failed
+  (`AuthorizedKeysFile none`, an unreadable file), the error replaced the result: the key existed
+  on disk but the tab did not show it and *Export* and *Allow it to log in* stayed disabled. The
+  key is now shown with the reason, as the setup wizard does.
+
+**Library** (`libcrypto.dll`)
+
+- **LibreSSL 4.3.5 → 4.4.1**, the current stable series (both were published on 2026-11-11 and carry
+  the same security fixes; 4.4 adds the Windows compatibility-layer fixes and is the series that gets
+  further patch releases). `libcrypto` exports the same 3263 symbols with the same ABI version
+  (57:2:0). `modify-cmakelists.patch` is rebased with identical changes; the other five overlay
+  patches apply unchanged (checked with `git apply --ignore-whitespace` on the 4.4.1 archive,
+  SHA-512 `0a77f737…c3d49`, identical from ftp.openbsd.org and the GitHub release). zlib 1.4,
+  libfido2 1.17.0 and libcbor 0.14.1 are current (libcbor 0.15.0 is still not taken: ABI).
+
+**Security review of the Manager** (read-only review of key handling and of the code that runs
+elevated or as SYSTEM; three fixes, each with a regression test)
+
+- **A local account could have any address blocked.** Any account can write events under the
+  OpenSSH provider's name (`sftp-server` and session processes do so as the signed-in user). The
+  failed-login scan read the text of every event, so ten forged "Invalid user x from <address>"
+  events made the SYSTEM agent block that address. Failures now count only from events written by
+  SYSTEM, by sshd's virtual account (`S-1-5-111-…`) or by a service account.
+- **A squatted lock silently stopped the agent and configuration rollback.** The agent's state
+  lock and the configuration lock are named `Global\` mutexes that any account can create first
+  and hold: every Watch run then "deferred" with exit code 0 (no blocking, no expiry, no alerts)
+  and the recovery task treated the busy lock as success. A lock that exists already is now
+  accepted only when SYSTEM, Administrators or the account running the program owns it; anything
+  else is an error that is reported.
+- **`%ProgramData%\ssh` could be created with inherited permissions.** Where sshd had never
+  started, *Generate host keys*, adding an administrator key or saving `sshd_config` created the
+  folder with the permissions of `%ProgramData%`, in which every account may create files (an
+  `sshd_config` planted before the first start). The Manager now creates it as sshd does: SYSTEM
+  and Administrators full control, signed-in accounts read only.
+
+Reported by the review and **not fixed here** (each needs a decision or a Windows test):
+forged `sftp-server` events can add false rows to the transfer journal of another account; the
+SFTP tab checks only the last component of a rule's folder for links (the Partners tab checks every
+level); an `authorized_keys` file that starts with a UTF-16 byte order mark can show no keys on the
+Keys tab while sshd reads one from it; *Allow it to log in* for a loaded, encrypted OpenSSH key
+trusts the public key stored in the clear next to it; a very large `authorized_keys` file slows the
+Keys tab.
+
 ## 10.5.10.0 / Manager 2.3.4 (2026-11-24)
 
 Security maintenance release: updated native libraries and three fixes from a security review.

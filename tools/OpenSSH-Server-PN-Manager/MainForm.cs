@@ -3202,7 +3202,9 @@ namespace OpenSSHServerPNManager
             _kgNoPass = new CheckBox { Text = "No passphrase: only for keys used by unattended scripts (anyone who copies the file can use the key)", AutoSize = true, Margin = new Padding(4) };
             _kgNoPass.CheckedChanged += (s, e) => { _kgPass1.Enabled = _kgPass2.Enabled = !_kgNoPass.Checked; };
             row("", _kgNoPass, null);
-            _kgAuthorize = new CheckBox { Text = "Allow this key to log in to this server as " + KeyGen.LoginName(), AutoSize = true, Margin = new Padding(4) };
+            // Ticked from the start: a new key that is on no authorized_keys list is refused by this server, from wherever
+            // its private key is copied to. Unticked is for a key made for other servers.
+            _kgAuthorize = new CheckBox { Text = "Allow this key to log in to this server as " + KeyGen.LoginName() + " (untick for a key meant for other servers only)", AutoSize = true, Margin = new Padding(4), Checked = true };
             row("", _kgAuthorize, null);
             root.Controls.Add(grid, 0, 0);
 
@@ -3457,26 +3459,46 @@ namespace OpenSSHServerPNManager
             string pass = _kgNoPass.Checked ? null : _kgPass1.Text;
             KeyGenResult res = null;
             var comment = _kgComment.Text.Trim(); // read here: the work below runs on another thread
+            bool authorize = _kgAuthorize.Checked;
             try { await BgAsync("Generating " + type.Label + " key...", () => res = KeyGen.GenerateReplacing(type, path, comment, pass, now)); }
             finally { _kgPass1.Text = ""; _kgPass2.Text = ""; pass = null; }
             _kgPublic.Text = res.PublicKey;
             var text = "Created " + res.PrivatePath + " (private key" + (res.Encrypted ? ", protected by the passphrase" : ", NO passphrase") + ") and " + Path.GetFileName(res.PublicPath) +
                        ". Verified: the private key reproduces the public key" + (res.Encrypted ? ", does not open without the passphrase" : "") + ", and only you, SYSTEM and Administrators can read it.";
-            if (_kgAuthorize.Checked)
+            Log.Info("Key pair created: " + res.PrivatePath + " " + res.Fingerprint);
+            // The key exists from here on: a step that fails is reported with it, it does not hide the key (the buttons
+            // "Allow it to log in" and "Export" work on the key the tab shows).
+            var info = KeyInfoOf(res);
+            string where = null, problem = null; bool already = false, accepted = true;
+            if (authorize)
             {
-                bool already = false; var where = await BgAsync("Allowing the key to log in...", () => KeyGen.AuthorizeForCurrentUser(res.PublicKey, out already));
+                try { where = await BgAsync("Allowing the key to log in...", () => KeyGen.AuthorizeForCurrentUser(res.PublicKey, out already)); }
+                catch (OperationCanceledException) { ShowKey(info, text, null, Orange); throw; }
+                catch (Exception ex) { problem = ex.Message; Log.Error("Allowing the new key to log in", ex, false); }
+            }
+            if (where != null)
+            {
                 text += "\nAuthorized for " + KeyGen.LoginName() + " in " + where + (already ? " (it was already there)." : ".") + " Use \"Test login with this key\" to try it.";
+                ShowKey(info, text, null, Green); _kgAllowed = true; // shown before the steps below, which can fail on their own
                 await LoadKeys();
                 if (type.Experimental && !await EnsureServerAccepts(type))
+                {
+                    accepted = false;
                     text += "\nThis server does not accept " + type.PublicType + " yet, so the key cannot log in until PubkeyAcceptedAlgorithms includes it.";
+                }
+                text += "\nTo log in from another computer, that computer needs the private key (Export saves a copy, as .ppk for PuTTY, WinSCP and FileZilla) and the login name " + KeyGen.LoginName() + ".";
             }
+            else if (problem != null)
+                text += "\nThe key could NOT be allowed to log in to this server: " + problem + "\n\"Allow it to log in\" tries again; until then this server refuses the key.";
             if (type.Experimental)
                 text += "\nExperimental key type: clients need OpenSSH 10.5 or later and the line \"PubkeyAcceptedAlgorithms +" + type.PublicType + "\" in their ssh config.";
-            var info = KeyInfoOf(res);
-            bool? allowed = _kgAuthorize.Checked ? (bool?)null : await BgAsync("Checking whether the key may log in here...", () => AuthorizedState(res.PublicKey));
-            ShowKey(info, text, allowed, Green);
-            if (_kgAuthorize.Checked) _kgAllowed = true; // said in the text already
-            Log.Info("Key pair created: " + res.PrivatePath + " " + res.Fingerprint);
+            bool? allowed = authorize ? (bool?)null : await BgAsync("Checking whether the key may log in here...", () => AuthorizedState(res.PublicKey));
+            if (allowed == false)
+                text += "\nThis server does not accept the key yet: it is on no list of keys that may log in. Copying the private key to another computer is not enough; \"Allow it to log in\" adds the key here.";
+            // Green only when the key can log in here; a key this server refuses is not a finished job.
+            bool usable = where != null ? accepted : allowed == true;
+            ShowKey(info, text, where != null ? null : allowed, usable ? Green : Orange);
+            if (where != null) _kgAllowed = true; // said in the text already
             Status("Key pair created: " + res.PrivatePath);
         }
 

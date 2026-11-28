@@ -34,6 +34,7 @@ namespace OpenSSHServerPNManager
             bool created;
             using (var mutex = new Mutex(false, name, out created, security))
             {
+                Acl.RequireTrustedLock(mutex, created, path);
                 bool acquired = false;
                 try
                 {
@@ -51,7 +52,9 @@ namespace OpenSSHServerPNManager
             if (refusal != null) throw new ConfigException(refusal);
             var bytes = candidate.ExactBytes ?? new UTF8Encoding(false).GetBytes(candidate.Text);
             // Keep the validation fixture beside its destination, under the same protected directory.
-            Directory.CreateDirectory(Path.GetDirectoryName(candidate.Path));
+            var folder = Path.GetDirectoryName(candidate.Path);
+            if (Ssh.ConfigDirOverride == null && string.Equals(Path.GetFullPath(folder).TrimEnd('\\'), Path.GetFullPath(Ssh.ConfigDir).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) Acl.EnsureConfigFolder(folder);
+            Directory.CreateDirectory(folder);
             var tmp = candidate.Path + ".candidate-" + Guid.NewGuid().ToString("N");
             File.WriteAllBytes(tmp, bytes);
             try

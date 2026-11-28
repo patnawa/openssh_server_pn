@@ -299,6 +299,47 @@ namespace OpenSSHServerPNManager
             try { return (SecurityIdentifier)new NTAccount(account).Translate(typeof(SecurityIdentifier)); } catch { return null; }
         }
 
+        /// <summary>
+        /// Refuses a named lock that this process did not create unless SYSTEM, Administrators or the account running this
+        /// program owns it. The names are predictable and any account may create a Global\ mutex: one made and held by
+        /// another account would keep the SYSTEM agent and every configuration change waiting for good, and a lock that is
+        /// merely "busy" is not reported as a failure. Opening an existing mutex ignores the permissions asked for.
+        /// </summary>
+        public static void RequireTrustedLock(Mutex mutex, bool created, string what)
+        {
+            if (created) return;
+            SecurityIdentifier owner;
+            try { owner = mutex.GetAccessControl().GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier; }
+            catch (Exception ex) { throw new ConfigException("The lock for " + what + " exists already and its owner could not be read (" + ex.Message + "), so it is not trusted."); }
+            using (var identity = WindowsIdentity.GetCurrent())
+                if (!TrustedLockOwner(owner, identity.User))
+                    throw new ConfigException("The lock for " + what + " was created by another account (" + (owner == null ? "unknown" : Name(owner)) + "), not by this program. It is not trusted: end that account's process that holds it.");
+        }
+
+        /// <summary>The accounts whose lock this program waits for: SYSTEM, Administrators, and the account running it.</summary>
+        internal static bool TrustedLockOwner(SecurityIdentifier owner, SecurityIdentifier me)
+        {
+            return owner != null && (owner == Admins || owner == System || (me != null && owner == me));
+        }
+
+        /// <summary>
+        /// Creates the server's configuration folder (%ProgramData%\ssh) when it is missing, with the permissions sshd gives
+        /// it at its first start: SYSTEM and Administrators full control, signed-in accounts read only, nothing inherited.
+        /// Created plainly it would inherit those of %ProgramData%, where every account may create files: sshd_config or
+        /// administrators_authorized_keys planted there before the service first runs.
+        /// </summary>
+        public static void EnsureConfigFolder(string dir)
+        {
+            if (Directory.Exists(dir)) return;
+            var ds = new DirectorySecurity();
+            ds.SetAccessRuleProtection(true, false);
+            var inherit = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+            ds.AddAccessRule(new FileSystemAccessRule(System, FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
+            ds.AddAccessRule(new FileSystemAccessRule(Admins, FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
+            ds.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null), FileSystemRights.ReadAndExecute, inherit, PropagationFlags.None, AccessControlType.Allow));
+            Directory.CreateDirectory(dir, ds);
+        }
+
         /// <summary>A new folder that only SYSTEM and Administrators can open, for files a SYSTEM process reads or writes.</summary>
         public static void CreatePrivateFolder(string dir)
         {

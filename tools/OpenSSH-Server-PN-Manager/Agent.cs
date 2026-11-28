@@ -399,6 +399,7 @@ namespace OpenSSHServerPNManager
             bool created;
             using (var mutex = new Mutex(false, name, out created, security))
             {
+                Acl.RequireTrustedLock(mutex, created, "the agent's state");
                 bool owned = false;
                 try
                 {
