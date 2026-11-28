@@ -2,10 +2,12 @@
 
 All builds of this project, newest first. Each entry lists the source, the library versions,
 every change to the packaging, and how the result was verified. The current regular
-releases are [product 10.5.10.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.10.0)
-and [Manager 2.3.4](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.4).
-Both were published on **24 November 2026**, with **Manager 2.3.4 marked Latest**.
+releases are [product 10.5.11.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.11.0)
+and [Manager 2.3.5](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.5).
+Both were published on **28 November 2026**, with **Manager 2.3.5 marked Latest**.
 Earlier regular GitHub releases:
+[release-v10.5.10.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.10.0) (with Manager 2.3.4),
+[release-manager-v2.3.4](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.4),
 [release-v10.5.9.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.9.0) (with Manager 2.3.3),
 [release-manager-v2.3.3](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.3),
 [release-v10.5.8.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.8.0) (with Manager 2.3.2),
@@ -25,18 +27,38 @@ Server PN Manager 2.0.0), [manager-v2.0.0](https://github.com/patnawa/openssh_se
 1.5.0) and [manager-v1.5.0](https://github.com/patnawa/openssh_server_pn/releases/tag/manager-v1.5.0);
 the builds before them were not published.
 
-## 10.5.11.0 / Manager 2.3.5 (not released yet)
+## 10.5.11.0 / Manager 2.3.5 (2026-11-28)
 
-Prepared on 2026-11-28 on the branch `release/10.5.11.0`. A key-generator fix, LibreSSL 4.4.1 and three
-fixes from a security review of the Manager. OpenSSH stays at 10.5p1 (10.6p2 is available upstream and
-is not merged here). The product's third version field advances for MSI upgrades.
+A key-generator fix, LibreSSL 4.4.1 and three fixes from a security review of the Manager. OpenSSH
+stays at 10.5p1 (10.6p2 is available upstream and is not merged here). The product's third version
+field advances for MSI upgrades.
 
-**Verification so far.** The Manager was compiled with the pinned compiler (Roslyn 4.14.0 `csc.dll` on
-.NET 9, Linux) and the pinned reference assemblies, warnings as errors. The same procedure applied to
-the 2.3.4 source gives the published 2.3.4 executable byte for byte (`710AB22F…`), so the committed
-`bin/` executable is what `build.ps1` produces. **Nothing here has run on Windows yet**: the Manager
-unit and GUI tests, the native build with LibreSSL 4.4.1, the crypto probes and the installation
-tests are for the hosted workflows to pass before a release.
+**Release.** Published as unsigned regular releases
+[release-v10.5.11.0](https://github.com/patnawa/openssh_server_pn/releases/tag/release-v10.5.11.0) and
+[release-manager-v2.3.5](https://github.com/patnawa/openssh_server_pn/releases/tag/release-manager-v2.3.5) (Latest) from source
+[0754aa6](https://github.com/patnawa/openssh_server_pn/commit/0754aa616e1eed8b1dd783dc3b73ff5488ae70ff), with the exact artifacts of
+[run 46109397192](https://github.com/patnawa/openssh_server_pn/actions/runs/46109397192) (pull request #23; the run's merge commit has the
+same tree). All 19 assets were compared byte for byte with the staging files, from the drafts and
+again from the public URLs.
+
+| File | SHA-256 |
+|---|---|
+| `OpenSSHServerPNManager.exe` (2.3.5) | `64e89000b9d83a485533d1cb5e54301ab8e020e8a4c4a2222964c0855b7c11da` |
+| `OpenSSH-Win64-v10.5.11.0.msi` | `afa8a59fed9ed2226fb406987ae0d149c795d7e4a1c4c2c5854d9f26e67fb282` |
+| `OpenSSH-Win32-v10.5.11.0.msi` | `59b984960948f1565af14a80d10c5f5f370ceb43dfa7d95083f70f324e3df0dc` |
+| `OpenSSH-ARM64-v10.5.11.0.msi` | `9a5b9fdc557db2f38cdce99020e1809e8c8d33a291a5654fb3230502df1b9760` |
+
+**Verification.** Before the push, the Manager was compiled on Linux with the pinned compiler
+(Roslyn 4.14.0 `csc.dll` on .NET 9) and reference assemblies, warnings as errors; the same procedure
+applied to the 2.3.4 source gives the published 2.3.4 executable byte for byte, and CI built the
+same 2.3.5 bytes twice on Windows. The hosted run then passed every required gate: 319 Manager unit
+tests (the three new regression tests among them), 49 GUI checks and 13 installer-fixture checks;
+x64, x86 and ARM64 builds with `libcrypto.dll` 4.4.1.0, 767 native unit tests, the crypto probes,
+139 configuration round trips and 188 installer script checks each; and four installation lanes
+(Server 2022, Server 2025, Server 2022 with PowerShell 2.0, Windows 11 ARM64) with 368 installed
+self-tests, the key and login-method tests and the installer lifecycle each. Informational Pester:
+159 passed, 0 failed, 1 skipped. Not tested, as before: signing, an actual reboot, GUI-click
+recovery, other-account UAC, mixed monitors and screen readers, a failed or cancelled uninstall.
 
 **Key generator**
 
